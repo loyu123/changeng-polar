@@ -49,10 +49,12 @@
     },
     "files": [
       "out/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "asar": true,
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         { "target": "nsis", "arch": ["x64"] },
         { "target": "portable", "arch": ["x64"] }

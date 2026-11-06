@@ -1,4 +1,5 @@
 import { BrowserWindow, shell } from 'electron'
+import fs from 'node:fs'
 import path from 'node:path'
 
 /**
@@ -9,6 +10,12 @@ import path from 'node:path'
  */
 
 let mainWindow: BrowserWindow | null = null
+
+/** 窗口/任务栏图标：开发态从 build/ 取，打包后同在 asar 内同一相对位置 */
+function iconPath(): string | undefined {
+  const file = path.join(__dirname, '../../build/icon.png')
+  return fs.existsSync(file) ? file : undefined
+}
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow
@@ -34,6 +41,7 @@ export function createWindow(): void {
     frame: false,
     // 与 index.css 的 --white 一致，否则启动/缩放时会闪一帧偏灰的底
     backgroundColor: '#FFFFFF',
+    icon: iconPath(),
     title: '长庚',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),

@@ -8,3 +8,6 @@ evals/report.json
 
 # 打包产物
 release/
+
+# 图标脚本的预览图，不是打包产物
+build/_sheet.png
