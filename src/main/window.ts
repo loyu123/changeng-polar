@@ -32,7 +32,8 @@ export function createWindow(): void {
     minHeight: 680,
     show: false,
     frame: false,
-    backgroundColor: '#F3F3F3',
+    // 与 index.css 的 --white 一致，否则启动/缩放时会闪一帧偏灰的底
+    backgroundColor: '#FFFFFF',
     title: '长庚',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),

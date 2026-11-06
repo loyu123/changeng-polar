@@ -236,7 +236,7 @@ export default function AppsPage({ active, onAsk }: Props) {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <div className="appname" style={{ fontSize: 15.5 }}>
+                  <div className="app-name">
                     {selectedApp.name}
                   </div>
                   <span className={`tag ${verified ? 'tag-ok' : 'tag-gray'}`}>

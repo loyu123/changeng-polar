@@ -140,7 +140,7 @@ export default function App() {
   } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   /** 标题栏副标题用的真实计数 */
-  const [stats, setStats] = useState({ mail: 0, tasksOn: 0, tools: 0, toolsOn: 0, projects: 0 })
+  const [stats, setStats] = useState({ mail: 0, mailReady: 0, tasksOn: 0, tools: 0, toolsOn: 0, projects: 0 })
 
   useEffect(() => {
     void window.butler.info().then(setInfo)
@@ -148,7 +148,10 @@ export default function App() {
 
   const loadStats = (): void => {
     void window.butler.config.get().then((cfg) => {
-      setStats((prev) => ({ ...prev, mail: (cfg.mailAccounts ?? []).length }))
+      const accounts = cfg.mailAccounts ?? []
+      // 只填了地址、没有授权码的账号接不通，不能算进"已配置"
+      const ready = accounts.filter((a) => Boolean(a.address?.trim() && a.authCode?.trim())).length
+      setStats((prev) => ({ ...prev, mail: accounts.length, mailReady: ready }))
     })
     void window.butler.tasks.list().then((list) => {
       setStats((prev) => ({ ...prev, tasksOn: list.filter((t) => t.enabled).length }))
@@ -198,7 +201,7 @@ export default function App() {
     if (route === 'chat') return `本机 · 已授权 ${stats.mail} 个账号`
     if (route === 'tasks') return `定时任务 · ${stats.tasksOn} 个已启用`
     if (route === 'plugins') return `自定义 · ${stats.tools} 个能力 · ${stats.toolsOn} 个已启用`
-    if (route === 'accounts') return `${stats.mail} 个账号 · ${stats.mail} 个已连接`
+    if (route === 'accounts') return `${stats.mail} 个账号 · ${stats.mailReady} 个已配置`
     if (route === 'overview') return `总览 · 项目 ${stats.projects} 个`
     if (route === 'projects') return `项目 · ${stats.projects} 个`
     return `设置 · ${SECTION_LABEL[settingsSection]}`

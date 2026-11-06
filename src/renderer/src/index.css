@@ -494,8 +494,9 @@ textarea {
   font-weight: 600;
   color: #fff;
 }
-.appname {
-  font-size: 13px;
+/* 台账详情页的大标题（标题栏的品牌名用 .appname，两者别混用） */
+.app-name {
+  font-size: 15.5px;
   font-weight: 600;
   line-height: 1.25;
   overflow: hidden;
@@ -1775,24 +1776,6 @@ select.input {
 }
 .sw.fixed {
   cursor: default;
-}
-.sel {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 8px 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  font-size: 11.5px;
-  color: #4e4e47;
-  background: #fff;
-  white-space: nowrap;
-}
-.sel svg {
-  width: 12px;
-  height: 12px;
-  color: #a6a69e;
 }
 .linkbtn {
   font-size: 11.5px;
