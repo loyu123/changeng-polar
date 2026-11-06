@@ -149,4 +149,23 @@ describe('Store · 配置读取', () => {
     expect(cfg.model).toBe('custom')
     expect(cfg.searchProvider).toBeTruthy()
   })
+
+  it('配置带 UTF-8 BOM 也照样读得出（记事本存 UTF-8 默认加 BOM）', async () => {
+    // 带 BOM 时 JSON.parse 直接抛错，被 catch 吞掉后整份配置回落默认值——
+    // 用户的模型地址和 Key 会静默消失，界面上看不出异常
+    const body = JSON.stringify({ model: 'custom-from-notepad', apiKey: 'secret' })
+    await fs.writeFile(path.join(dir, 'config.json'), `﻿${body}`, 'utf8')
+    const store = new Store(dir)
+    const cfg = await store.getConfig()
+    expect(cfg.model).toBe('custom-from-notepad')
+    expect(cfg.apiKey).toBe('secret')
+  })
+
+  it('列表文件带 BOM 时不会被当成损坏文件覆盖掉', async () => {
+    await fs.writeFile(path.join(dir, 'tasks.json'), '﻿[]', 'utf8')
+    const store = new Store(dir)
+    expect(await store.listTasks()).toEqual([])
+    // 真当成损坏的话会留下 .corrupt 副本
+    await expect(fs.stat(path.join(dir, 'tasks.json.corrupt'))).rejects.toThrow()
+  })
 })

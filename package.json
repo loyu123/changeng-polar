@@ -50,6 +50,7 @@
     "files": [
       "out/**/*",
       "build/icon.png",
+      "build/icon.ico",
       "package.json"
     ],
     "asar": true,

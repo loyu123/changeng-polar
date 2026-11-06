@@ -174,6 +174,14 @@ export default function App() {
     }
   }, [])
 
+  // 托盘里点「打开长庚 / 定时任务…」：主进程给一个路由，这里换页
+  useEffect(() => {
+    const off = window.butler.desktop.onRoute((route) => {
+      if (route === 'tasks' || route === 'chat') setRoute(route)
+    })
+    return off
+  }, [])
+
   // Ctrl+K / Cmd+K 呼出全局搜索
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {

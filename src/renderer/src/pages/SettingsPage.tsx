@@ -1,9 +1,52 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AlwaysAllowedEntry, ButlerConfig, MailAccount, MemoryEntry } from '../../../shared/types'
+import type { AlwaysAllowedEntry, ButlerConfig, DesktopPrefs, MailAccount, MemoryEntry } from '../../../shared/types'
+import type { DesktopState } from '../../../shared/desktop'
 import { MEMORY_KIND_LABEL } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
 import RecordsPage from './RecordsPage'
 import AppsPage from './AppsPage'
+
+/**
+ * 可点的开关。
+ *
+ * `.sw` 这套样式原本只用于展示（设置页里全是 fixed 的静态开关），所以这里补齐
+ * 键盘可达与 aria 语义；外观仍走同一套类名，不另造一种开关。
+ */
+function Switch({
+  on,
+  disabled,
+  title,
+  onToggle
+}: {
+  on: boolean
+  disabled?: boolean
+  title?: string
+  onToggle: () => void
+}) {
+  const act = (): void => {
+    if (!disabled) onToggle()
+  }
+  return (
+    <span
+      className={`sw${on ? ' on' : ''}${disabled ? ' fixed' : ''}`}
+      role="switch"
+      aria-checked={on}
+      aria-disabled={disabled}
+      tabIndex={disabled ? -1 : 0}
+      title={title}
+      style={disabled ? undefined : { cursor: 'pointer' }}
+      onClick={act}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          act()
+        }
+      }}
+    >
+      <i />
+    </span>
+  )
+}
 
 export type SettingsSection =
   | 'model'
@@ -60,6 +103,9 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const [toolsStat, setToolsStat] = useState<{ total: number; on: number; names: string[] }>({ total: 0, on: 0, names: [] })
   /** 密钥是否加密落盘：保存后的提示文案要跟事实一致 */
   const [secretsEncrypted, setSecretsEncrypted] = useState(false)
+  /** 桌面常驻：偏好 + 系统登录项现状（两者可能不一致） */
+  const [desktop, setDesktop] = useState<DesktopState | null>(null)
+  const [desktopBusy, setDesktopBusy] = useState(false)
 
   useEffect(() => {
     void window.butler.storage.stats().then(setStorageStats)
@@ -72,7 +118,19 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         names: list.filter((t) => t.enabled).map((t) => t.label)
       })
     )
+    void window.butler.desktop.state().then(setDesktop)
   }, [])
+
+  /** 桌面偏好是即时生效的，不走「保存」按钮：改完立刻落到窗口和系统登录项 */
+  const setDesktopPref = async (patch: Partial<DesktopPrefs>): Promise<void> => {
+    if (desktopBusy) return
+    setDesktopBusy(true)
+    try {
+      setDesktop(await window.butler.desktop.set(patch))
+    } finally {
+      setDesktopBusy(false)
+    }
+  }
 
   // 外部入口指定分区时跟随（如账号管理页点「管理」直接到邮箱账号）
   useEffect(() => {
@@ -794,9 +852,70 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     // 常规（概念图 · 个人组）：外观与语言，没做的如实标注，不用灰掉的下拉假装能选
     general: {
       title: '常规',
-      lead: '外观与语言。这一版只有一套皮肤和一种语言，所以这里没有需要你点的地方。',
+      lead: '常驻与开机行为。这三项改完立刻生效，不用点保存——它们落的是窗口和系统登录项，不是配置文件里的一行字。',
       body: (
         <>
+          <div className="cardbox">
+            <div className="ch">常驻</div>
+            <div className="row">
+              <div className="rl">
+                <b>关闭窗口时收进托盘</b>
+                <span>
+                  关窗只是把窗口收起，进程继续跑，定时任务照常执行。从托盘图标点回来，或右键「退出长庚」才真正结束。
+                  关掉这一项，关窗就退出，定时任务也会一起停。
+                </span>
+              </div>
+              <Switch
+                on={desktop?.prefs.closeToTray ?? true}
+                disabled={desktopBusy}
+                title={desktop?.prefs.closeToTray ? '关窗收进托盘' : '关窗即退出'}
+                onToggle={() => void setDesktopPref({ closeToTray: !(desktop?.prefs.closeToTray ?? true) })}
+              />
+            </div>
+            <div className="row">
+              <div className="rl">
+                <b>定时任务完成时通知</b>
+                <span>任务跑完或失败时弹一条系统通知，点它能回到窗口。对话里的回答不弹——那时你就在窗口前。</span>
+              </div>
+              <Switch
+                on={desktop?.prefs.notifyOnTask ?? true}
+                disabled={desktopBusy}
+                title={desktop?.prefs.notifyOnTask ? '完成时通知' : '不通知'}
+                onToggle={() => void setDesktopPref({ notifyOnTask: !(desktop?.prefs.notifyOnTask ?? true) })}
+              />
+            </div>
+          </div>
+
+          <div className="cardbox">
+            <div className="ch">开机</div>
+            <div className="row">
+              <div className="rl">
+                <b>
+                  开机自动启动
+                  {desktop && !desktop.canAutoLaunch && <em className="tag-gold">仅打包版</em>}
+                </b>
+                <span>
+                  {desktop && !desktop.canAutoLaunch
+                    ? '开发态不写系统登录项——登记成 electron.exe 会丢掉应用路径，开机只会起一个空窗口。打包安装后这一项才生效。'
+                    : '登录 Windows 后自动在托盘待命，不弹窗口。定时任务因此不会因为「电脑重启过」而整天不跑。'}
+                </span>
+              </div>
+              <Switch
+                on={desktop?.atLogin ?? false}
+                disabled={desktopBusy || !(desktop?.canAutoLaunch ?? false)}
+                title={desktop?.atLogin ? '已设为开机启动' : '未设为开机启动'}
+                onToggle={() => void setDesktopPref({ launchAtLogin: !(desktop?.atLogin ?? false) })}
+              />
+            </div>
+            {desktop && desktop.canAutoLaunch && desktop.prefs.launchAtLogin !== desktop.atLogin && (
+              <div className="row">
+                <div className="rl">
+                  <span>设置里想开机启动，但系统登录项里查不到——可能被系统的「启动应用」管理关掉了。</span>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="cardbox">
             <div className="ch">外观</div>
             <div className="row">
@@ -808,31 +927,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             </div>
             <div className="row">
               <div className="rl">
-                <b>界面密度</b>
-                <span>列表与卡片的疏密，跟随窗口宽度自适应</span>
-              </div>
-              <span className="cval">标准</span>
-            </div>
-          </div>
-          <div className="cardbox">
-            <div className="ch">语言与地区</div>
-            <div className="row">
-              <div className="rl">
                 <b>界面语言</b>
-                <span>界面文案目前只有简体中文</span>
+                <span>界面文案目前只有简体中文，日期时间跟随系统区域设置</span>
               </div>
               <span className="cval">简体中文</span>
             </div>
-            <div className="row">
-              <div className="rl">
-                <b>日期与时间</b>
-                <span>跟随系统区域设置，不单独配置</span>
-              </div>
-              <span className="cval">跟随系统</span>
-            </div>
-          </div>
-          <div className="hint" style={{ padding: '2px 2px 16px' }}>
-            这一版没有可调项，所以不显示「保存」按钮——没作用的东西不放上来。
           </div>
         </>
       )

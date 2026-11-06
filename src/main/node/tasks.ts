@@ -6,7 +6,8 @@ import type { TaskDef, TaskSchedule } from '../../shared/types'
  * 边界（改之前先看这几条）：
  * - 到点把 prompt 作为用户消息跑一轮对话；无人在场，需要授权的操作会被当场拒绝并留痕
  * - 只用 setTimeout 单链调度，同一时刻最多一个任务在跑，绝不堆积
- * - 应用关了任务就不跑（常驻后台/托盘是后续功能，不做假承诺）
+ * - 应用关了任务就不跑。所以主进程默认「关窗收进托盘」（见 tray.ts），
+ *   让用户关掉窗口时任务不至于一起停；真退出仍然会停，这一点不假装能后台级运行
  */
 
 /** 计算某任务下一次该跑的时间（ms 时间戳） */
@@ -44,6 +45,11 @@ export interface TaskRunnerOptions {
   execute: (task: TaskDef) => Promise<string>
   /** 任务跑完/失败后通知渲染层刷新 */
   onTaskUpdated: (task: TaskDef) => void
+  /**
+   * 一轮跑完的回调（成败都调）。
+   * 与 onTaskUpdated 分开：那个只负责让界面刷新，这个给「用户不在看窗口」时的系统通知用。
+   */
+  onFinish?: (task: TaskDef, summary: string, ok: boolean) => void
 }
 
 export class TaskRunner {
@@ -105,9 +111,11 @@ export class TaskRunner {
     try {
       const summary = await this.opts.execute(task)
       await this.mark(task, summary)
+      this.opts.onFinish?.(task, summary, true)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       await this.mark(task, `失败：${message.slice(0, 140)}`)
+      this.opts.onFinish?.(task, message, false)
     } finally {
       this.running = false
       void this.scheduleNext()

@@ -25,11 +25,23 @@ export const DEFAULT_CONFIG: ButlerConfig = {
   searchProvider: 'duckduckgo',
   searchKey: '',
   mail: { address: '', authCode: '', host: 'imap.qq.com', port: 993 },
-  mailAccounts: []
+  mailAccounts: [],
+  desktop: { closeToTray: true, launchAtLogin: false, notifyOnTask: true }
 }
 
 /** 动作记录单文件上限：超过就轮转成 .1，只保留最近两份 */
 const RECORDS_MAX_BYTES = 5 * 1024 * 1024
+
+/**
+ * 去掉 UTF-8 BOM。
+ *
+ * Windows 记事本存 UTF-8 默认带 BOM，而 JSON.parse 遇到 BOM 会直接抛错，
+ * 被 getConfig 的 catch 吞掉之后整份配置回落成默认值——用户的 Key、模型地址
+ * 全被静默丢掉，界面上看不出任何异常。手改过一次配置就会踩到。
+ */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
 
 /** 本地存储：配置 json + 记录 jsonl（append-only）+ 查证结果 json */
 export class Store {
@@ -83,7 +95,7 @@ export class Store {
   async getConfig(): Promise<ButlerConfig> {
     try {
       const raw = await fs.readFile(this.p('config.json'), 'utf8')
-      const parsed = { ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<ButlerConfig>) }
+      const parsed = { ...DEFAULT_CONFIG, ...(JSON.parse(stripBom(raw)) as Partial<ButlerConfig>) }
       // 盘上是密文，内存里一律明文：调用方（模型请求、IMAP 登录）拿到的都是能直接用的值
       return decodeConfigSecrets(parsed, this.codec)
     } catch {
@@ -176,7 +188,7 @@ export class Store {
   async getVerifyMap(): Promise<Record<string, VerifyResult>> {
     try {
       const raw = await fs.readFile(this.p('verify.json'), 'utf8')
-      return JSON.parse(raw) as Record<string, VerifyResult>
+      return JSON.parse(stripBom(raw)) as Record<string, VerifyResult>
     } catch {
       return {}
     }
@@ -195,7 +207,7 @@ export class Store {
   private async readSnapshots(): Promise<Record<string, AppSnapshot>> {
     try {
       const raw = await fs.readFile(this.p('snapshots.json'), 'utf8')
-      return JSON.parse(raw) as Record<string, AppSnapshot>
+      return JSON.parse(stripBom(raw)) as Record<string, AppSnapshot>
     } catch {
       return {}
     }
@@ -218,7 +230,7 @@ export class Store {
   private async readNotes(): Promise<Record<string, AppNote>> {
     try {
       const raw = await fs.readFile(this.p('notes.json'), 'utf8')
-      return JSON.parse(raw) as Record<string, AppNote>
+      return JSON.parse(stripBom(raw)) as Record<string, AppNote>
     } catch {
       return {}
     }
@@ -250,7 +262,7 @@ export class Store {
   async listAlwaysAllowed(): Promise<AlwaysAllowedEntry[]> {
     try {
       const raw = await fs.readFile(this.p('auth-memory.json'), 'utf8')
-      const list = JSON.parse(raw) as AlwaysAllowedEntry[]
+      const list = JSON.parse(stripBom(raw)) as AlwaysAllowedEntry[]
       return Array.isArray(list) ? list : []
     } catch {
       return []
@@ -292,7 +304,7 @@ export class Store {
       return []
     }
     try {
-      const list = JSON.parse(raw) as T[]
+      const list = JSON.parse(stripBom(raw)) as T[]
       return Array.isArray(list) ? list : []
     } catch {
       // 文件被写坏（例如进程被强杀留下半截）：先留个 .corrupt 备份，别让仅有的数据被空值覆盖掉

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AlwaysAllowedEntry,
   AppInfo,
@@ -9,6 +9,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatSession,
+  DesktopPrefs,
   MemoryEntry,
   ProjectDef,
   RecordEntry,
@@ -19,6 +20,7 @@ import type {
   TurnResult,
   VerifyResult
 } from '../shared/types'
+import type { DesktopState } from '../shared/desktop'
 
 const api = {
   info: () =>
@@ -222,6 +224,24 @@ const api = {
     minimize: () => ipcRenderer.invoke('win:minimize'),
     toggleMaximize: () => ipcRenderer.invoke('win:toggle-maximize') as Promise<boolean>,
     close: () => ipcRenderer.invoke('win:close')
+  },
+
+  /**
+   * 桌面常驻：关窗行为、开机自启、任务通知。
+   * 偏好落在 config.json，`state.atLogin` 是系统登录项的现状，两者可能不一致。
+   */
+  desktop: {
+    state: () => ipcRenderer.invoke('desktop:state') as Promise<DesktopState>,
+    set: (patch: Partial<DesktopPrefs>) =>
+      ipcRenderer.invoke('desktop:set', patch) as Promise<DesktopState>,
+    /** 托盘里点了「打开长庚 / 定时任务」：主进程让渲染层换页 */
+    onRoute: (handler: (route: string) => void) => {
+      const listener = (_e: IpcRendererEvent, route: string): void => handler(route)
+      ipcRenderer.on('app:route', listener)
+      return (): void => {
+        ipcRenderer.removeListener('app:route', listener)
+      }
+    }
   },
 
   shell: {

@@ -72,6 +72,23 @@ export interface ButlerConfig extends ModelConfig {
   mailAccounts?: MailAccount[]
   /** 能力开关（插件页）：name → 是否启用；缺省视为启用 */
   toolToggles?: Record<string, boolean>
+  /** 桌面常驻偏好（关闭行为 / 开机自启 / 任务通知），缺省按 DEFAULT_DESKTOP_PREFS */
+  desktop?: DesktopPrefs
+}
+
+/**
+ * 桌面常驻偏好。
+ *
+ * closeToTray 默认为开：定时任务只在进程活着的时候跑（见 node/tasks.ts 的边界说明），
+ * 关窗即退等于顺手把定时任务关掉，所以默认让「关窗」只是收起窗口。
+ */
+export interface DesktopPrefs {
+  /** 关闭窗口时收进托盘，不结束进程 */
+  closeToTray: boolean
+  /** 开机自动启动（写系统登录项，不另外注册自启项） */
+  launchAtLogin: boolean
+  /** 定时任务跑完或失败时弹系统通知 */
+  notifyOnTask: boolean
 }
 
 /** 定时任务的计划：每天固定时间，或每隔 N 分钟 */

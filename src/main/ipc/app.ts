@@ -1,6 +1,9 @@
 import { app, ipcMain, shell, dialog } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import type { DesktopPrefs } from '../../shared/types'
+import type { DesktopState } from '../../shared/desktop'
+import { desktopPrefsOf } from '../../shared/desktop'
 import type { Store } from '../node/store'
 import { machineEnv } from '../runtime'
 import { getMainWindow } from '../window'
@@ -33,6 +36,15 @@ export interface IpcContext {
     broadcast: () => void
     runOnce: (id: string) => Promise<{ ok: boolean; detail: string }>
   }
+  /** 桌面常驻：关窗行为、开机自启、任务通知的实际生效动作 */
+  desktop: {
+    /** 把偏好落到窗口、托盘与系统登录项上 */
+    apply: (prefs: DesktopPrefs) => void
+    /** 当前能否写系统登录项（开发态不写） */
+    canAutoLaunch: () => boolean
+    /** 系统登录项里现在的真实状态 */
+    atLogin: () => boolean
+  }
 }
 
 export function registerAppIpc(ctx: IpcContext): void {
@@ -51,6 +63,28 @@ export function registerAppIpc(ctx: IpcContext): void {
     return win.isMaximized()
   })
   ipcMain.handle('win:close', () => getMainWindow()?.close())
+
+  // ---- 桌面常驻：关窗收托盘、开机自启、任务通知 ----
+  // 偏好存在 config.json（与其它设置同一份），但「系统登录项到底是不是开的」只能问系统，
+  // 所以 state 里两个值分开给：prefs 是用户的选择，atLogin 是系统的现状。
+  const desktopState = async (prefs: DesktopPrefs): Promise<DesktopState> => ({
+    prefs,
+    atLogin: ctx.desktop.atLogin(),
+    canAutoLaunch: ctx.desktop.canAutoLaunch()
+  })
+
+  ipcMain.handle('desktop:state', async () => {
+    const config = await ctx.store.getConfig()
+    return desktopState(desktopPrefsOf(config))
+  })
+
+  ipcMain.handle('desktop:set', async (_e, patch: Partial<DesktopPrefs>) => {
+    const current = await ctx.store.getConfig()
+    const next = { ...desktopPrefsOf(current), ...sanitizeDesktopPatch(patch) }
+    await ctx.store.saveConfig({ desktop: next })
+    ctx.desktop.apply(next)
+    return desktopState(next)
+  })
 
   ipcMain.handle('shell:open', async (_e, url: string) => {
     if (!/^(https?:\/\/|ms-settings:)/i.test(url)) return false
@@ -136,4 +170,14 @@ export function registerAppIpc(ctx: IpcContext): void {
     await fs.writeFile(result.filePath, String(payload?.markdown ?? ''), 'utf8')
     return { ok: true, path: result.filePath }
   })
+}
+
+/** 只接受三个已知的布尔字段：渲染层多传的键不该被写进配置文件 */
+function sanitizeDesktopPatch(patch: Partial<DesktopPrefs> | null | undefined): Partial<DesktopPrefs> {
+  const out: Partial<DesktopPrefs> = {}
+  if (!patch || typeof patch !== 'object') return out
+  if (typeof patch.closeToTray === 'boolean') out.closeToTray = patch.closeToTray
+  if (typeof patch.launchAtLogin === 'boolean') out.launchAtLogin = patch.launchAtLogin
+  if (typeof patch.notifyOnTask === 'boolean') out.notifyOnTask = patch.notifyOnTask
+  return out
 }
