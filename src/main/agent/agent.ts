@@ -6,7 +6,8 @@ import type {
   ToolTrace,
   TurnResult
 } from '../../shared/types'
-import { executeThroughGate, type GateHooks } from './gate'
+import { confirmDataEgress, executeThroughGate, type GateHooks } from './gate'
+import { trimHistory } from './budget'
 import { chatCompletion, type ToolSchema } from './llm'
 import type { ToolContext, ToolDef, ToolResult } from './tool-types'
 
@@ -21,6 +22,15 @@ const MAX_TOOL_CHARS = 6000
  * 之前提示词写"最多 3 次"、代码给 5 步，模型按 3 停、实际允许 5，口径是分裂的。
  */
 export const TOOL_BUDGET_STEPS = 5
+
+/**
+ * 单次请求的上下文预算（token 估算）。
+ *
+ * 128k 的模型留到 90k 左右就够，不追求用满：留出余量给输出，
+ * 也避免因为估算偏小而刚好超限。真正要紧的是"不会突然撞墙"，
+ * 而不是"把窗口塞得有多满"。
+ */
+export const CONTEXT_TOKEN_BUDGET = 90_000
 
 function schemaOf(tools: ToolDef[]): ToolSchema[] {
   return tools.map((t) => ({
@@ -87,6 +97,12 @@ export async function runTurn(opts: RunTurnOptions): Promise<RunTurnOutput> {
   let finalText = ''
   let usage: TurnResult['usage']
   let steps = 0
+  /**
+   * 本轮是否已经读过用户私密内容（邮件正文等）。
+   * 一旦为真，后面每个会把数据发出去的工具都要先过一次确认卡——
+   * 否则「读邮件」和「抓网页」各自合法，合起来就是一条外泄通道。
+   */
+  let tainted = false
 
   const history: ChatMessage[] = [...opts.messages]
 
@@ -97,7 +113,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<RunTurnOutput> {
 
     const response = await chatCompletion({
       config,
-      messages: history,
+      // 每步都按预算裁一次：工具结果会把历史撑大，只在开头裁一次不够
+      messages: trimHistory(history, { maxTokens: CONTEXT_TOKEN_BUDGET }).messages,
       tools: schemas,
       signal,
       onDelta: (text) => emit?.({ type: 'delta', text })
@@ -153,7 +170,24 @@ export async function runTurn(opts: RunTurnOptions): Promise<RunTurnOutput> {
         } else {
           emit?.({ type: 'tool', name: call.name, label: def.label, effect: def.effect })
           try {
-            toolResult = await executeThroughGate(def, parsedArgs, ctx, gate)
+            // 读过私密内容的这一轮，往外发的动作要先问用户
+            const egressBlocked =
+              tainted && def.sendsDataOut === true ? !(await confirmDataEgress(gate, {
+                title: `要把内容发出去：${def.label}`,
+                target: JSON.stringify(parsedArgs ?? {}).slice(0, 120),
+                impact: '本轮已经读过你的私密内容（邮件等）；这一步会把内容发到本机之外，可能把私密内容一起带出去',
+                paramsPreview: JSON.stringify(parsedArgs ?? {})
+              })) : false
+            if (egressBlocked) {
+              toolResult = {
+                ok: false,
+                blocked: true,
+                summary:
+                  '用户没有确认这次外发，所以没有执行。不要换个说法重试，也不要把内容塞进别的工具再发一次；如实说明这一步需要用户同意。'
+              }
+            } else {
+              toolResult = await executeThroughGate(def, parsedArgs, ctx, gate)
+            }
           } catch (err) {
             toolResult = {
               ok: false,
@@ -168,6 +202,10 @@ export async function runTurn(opts: RunTurnOptions): Promise<RunTurnOutput> {
         for (const item of toolResult.evidence) {
           if (!evidence.some((existing) => existing.id === item.id)) evidence.push(item)
         }
+      }
+      // 真的读到了才污染：被拒绝或被拦下时没有数据进入上下文，不该影响后续判断
+      if (def?.readsPrivateData === true && toolResult.ok && toolResult.blocked !== true) {
+        tainted = true
       }
       traces.push({
         name: call.name,
@@ -197,14 +235,17 @@ export async function runTurn(opts: RunTurnOptions): Promise<RunTurnOutput> {
         config,
         tools: [],
         signal,
-        messages: [
-          ...history,
-          {
-            role: 'user',
-            content:
-              '时间到了，请停止检索，直接基于上面已经拿到的结果给出结论。没有证据的部分明确说「查不到」，不要再申请调用任何工具。'
-          }
-        ],
+        messages: trimHistory(
+          [
+            ...history,
+            {
+              role: 'user',
+              content:
+                '时间到了，请停止检索，直接基于上面已经拿到的结果给出结论。没有证据的部分明确说「查不到」，不要再申请调用任何工具。'
+            }
+          ],
+          { maxTokens: CONTEXT_TOKEN_BUDGET }
+        ).messages,
         onDelta: (text) => emit?.({ type: 'delta', text })
       })
       finalText = closing.content.trim()

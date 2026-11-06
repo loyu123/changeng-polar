@@ -40,6 +40,50 @@ export function rememberKey(tool: string, target: string): string {
   return `${tool}::${target}`
 }
 
+/**
+ * 数据外泄闸：本轮读过私密内容之后，任何会把数据发出去的动作都要先问一次。
+ *
+ * 为什么必须有这道闸：read 档是自动放行的，于是「读邮件」和「发请求」各自都合法，
+ * 合起来却能拼成一条外泄链——网页正文里写一句指令，模型照做，把邮件原文塞进
+ * web_fetch 的 URL，全程没有任何一次弹卡。
+ *
+ * 这道闸不做内容检查（那既查不准也拦不住混淆），只做一件事：
+ * 在"有私密数据"和"要往外发"同时成立时，把决定权交回用户。
+ */
+export async function confirmDataEgress(
+  hooks: GateHooks,
+  request: { title: string; target: string; impact: string; paramsPreview: string }
+): Promise<boolean> {
+  const authRequest: AuthRequest = {
+    id: `egress_${randomUUID().slice(0, 8)}`,
+    tool: 'data_egress',
+    effect: 'destroy',
+    title: request.title,
+    target: request.target,
+    impact: request.impact,
+    undoHint: '拒绝就什么都不会发出去',
+    paramsPreview: request.paramsPreview.slice(0, 300),
+    requestedAt: new Date().toISOString(),
+    // 「始终允许」在这里没有意义：谁能保证以后每次要发的东西都该发
+    allowAlways: false
+  }
+  const answer = normalizeAnswer(await hooks.requestAuth(authRequest))
+  const allowed = answer === 'once' || answer === 'always'
+  hooks.record({
+    kind: 'refuse',
+    title: allowed ? `放行数据外发：${request.title}` : `拦下数据外发：${request.title}`,
+    sub: allowed
+      ? `${request.target}（本轮读过私密内容，用户确认后发出）`
+      : `${request.target}（本轮读过私密内容，用户${answer === 'expired' ? '超时未答复' : '拒绝'}）`,
+    result: allowed ? 'ok' : 'rejected',
+    reversible: false,
+    effect: 'destroy',
+    target: request.target,
+    authz: answer === 'expired' ? 'expired' : allowed ? 'user_once' : 'denied'
+  })
+  return allowed
+}
+
 const KNOWN_EFFECTS = new Set(['read', 'ui', 'write', 'destroy', 'install'])
 
 /**

@@ -86,6 +86,23 @@ const api = {
     list: (limit?: number) => ipcRenderer.invoke('records:list', limit) as Promise<RecordEntry[]>
   },
 
+  /** 全局搜索：项目/方案/任务/会话，在主进程侧扫，只回命中的条目 */
+  find: {
+    all: (query: string, limit?: number) =>
+      ipcRenderer.invoke('search:all', query, limit) as Promise<
+        Array<{
+          key: string
+          kind: 'project' | 'plan' | 'task' | 'session'
+          title: string
+          sub: string
+          projectId?: string
+          planId?: string
+          sessionId?: string
+          messageId?: string
+        }>
+      >
+  },
+
   /** 卸载快照：get 取原始快照，diff 拿当下与快照比对（没有对应快照时返回 null） */
   snapshot: {
     get: (id: string) => ipcRenderer.invoke('snapshot:get', id) as Promise<AppSnapshot | null>,

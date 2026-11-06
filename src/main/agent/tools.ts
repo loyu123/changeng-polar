@@ -169,6 +169,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       '联网检索公开网页，返回标题、地址与摘要。凡是需要外部信息（软件是做什么的、有没有现成开源项目、某事实是否成立）都必须先调用它；不要用记忆里的知识代替检索。',
     effect: 'read',
     auditKind: 'web',
+    // 检索词会发到本机之外：本轮读过邮件之后，这类调用要先让用户确认
+    sendsDataOut: true,
     parameters: {
       type: 'object',
       properties: {
@@ -217,6 +219,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       '打开一个具体网页并提取正文（只读，最多 4000 字）。用于核对检索摘要、读官方文档原文。网页打不开或内容为空时，如实报告失败。',
     effect: 'read',
     auditKind: 'web',
+    // URL 本身就是外发通道：把邮件原文拼进查询串就能带走，必须过确认
+    sendsDataOut: true,
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', description: '完整 http/https 地址' } },
@@ -372,6 +376,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     description:
       '读取用户邮箱：mode=list 拉最近的邮件列表（谁发的、主题、时间、200 字摘要、是否已读、来自哪个账号）；mode=read 用列表返回的 uid 拉单封正文。IMAP 只读——不标记已读、不删信、不发信。支持多个邮箱账号（设置里配置）：account 参数传账号显示名或地址，不传用默认账号；列表返回里有 account 字段标明来源，回答多账号问题时必须区分。涉及"谁发来的 / 要不要紧 / 邮件说了什么"的问题用它；没配置邮箱时如实说去设置里配。',
     effect: 'read',
+    // 邮件正文是用户私密内容：读过之后本轮就算被污染，后续外发一律要确认
+    readsPrivateData: true,
     parameters: {
       type: 'object',
       properties: {
