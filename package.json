@@ -41,7 +41,7 @@
   },
   "build": {
     "appId": "com.loyu123.butler",
-    "productName": "长庚",
+    "productName": "长庚POLAR",
     "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release",
@@ -60,17 +60,17 @@
         { "target": "nsis", "arch": ["x64"] },
         { "target": "portable", "arch": ["x64"] }
       ],
-      "artifactName": "changgeng-${version}-${arch}.${ext}"
+      "artifactName": "changgeng-polar-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "长庚",
+      "shortcutName": "长庚POLAR",
       "deleteAppDataOnUninstall": false
     },
     "portable": {
-      "artifactName": "changgeng-${version}-portable.${ext}"
+      "artifactName": "changgeng-polar-${version}-portable.${ext}"
     }
   }
 }

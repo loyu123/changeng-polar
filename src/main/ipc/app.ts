@@ -5,7 +5,7 @@ import type { DesktopPrefs } from '../../shared/types'
 import type { DesktopState } from '../../shared/desktop'
 import { desktopPrefsOf } from '../../shared/desktop'
 import type { Store } from '../node/store'
-import { machineEnv } from '../runtime'
+import { filterTools, machineEnv } from '../runtime'
 import { getMainWindow } from '../window'
 import { createTools } from '../agent/tools'
 import { openRecycleBin } from '../node/sandbox'
@@ -44,6 +44,10 @@ export interface IpcContext {
     canAutoLaunch: () => boolean
     /** 系统登录项里现在的真实状态 */
     atLogin: () => boolean
+  }
+  /** 悬浮助手：建/藏球与面板、注册快捷键 */
+  orb: {
+    apply: (prefs: import('../../shared/types').OrbPrefs, hooks: { onPositionSaved: (x: number, y: number) => void }) => void
   }
 }
 
@@ -133,6 +137,7 @@ export function registerAppIpc(ctx: IpcContext): void {
   ipcMain.handle('tools:list', async () => {
     const config = await ctx.store.getConfig()
     const toggles = config.toolToggles ?? {}
+    const readOnly = config.readOnly === true
     // 这里只需要工具的元信息，不真的执行，所以依赖给空实现
     const tools = createTools({
       openSettings: async () => {},
@@ -141,13 +146,18 @@ export function registerAppIpc(ctx: IpcContext): void {
       appNotes: async () => ({}),
       appVerify: async () => ({})
     })
+    // 和对话里用的是同一个过滤函数：插件页显示的状态必须和实际能调到的工具一致
+    const allowed = new Set(filterTools(tools, { toggles, readOnly }).map((t) => t.name))
+    const mutating = (effect: string): boolean => effect === 'write' || effect === 'destroy' || effect === 'install'
     return tools.map((t) => ({
       name: t.name,
       label: t.label,
       description: t.description,
       effect: t.effect,
       allowAlways: t.allowAlways === true,
-      enabled: toggles[t.name] !== false
+      enabled: allowed.has(t.name),
+      // 只读模式挡下的，要和「用户自己关掉的」区分开，否则用户找不到原因
+      blockedByReadOnly: readOnly && mutating(t.effect) ? true : undefined
     }))
   })
 

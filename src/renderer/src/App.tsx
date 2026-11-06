@@ -115,6 +115,7 @@ const SECTION_LABEL: Record<SettingsSection, string> = {
   records: '操作记录',
   apps: '应用台账',
   general: '常规',
+  orb: '桌面助手',
   shortcuts: '快捷键',
   storage: '存储与缓存',
   about: '关于'
@@ -174,12 +175,20 @@ export default function App() {
     }
   }, [])
 
-  // 托盘里点「打开长庚 / 定时任务…」：主进程给一个路由，这里换页
+  // 托盘或悬浮球右键菜单给的路由：主进程只说是哪一页，换页由这里决定
   useEffect(() => {
     const off = window.butler.desktop.onRoute((route) => {
-      if (route === 'tasks' || route === 'chat') setRoute(route)
+      if (route === 'tasks' || route === 'chat' || route === 'settings') setRoute(route)
     })
     return off
+  }, [])
+
+  // 桌面助手把一段对话「移到主窗口」：跳去对话页并定位到这条会话
+  useEffect(() => {
+    return window.butler.orb.onOpenSession((sessionId) => {
+      setFocusChat({ sessionId, nonce: Date.now() })
+      setRoute('chat')
+    })
   }, [])
 
   // Ctrl+K / Cmd+K 呼出全局搜索

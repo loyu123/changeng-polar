@@ -1,0 +1,789 @@
+/* 长庚 · 桌面悬浮助手
+   与主窗口共用一套令牌（见 index.css），但单独成文件：
+   悬浮页不该把主窗口那 60KB 样式整个拖进来。 */
+
+:root {
+  --white: #ffffff;
+  --mid: #fafaf9;
+  --line: #e8e8e4;
+  --line2: #f1f1ed;
+  --blue: #8cb6e0;
+  --ring: #a8c8e8;
+  --gold: #d8b87a;
+  --ink: #1c1c1a;
+  --ink2: #5a5a54;
+  --ink3: #8e8e86;
+  --ink4: #b0b0a8;
+  --sel: #eaf1f8;
+  --sel-ink: #3f6e9c;
+  --green: #3aa76d;
+  --green-soft: #edf4ee;
+  --amber: #9a7c44;
+  --amber-soft: #fbf5e9;
+  --red: #b0483c;
+  --red-soft: #fbeeeb;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button,
+input,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* ============ 球 ============ */
+
+/* 窗口 72×72，球 56×56 居中；外面那 8px 是留给投影的透明边 */
+.ball-wrap {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  /* 拖动由渲染层上报屏幕坐标，这里只负责把按下点吃掉，避免选中文字 */
+  cursor: grab;
+}
+.ball-wrap.dragging {
+  cursor: grabbing;
+}
+
+.ball {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 14px rgba(28, 28, 26, 0.18), 0 1px 3px rgba(28, 28, 26, 0.12),
+    0 0 0 1px rgba(28, 28, 26, 0.06);
+}
+.ball svg {
+  width: 34px;
+  height: 34px;
+  overflow: visible;
+}
+.ball .ring {
+  fill: none;
+  stroke: var(--ring);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+.ball .star {
+  fill: var(--blue);
+}
+.ball .spark {
+  fill: var(--gold);
+}
+
+/* 待命：呼吸只动 transform 与 opacity —— 走合成层，不触发重排重绘。
+   常驻元素的首要目标是被忽略，所以幅度小、周期长。 */
+.ball.idle {
+  animation: breathe 5s ease-in-out infinite;
+}
+.ball.idle .spark {
+  animation: twinkle 9s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.62;
+  }
+  50% {
+    transform: scale(1.045);
+    opacity: 0.8;
+  }
+}
+/* 金星偶尔一闪：用来证明它还活着，一闪而过不留痕 */
+@keyframes twinkle {
+  0%,
+  86%,
+  100% {
+    opacity: 1;
+  }
+  91% {
+    opacity: 0.35;
+  }
+  96% {
+    opacity: 1;
+  }
+}
+
+/* 思考：缺口匀速转圈。这是唯一用旋转的状态，别和待命混 */
+.ball.think .ring {
+  stroke-dasharray: 52 48;
+  animation: orbit 1.4s linear infinite;
+  transform-origin: 50% 50%;
+}
+@keyframes orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 等你确认：整球转金 + 光晕。光晕放伪元素上只动 opacity/scale，
+   直接补间 box-shadow 会每帧重绘 */
+.ball.ask {
+  box-shadow: 0 4px 18px rgba(216, 184, 122, 0.5), 0 1px 3px rgba(28, 28, 26, 0.12),
+    0 0 0 1px rgba(216, 184, 122, 0.42);
+}
+.ball.ask .ring {
+  stroke: var(--gold);
+}
+.ball.ask .star {
+  fill: var(--gold);
+}
+.ball.ask::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(216, 184, 122, 0.5), 0 4px 22px rgba(216, 184, 122, 0.72);
+  animation: askpulse 2.4s ease-in-out infinite;
+}
+@keyframes askpulse {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.07);
+  }
+}
+.ball .badge {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 2px #fff;
+}
+
+/* 完成：绿勾亮一下，然后回落待命 */
+.ball.done {
+  animation: doneflash 1.2s ease-out 1;
+}
+@keyframes doneflash {
+  0% {
+    transform: scale(0.94);
+    opacity: 0.7;
+  }
+  55% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 系统开了「减少动态效果」：全部停下，只留静止状态 */
+@media (prefers-reduced-motion: reduce) {
+  .ball,
+  .ball .spark,
+  .ball .ring,
+  .ball .star,
+  .ball::after {
+    animation: none !important;
+  }
+  .ball.idle {
+    opacity: 0.7;
+  }
+}
+/* 设置里关掉「待命动效」：只停待命，思考与等确认照旧 */
+.ball.no-idle-anim.idle,
+.ball.no-idle-anim.idle .spark {
+  animation: none;
+  opacity: 0.68;
+}
+
+/* ============ 面板 ============ */
+
+.panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  overflow: hidden;
+}
+
+.ph {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 44px;
+  flex: 0 0 44px;
+  padding: 0 8px 0 13px;
+  border-bottom: 1px solid var(--line2);
+  /* 面板可以在屏幕里拖动：只有标题栏是拖拽区 */
+  -webkit-app-region: drag;
+}
+.ph > * {
+  -webkit-app-region: no-drag;
+}
+.ph .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  flex: 0 0 7px;
+}
+.ph .dot.ask {
+  background: var(--gold);
+}
+.ph .dot.think {
+  background: var(--blue);
+}
+.ph h3 {
+  font-size: 12.8px;
+  font-weight: 600;
+}
+.ph .sub {
+  font-size: 10.8px;
+  color: var(--ink4);
+}
+.ph .sub.warn {
+  color: var(--amber);
+}
+.ph .sp {
+  flex: 1;
+}
+
+.iconbtn {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: #8c8c84;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.iconbtn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.iconbtn svg {
+  width: 15px;
+  height: 15px;
+}
+.iconbtn.on {
+  background: var(--sel);
+  color: var(--sel-ink);
+}
+
+.pbody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 空状态 */
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--ink3);
+  font-size: 12.2px;
+  line-height: 1.7;
+}
+.empty svg {
+  width: 44px;
+  height: 44px;
+  color: #d7e5f2;
+}
+.empty .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 4px;
+}
+.empty .chip {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11.4px;
+  color: #5d5d56;
+  background: #fdfdfc;
+  cursor: pointer;
+}
+.empty .chip:hover {
+  border-color: var(--ring);
+  color: var(--sel-ink);
+}
+
+/* 消息 */
+.msg-user {
+  align-self: flex-end;
+  max-width: 270px;
+  background: var(--sel);
+  border: 1px solid #dde9f3;
+  border-radius: 11px 11px 3px 11px;
+  padding: 8px 11px;
+  font-size: 12.6px;
+  line-height: 1.55;
+  color: #2c4a66;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-bot {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+}
+.msg-bot .av {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+}
+.msg-bot .av svg {
+  width: 14px;
+  height: 14px;
+}
+.msg-bot .txt {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.6px;
+  line-height: 1.62;
+  color: var(--ink);
+  user-select: text;
+  word-break: break-word;
+}
+.msg-bot .txt.err {
+  color: var(--red);
+}
+.msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 10.6px;
+  color: var(--ink3);
+  flex-wrap: wrap;
+}
+.chip-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--green-soft);
+  color: #2c7a4f;
+  font-size: 10.2px;
+}
+.chip-src.low {
+  background: #f4f4f1;
+  color: #75756d;
+}
+.chip-src svg {
+  width: 9px;
+  height: 9px;
+}
+.spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid #d9d9d3;
+  border-top-color: var(--sel-ink);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex: 0 0 10px;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.tool-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.2px;
+  color: #7a7a72;
+}
+
+/* 紧凑授权卡：整张卡 316px 宽，正好装进 372 面板 */
+.authc {
+  margin-top: 8px;
+  border: 1px solid #f2e7ce;
+  background: #fffdf6;
+  border-radius: 9px;
+  padding: 9px 10px 10px;
+}
+.authc.warn {
+  border-color: #edcfca;
+  background: #fffafa;
+}
+.authc-h {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.8px;
+  font-weight: 600;
+  color: var(--amber);
+}
+.authc.warn .authc-h {
+  color: var(--red);
+}
+.authc-h svg {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+}
+.authc-h .tag {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 9.8px;
+  color: var(--ink3);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 14px;
+  background: #fff;
+  white-space: nowrap;
+}
+.authc-t {
+  margin-top: 6px;
+  font-size: 12.2px;
+  font-weight: 600;
+  line-height: 1.45;
+  word-break: break-all;
+}
+.authc-kv {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 10.8px;
+  color: var(--ink2);
+  line-height: 1.5;
+}
+.authc-kv b {
+  flex: 0 0 40px;
+  font-weight: 400;
+  color: var(--ink3);
+}
+.authc-kv span {
+  word-break: break-all;
+  user-select: text;
+}
+/* 倒计时条：主窗口那张卡也是 60 秒超时，窄面板不显示会让人以为可以慢慢想 */
+.authc-bar {
+  margin-top: 8px;
+  height: 3px;
+  border-radius: 2px;
+  background: #f0e7d2;
+  overflow: hidden;
+}
+.authc-bar i {
+  display: block;
+  height: 100%;
+  background: var(--gold);
+  border-radius: 2px;
+  transition: width 0.25s linear;
+}
+.authc-cd {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.8px;
+  color: var(--ink3);
+  margin-top: 4px;
+}
+.authc-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.abtn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11.2px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.abtn.primary {
+  background: var(--ink);
+  color: #fff;
+}
+.abtn.primary:hover {
+  background: #33332f;
+}
+.abtn.ghost {
+  background: #fff;
+  border: 1px solid var(--line);
+  color: #4e4e47;
+  font-weight: 400;
+}
+.abtn.ghost:hover {
+  border-color: var(--ring);
+  color: var(--sel-ink);
+}
+/* 拒绝靠右并留白隔开：误触「允许」的代价远大于误触「拒绝」 */
+.abtn.deny {
+  margin-left: auto;
+  background: #fff;
+  border: 1px solid #edcfca;
+  color: var(--red);
+  font-weight: 400;
+}
+.authc-note {
+  margin-top: 6px;
+  font-size: 9.6px;
+  color: var(--ink4);
+  text-align: right;
+}
+.authc-result {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #7a7a72;
+  line-height: 1.5;
+}
+
+/* 输入区 */
+.pfoot {
+  border-top: 1px solid var(--line2);
+  padding: 9px 11px 8px;
+  flex: 0 0 auto;
+}
+.pinput {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 8px 7px 10px;
+  background: #fff;
+}
+.pinput.off {
+  opacity: 0.55;
+}
+.pinput textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: none;
+  font-size: 12.6px;
+  line-height: 1.5;
+  max-height: 88px;
+  user-select: text;
+  padding-top: 3px;
+}
+.pinput textarea::placeholder {
+  color: #a8a8a0;
+}
+.sendbtn {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: var(--ink);
+  display: grid;
+  place-items: center;
+  flex: 0 0 25px;
+  border: none;
+  cursor: pointer;
+}
+.sendbtn:disabled {
+  background: #cfcfc9;
+  cursor: default;
+}
+.sendbtn svg {
+  width: 12px;
+  height: 12px;
+  stroke: #fff;
+  stroke-width: 1.9;
+  fill: none;
+}
+.phint {
+  margin-top: 5px;
+  font-size: 10.2px;
+  color: var(--ink4);
+  text-align: center;
+}
+
+/* 历史列表 */
+.hist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hist-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.6px;
+  color: var(--ink3);
+  padding: 8px 4px 3px;
+  letter-spacing: 0.03em;
+}
+.hist-h .sp {
+  flex: 1;
+}
+.hist-h .cap {
+  font-size: 9.8px;
+  color: var(--ink4);
+}
+.hrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+.hrow:hover {
+  background: rgba(0, 0, 0, 0.035);
+}
+.hrow.on {
+  background: var(--sel);
+  color: var(--sel-ink);
+}
+.hrow .t {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.2px;
+  color: #45453f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hrow.on .t {
+  color: var(--sel-ink);
+}
+.hrow .tm {
+  font-size: 10.2px;
+  color: var(--ink4);
+  flex: 0 0 auto;
+}
+.hrow .del {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: none;
+  color: var(--ink4);
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  flex: 0 0 18px;
+}
+.hrow:hover .del {
+  opacity: 1;
+}
+.hrow .del:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--red);
+}
+.hist-foot {
+  margin-top: auto;
+  padding: 10px 4px 2px;
+  font-size: 10.2px;
+  color: var(--ink4);
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* Markdown（与主窗口同一套类名，样式在这里单独给一份） */
+.md-p {
+  margin: 0 0 6px;
+}
+.md-p:last-child {
+  margin-bottom: 0;
+}
+.md-ul {
+  margin: 0 0 6px;
+  padding-left: 16px;
+}
+.md-ul:last-child {
+  margin-bottom: 0;
+}
+.md-ul li {
+  margin: 2px 0;
+}
+.md-pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.045);
+  border-radius: 8px;
+  font-size: 11.6px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+.md-code {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11.6px;
+  background: rgba(0, 0, 0, 0.045);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.cursor-blink::after {
+  content: '▍';
+  color: var(--sel-ink);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(28, 28, 26, 0.16);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

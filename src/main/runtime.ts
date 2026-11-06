@@ -1,10 +1,11 @@
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
-import type { AuthAnswer, AuthRequest, ChatMessage, ChatPayload, TaskDef, TurnResult } from '../shared/types'
+import type { AuthAnswer, AuthRequest, ChatMessage, ChatPayload, TaskDef, ToolEffect, TurnResult } from '../shared/types'
 import { runTurn, TOOL_BUDGET_STEPS, type GateHooks } from './agent/agent'
 import { buildSystemPrompt } from './agent/prompt'
 import { capabilityBrief, createTools } from './agent/tools'
+import type { ToolDef } from './agent/tool-types'
 import { memoryBlock } from './node/memory'
 import type { Store } from './node/store'
 
@@ -94,13 +95,35 @@ export interface TurnRuntimeOptions {
   openSettings: (page: string) => Promise<void>
 }
 
+const MUTATING_EFFECTS = new Set<ToolEffect>(['write', 'destroy', 'install'])
+
+/**
+ * 决定一次对话里到底有哪些工具可用。
+ *
+ * 单一入口：运行时装配工具、插件页显示开关状态都走这里，
+ * 免得两处各写一遍过滤条件，一处改了另一处忘。
+ */
+export function filterTools(
+  tools: ToolDef[],
+  options: { toggles?: Record<string, boolean>; readOnly?: boolean }
+): ToolDef[] {
+  const enabled = tools.filter((t) => options.toggles?.[t.name] !== false)
+  return options.readOnly ? enabled.filter((t) => !MUTATING_EFFECTS.has(t.effect)) : enabled
+}
+
 export class TurnRuntime {
   constructor(private readonly opts: TurnRuntimeOptions) {}
 
-  /** 构建本轮的工具集：按能力开关过滤，依赖由 Store 注入 */
-  private toolsFor(toggles: Record<string, boolean>): ReturnType<typeof createTools> {
+  /**
+   * 构建本轮的工具集：按能力开关与只读模式过滤，依赖由 Store 注入。
+   *
+   * 只读模式不是"提示模型别写"——那些工具根本不出现在工具清单里，
+   * 模型连申请的机会都没有。能力段由注册表生成，所以提示词里那句
+   * 「当前版本没有能改动机器的工具」也会自动成立，不需要另写一份。
+   */
+  private toolsFor(toggles: Record<string, boolean>, readOnly: boolean): ToolDef[] {
     const { store } = this.opts
-    return createTools({
+    const all = createTools({
       openSettings: this.opts.openSettings,
       // 卸载卡上的「重装入口」：注册表没登记时，用查证过的官网兜底
       officialSite: async (appName) => {
@@ -114,7 +137,8 @@ export class TurnRuntime {
         list: () => store.listMemory(),
         save: (list) => store.saveMemory(list)
       }
-    }).filter((t) => toggles[t.name] !== false)
+    })
+    return filterTools(all, { toggles, readOnly })
   }
 
   private gateFor(requestId: string, emit: (payload: ChatPayload) => void, uiAuth: boolean): GateHooks {
@@ -167,8 +191,8 @@ export class TurnRuntime {
   }): Promise<TurnResult> {
     const { requestId, messages, controller, emit, uiAuth } = params
     const config = await this.opts.store.getConfig()
-    // 能力开关（插件页）：toolToggles[name] === false 的工具不出现在本轮
-    const tools = this.toolsFor(config.toolToggles ?? {})
+    // 能力开关（插件页）+ 只读模式（权限与安全）：两者都决定本轮有哪些工具
+    const tools = this.toolsFor(config.toolToggles ?? {}, config.readOnly === true)
 
     // 跨会话记忆：每轮都读一次，用户刚删掉的东西不该还出现在提示词里
     let memory = ''

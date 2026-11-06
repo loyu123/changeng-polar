@@ -72,8 +72,37 @@ export interface ButlerConfig extends ModelConfig {
   mailAccounts?: MailAccount[]
   /** 能力开关（插件页）：name → 是否启用；缺省视为启用 */
   toolToggles?: Record<string, boolean>
+  /**
+   * 只读模式（设置 › 权限与安全）。
+   *
+   * 打开后，所有 write / destroy / install 类的工具**根本不注册进本轮**——
+   * 不是"弹卡时被拒"，而是模型连申请的机会都没有。定时任务同样受它约束。
+   * undefined 视为 false，升级上来的老配置行为不变。
+   */
+  readOnly?: boolean
   /** 桌面常驻偏好（关闭行为 / 开机自启 / 任务通知），缺省按 DEFAULT_DESKTOP_PREFS */
   desktop?: DesktopPrefs
+  /** 桌面悬浮助手（球与面板），缺省按 DEFAULT_ORB_PREFS */
+  orb?: OrbPrefs
+}
+
+/**
+ * 桌面悬浮助手的偏好。
+ *
+ * 与 desktop 分开：那一组决定「关窗之后进程还在不在」，这一组决定
+ * 「桌面上多不多一个球」。混在一起会让「我只想关掉球、保留托盘」变成
+ * 一次连带影响关窗行为的改动。
+ */
+export interface OrbPrefs {
+  /** 桌面显示悬浮球（关掉后仍可从托盘与快捷键呼出面板） */
+  enabled: boolean
+  /** 球的位置；null = 用默认位置（右下角，留出任务栏） */
+  x: number | null
+  y: number | null
+  /** 待命的呼吸动效；关掉后只在思考与等确认时有动画 */
+  idleAnimation: boolean
+  /** 全局快捷键呼出面板；空串 = 不注册 */
+  hotkey: string
 }
 
 /**
@@ -120,6 +149,13 @@ export interface ChatSession {
   ts: number
   title: string
   messages: unknown[]
+  /**
+   * 来自桌面悬浮助手的会话被「移到主窗口」后带上这个标记。
+   *
+   * 主窗口列表要能看出出身：这类会话的上下文通常只有一两轮，
+   * 用户回看时会疑惑"为什么它没有前文"，标一下就说得通。
+   */
+  origin?: 'orb'
 }
 
 export type ProjectStatus = 'active' | 'paused' | 'done'

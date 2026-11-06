@@ -2,6 +2,7 @@ import { app, safeStorage } from 'electron'
 import path from 'node:path'
 import type { DesktopPrefs, TaskDef } from '../shared/types'
 import { desktopPrefsOf } from '../shared/desktop'
+import { orbPrefsOf } from '../shared/orb'
 import { Store } from './node/store'
 import { makeSafeStorageCodec } from './node/secrets'
 import { prepareSandbox } from './node/sandbox'
@@ -9,6 +10,7 @@ import { TaskRunner } from './node/tasks'
 import { AuthBroker, TurnRuntime, openSettingsPage } from './runtime'
 import { createWindow, getMainWindow, markQuitting, sendToWindow, setCloseToTray, showMainWindow } from './window'
 import { createTray, destroyTray, hasTray, refreshTray, type TrayOptions } from './tray'
+import { applyOrbPrefs, createOrb, destroyOrb } from './orb'
 import { notifyReady, notifyTask } from './notify'
 import { registerIpc } from './ipc'
 
@@ -198,6 +200,9 @@ void app.whenReady().then(async () => {
       // 开发态不写登录项，界面上要能看出「这个开关现在不生效」
       canAutoLaunch: () => app.isPackaged,
       atLogin: () => (app.isPackaged ? app.getLoginItemSettings().openAtLogin : false)
+    },
+    orb: {
+      apply: (next, hooks) => applyOrbPrefs(next, hooks)
     }
   })
 
@@ -207,9 +212,15 @@ void app.whenReady().then(async () => {
   createWindow({ hidden: launchedAtLogin })
   if (launchedAtLogin && hasTray()) notifyReady()
 
+  // 悬浮助手：球常驻桌面，面板按需弹出。位置落盘走 store，拖动结束时才写
+  createOrb({
+    onPositionSaved: (x, y) => {
+      void store.getConfig().then((config) => store.saveConfig({ orb: { ...orbPrefsOf(config), x, y } }))
+    }
+  })
+
   // 定时任务调度器：启动即排程，错过今天这一次的任务会补跑一次
   taskRunner.start()
-
   app.on('activate', () => {
     if (!getMainWindow()) createWindow()
   })
@@ -219,6 +230,7 @@ app.on('before-quit', () => {
   // 先标记再退：否则 close 处理器会把这次退出拦成「收进托盘」
   markQuitting()
   destroyTray()
+  destroyOrb()
 })
 
 app.on('window-all-closed', () => {

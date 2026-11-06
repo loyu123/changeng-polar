@@ -1757,6 +1757,13 @@ select.input {
   position: relative;
   flex: 0 0 auto;
   display: block;
+  /* 同一个类既用于展示用的 span，也用于真正可点的 button：
+     清掉 button 的默认边框与内边距，两者外观才一致 */
+  border: 0;
+  padding: 0;
+  appearance: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
 .sw i {
   position: absolute;
@@ -1767,6 +1774,7 @@ select.input {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 1.5px rgba(28, 28, 26, 0.18);
+  transition: left 0.15s ease;
 }
 .sw.on {
   background: var(--blue);
@@ -1776,6 +1784,15 @@ select.input {
 }
 .sw.fixed {
   cursor: default;
+}
+/* 切换中：别让用户以为没点上 */
+.sw:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.sw:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
 }
 .linkbtn {
   font-size: 11.5px;

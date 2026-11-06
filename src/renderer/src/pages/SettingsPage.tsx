@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AlwaysAllowedEntry, ButlerConfig, DesktopPrefs, MailAccount, MemoryEntry } from '../../../shared/types'
+import type { AlwaysAllowedEntry, ButlerConfig, DesktopPrefs, MailAccount, MemoryEntry, OrbPrefs } from '../../../shared/types'
 import type { DesktopState } from '../../../shared/desktop'
 import { MEMORY_KIND_LABEL } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
@@ -58,6 +58,7 @@ export type SettingsSection =
   | 'records'
   | 'apps'
   | 'general'
+  | 'orb'
   | 'shortcuts'
   | 'storage'
   | 'about'
@@ -103,9 +104,17 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const [toolsStat, setToolsStat] = useState<{ total: number; on: number; names: string[] }>({ total: 0, on: 0, names: [] })
   /** 密钥是否加密落盘：保存后的提示文案要跟事实一致 */
   const [secretsEncrypted, setSecretsEncrypted] = useState(false)
+  /** 只读模式：立即生效，不走「保存」按钮（它不属于可保存分区） */
+  const [readOnly, setReadOnly] = useState(false)
+  const [togglingReadOnly, setTogglingReadOnly] = useState(false)
   /** 桌面常驻：偏好 + 系统登录项现状（两者可能不一致） */
   const [desktop, setDesktop] = useState<DesktopState | null>(null)
   const [desktopBusy, setDesktopBusy] = useState(false)
+  /** 悬浮助手：偏好 + 快捷键是否真的注册上了（可能被别的程序占用） */
+  const [orb, setOrb] = useState<{ prefs: OrbPrefs; hotkeyOk: boolean } | null>(null)
+  const [orbBusy, setOrbBusy] = useState(false)
+  /** 快捷键输入框的草稿：失焦/回车才提交，逐字注册会中途抢键 */
+  const [hotkeyDraft, setHotkeyDraft] = useState('')
 
   useEffect(() => {
     void window.butler.storage.stats().then(setStorageStats)
@@ -119,7 +128,24 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
       })
     )
     void window.butler.desktop.state().then(setDesktop)
+    void window.butler.orb.state().then((s) => {
+      setOrb(s)
+      setHotkeyDraft(s.prefs.hotkey)
+    })
   }, [])
+
+  /** 悬浮助手偏好同样即时生效：改完立刻建/藏球、注册快捷键 */
+  const setOrbPref = async (patch: Partial<OrbPrefs>): Promise<void> => {
+    if (orbBusy) return
+    setOrbBusy(true)
+    try {
+      const next = await window.butler.orb.set(patch)
+      setOrb(next)
+      setHotkeyDraft(next.prefs.hotkey)
+    } finally {
+      setOrbBusy(false)
+    }
+  }
 
   /** 桌面偏好是即时生效的，不走「保存」按钮：改完立刻落到窗口和系统登录项 */
   const setDesktopPref = async (patch: Partial<DesktopPrefs>): Promise<void> => {
@@ -155,6 +181,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         ]
       }
       setConfig(loaded)
+      setReadOnly(loaded.readOnly === true)
     })
     void window.butler.auth.list().then(setMemory)
     void window.butler.memory.list().then(setMemories)
@@ -163,10 +190,24 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const deleteMemory = async (id: string): Promise<void> => {
     setMemories(await window.butler.memory.delete(id))
   }
-
   const clearMemory = async (): Promise<void> => {
     if (!window.confirm('清除全部记忆？这不会删除对话记录，只是让长庚忘掉这些事。')) return
     setMemories(await window.butler.memory.clear())
+  }
+
+  /** 只读模式：写进配置并立即生效，下一轮对话就会按新状态装配工具 */
+  const toggleReadOnly = async (): Promise<void> => {
+    if (togglingReadOnly) return
+    setTogglingReadOnly(true)
+    const next = !readOnly
+    try {
+      const saved = await window.butler.config.save({ readOnly: next })
+      setReadOnly(saved.readOnly === true)
+    } catch (err) {
+      setStatus({ ok: false, text: `切换只读模式失败：${err instanceof Error ? err.message : String(err)}` })
+    } finally {
+      setTogglingReadOnly(false)
+    }
   }
 
   const revoke = async (key: string): Promise<void> => {
@@ -687,12 +728,23 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="ch">默认权限</div>
             <div className="row">
               <div className="rl">
-                <b>默认只读</b>
-                <span>读程序清单、看启动项、看邮箱摘要都不用额外确认。</span>
+                <b>只读模式</b>
+                <span>
+                  打开后，安装、卸载、删除、写入记忆这类会改动机器的工具<b>不会出现在工具清单里</b>——
+                  模型连申请的机会都没有，定时任务也一样。关掉即恢复，仍然逐次弹授权卡。
+                </span>
               </div>
-              <span className="sw on fixed" title="本版固定开启：工具注册表里没有写入真实文件的通路">
+              <button
+                role="switch"
+                aria-checked={readOnly}
+                aria-label="只读模式"
+                className={`sw${readOnly ? ' on' : ''}`}
+                title={readOnly ? '只读模式已开：改动机器的工具全部不可用' : '只读模式已关：写操作仍需要逐次授权'}
+                disabled={togglingReadOnly}
+                onClick={() => void toggleReadOnly()}
+              >
                 <i />
-              </span>
+              </button>
             </div>
             <div className="row">
               <div className="rl">
@@ -712,9 +764,16 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>写操作逐次确认</b>
-                <span>装软件、卸载、删沙箱文件之前，都要先弹授权卡。</span>
+                <span>
+                  {readOnly
+                    ? '当前是只读模式：所有会改动机器的工具都没有注册，不存在「确认后执行」这一步。'
+                    : '装软件、卸载、删沙箱文件之前，都要先弹授权卡。'}
+                </span>
               </div>
-              <span className="sw on fixed" title="本版固定开启：销毁类与安装类每次都弹卡">
+              <span
+                className={`sw${readOnly ? '' : ' on'} fixed`}
+                title={readOnly ? '只读模式下没有可执行的写操作' : '本版固定开启：销毁类与安装类每次都弹卡'}
+              >
                 <i />
               </span>
             </div>
@@ -723,7 +782,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <b>可写范围</b>
                 <span>只有演示沙箱里的文件能删；真实文件没有任何写入通路。</span>
               </div>
-              <span className="cval">仅演示沙箱</span>
+              <span className="cval">{readOnly ? '无（只读模式）' : '仅演示沙箱'}</span>
             </div>
           </div>
 
@@ -936,6 +995,107 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         </>
       )
     },
+    // 桌面助手（悬浮球与面板）
+    orb: {
+      title: '桌面助手',
+      lead: '桌面上常驻一个球，点开是一条窄对话面板。它有自己的一套短会话，不写进主窗口的「最近」——桌面随口问的那句，不该把归档的对话挤下去。',
+      body: (
+        <>
+          <div className="cardbox">
+            <div className="ch">显示</div>
+            <div className="row">
+              <div className="rl">
+                <b>在桌面上显示助手</b>
+                <span>关掉后球从桌面消失，但仍可从托盘或全局快捷键把面板叫出来。</span>
+              </div>
+              <Switch
+                on={orb?.prefs.enabled ?? true}
+                disabled={orbBusy}
+                title={orb?.prefs.enabled ? '显示中' : '已隐藏'}
+                onToggle={() => void setOrbPref({ enabled: !(orb?.prefs.enabled ?? true) })}
+              />
+            </div>
+            <div className="row">
+              <div className="rl">
+                <b>待命动效</b>
+                <span>
+                  关掉后球保持静止。呼吸只动缩放与透明度，走合成层，不触发重绘；思考与等确认时的动画不受这项影响。
+                </span>
+              </div>
+              <Switch
+                on={orb?.prefs.idleAnimation ?? true}
+                disabled={orbBusy}
+                title={orb?.prefs.idleAnimation ? '有动效' : '静止'}
+                onToggle={() => void setOrbPref({ idleAnimation: !(orb?.prefs.idleAnimation ?? true) })}
+              />
+            </div>
+            <div className="row">
+              <div className="rl">
+                <b>呼出快捷键</b>
+                <span>
+                  {orb && !orb.hotkeyOk
+                    ? '当前没能注册上——多半被别的程序占用了，换一个组合试试。'
+                    : '任何时候把对话面板叫到前台。留空 = 不注册全局快捷键。'}
+                </span>
+              </div>
+              <input
+                className="input"
+                style={{ width: 190, height: 28, fontSize: 12 }}
+                value={hotkeyDraft}
+                placeholder="CommandOrControl+Shift+K"
+                disabled={orbBusy}
+                onChange={(e) => setHotkeyDraft(e.target.value)}
+                onBlur={() => {
+                  if (hotkeyDraft !== (orb?.prefs.hotkey ?? '')) void setOrbPref({ hotkey: hotkeyDraft })
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="cardbox">
+            <div className="ch">位置与历史</div>
+            <div className="row">
+              <div className="rl">
+                <b>回到默认位置</b>
+                <span>球被拖到看不见的地方时用这个：右下角、避开任务栏。</span>
+              </div>
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={orbBusy}
+                onClick={() => void setOrbPref({ x: null, y: null })}
+              >
+                归位
+              </button>
+            </div>
+            <div className="row">
+              <div className="rl">
+                <b>桌面会话</b>
+                <span>
+                  与主窗口分开存（orb-sessions.json），保留最近 20 条。面板里删掉的不影响主窗口；
+                  想长期留着，用面板标题栏的「移到主窗口」搬过去。
+                </span>
+              </div>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  if (!window.confirm('清空桌面侧的会话？主窗口的对话不受影响。')) return
+                  void window.butler.orb.sessions.clear()
+                }}
+              >
+                清空
+              </button>
+            </div>
+          </div>
+
+          <div className="setfoot">
+            <span>球本质是一个 72×72 的透明置顶窗口，不进任务栏也不进 Alt+Tab</span>
+          </div>
+        </>
+      )
+    },
     // 快捷键（概念图 · 编码组）：只列真实存在的
     shortcuts: {
       title: '快捷键',
@@ -1099,6 +1259,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         {('常规'.includes(navQuery.trim()) || navQuery.trim() === '') && (
           <button className={`sitem${section === 'general' ? ' sel' : ''}`} onClick={() => setSection('general')}>
             常规
+          </button>
+        )}
+        {('桌面助手'.includes(navQuery.trim()) || navQuery.trim() === '') && (
+          <button className={`sitem${section === 'orb' ? ' sel' : ''}`} onClick={() => setSection('orb')}>
+            桌面助手
           </button>
         )}
         {navQuery.trim() === '' && <div className="sgrp">集成</div>}

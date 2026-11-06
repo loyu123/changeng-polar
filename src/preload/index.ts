@@ -11,6 +11,7 @@ import type {
   ChatSession,
   DesktopPrefs,
   MemoryEntry,
+  OrbPrefs,
   ProjectDef,
   RecordEntry,
   SnapshotDiff,
@@ -210,6 +211,8 @@ const api = {
           effect: string
           allowAlways: boolean
           enabled: boolean
+          /** true = 被只读模式挡下（不是用户自己关的） */
+          blockedByReadOnly?: boolean
         }>
       >,
     /** 切换单个工具的启用状态：读现有开关合并后保存 */
@@ -259,6 +262,80 @@ const api = {
         dir: string
         files: Array<{ file: string; bytes: number }>
       }>
+  },
+
+  /**
+   * 桌面悬浮助手：球与面板。
+   *
+   * 桌面侧的会话存在 orb-sessions.json，与主窗口的 sessions.json 分开——
+   * 桌面上随口问的那句不该混进主窗口的「最近」。promote 是把一条搬过去。
+   */
+  orb: {
+    state: () =>
+      ipcRenderer.invoke('orb:state') as Promise<{ prefs: OrbPrefs; hotkeyOk: boolean }>,
+    set: (patch: Partial<OrbPrefs>) =>
+      ipcRenderer.invoke('orb:set', patch) as Promise<{ prefs: OrbPrefs; hotkeyOk: boolean }>,
+    open: () => ipcRenderer.invoke('orb:open') as Promise<boolean>,
+    close: () => ipcRenderer.invoke('orb:close') as Promise<boolean>,
+    toggle: () => ipcRenderer.invoke('orb:toggle') as Promise<boolean>,
+
+    /** 拖动：按下记偏移，移动报屏幕坐标，松手由主进程夹边并落盘 */
+    dragStart: (offsetX: number, offsetY: number) =>
+      ipcRenderer.send('orb:drag-start', { offsetX, offsetY }),
+    dragMove: (screenX: number, screenY: number) =>
+      ipcRenderer.send('orb:drag-move', { screenX, screenY }),
+    dragEnd: () => ipcRenderer.send('orb:drag-end'),
+
+    sessions: {
+      list: () => ipcRenderer.invoke('orb:sessions:list') as Promise<ChatSession[]>,
+      save: (session: Partial<ChatSession>) =>
+        ipcRenderer.invoke('orb:sessions:save', session) as Promise<ChatSession>,
+      delete: (id: string) => ipcRenderer.invoke('orb:sessions:delete', id) as Promise<ChatSession[]>,
+      clear: () => ipcRenderer.invoke('orb:sessions:clear') as Promise<ChatSession[]>
+    },
+
+    /** 把一条桌面会话搬到主窗口（打上 origin 标记），主窗口会跳过去打开它 */
+    promote: (sessionId: string) =>
+      ipcRenderer.invoke('orb:promote', sessionId) as Promise<
+        { ok: true; sessionId: string } | { ok: false; reason: string }
+      >,
+
+    /** 偏好变了（设置页改完立刻推给已开着的球与面板） */
+    onPrefs: (handler: (prefs: OrbPrefs) => void) => {
+      const listener = (_e: IpcRendererEvent, prefs: OrbPrefs): void => handler(prefs)
+      ipcRenderer.on('orb:prefs', listener)
+      return (): void => {
+        ipcRenderer.removeListener('orb:prefs', listener)
+      }
+    },
+    /** 面板被打开：把焦点交给输入框 */
+    onPanelShown: (handler: () => void) => {
+      const listener = (): void => handler()
+      ipcRenderer.on('orb:panel-shown', listener)
+      return (): void => {
+        ipcRenderer.removeListener('orb:panel-shown', listener)
+      }
+    },
+    /** 球的右键菜单（原生菜单由主进程弹，72px 的窗口里画不下） */
+    menu: () => ipcRenderer.invoke('orb:menu') as Promise<boolean>,
+    /** 面板把对话状态报给主进程，由它转给球；面板收起时球也要能显示「等你确认」 */
+    reportStatus: (status: 'idle' | 'think' | 'ask' | 'done') => ipcRenderer.send('orb:status', status),
+    onStatus: (handler: (status: 'idle' | 'think' | 'ask' | 'done') => void) => {
+      const listener = (_e: IpcRendererEvent, status: 'idle' | 'think' | 'ask' | 'done'): void =>
+        handler(status)
+      ipcRenderer.on('orb:status', listener)
+      return (): void => {
+        ipcRenderer.removeListener('orb:status', listener)
+      }
+    },
+    /** 主窗口侧：「移到主窗口」之后跳去打开这条会话 */
+    onOpenSession: (handler: (sessionId: string) => void) => {
+      const listener = (_e: IpcRendererEvent, sessionId: string): void => handler(sessionId)
+      ipcRenderer.on('orb:open-session', listener)
+      return (): void => {
+        ipcRenderer.removeListener('orb:open-session', listener)
+      }
+    }
   },
 }
 

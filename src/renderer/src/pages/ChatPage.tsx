@@ -310,6 +310,8 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   /** 已经处理过的出处跳转（避免会话刷新时重复滚动） */
   const lastFocusRef = useRef(0)
+  /** 已经为哪一次跳转重拉过会话列表（防止 setSessions 触发自己无限重跑） */
+  const refetchRef = useRef(0)
   /**
    * 画布上的消息是否比上次落盘的更新。
    * 没有这一位的话，「打开一条旧会话」也会被下面的保存 effect 当成刚发生：
@@ -352,7 +354,15 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
   useEffect(() => {
     if (!focusChat || focusChat.nonce === lastFocusRef.current) return
     const session = sessions.find((s) => s.id === focusChat.sessionId)
-    if (!session) return
+    if (!session) {
+      // 桌面的「移到主窗口」刚把会话写进 sessions.json，这边的列表还是旧的。
+      // 重拉一次就好——但必须按 nonce 只重拉一次：每次 setSessions 都会换新数组、
+      // 让这个 effect 再跑一遍，不记住「已经拉过」就会无限循环。
+      if (refetchRef.current === focusChat.nonce) return
+      refetchRef.current = focusChat.nonce
+      void window.butler.sessions.list().then((list) => setSessions(list.map(toSession)))
+      return
+    }
     lastFocusRef.current = focusChat.nonce
     dirtyRef.current = false
     setMessages(session.messages)

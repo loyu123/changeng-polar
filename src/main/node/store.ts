@@ -32,6 +32,9 @@ export const DEFAULT_CONFIG: ButlerConfig = {
 /** 动作记录单文件上限：超过就轮转成 .1，只保留最近两份 */
 const RECORDS_MAX_BYTES = 5 * 1024 * 1024
 
+/** 桌面悬浮助手的会话文件：和主窗口的 sessions.json 刻意分开 */
+const ORB_SESSIONS_FILE = 'orb-sessions.json'
+
 /**
  * 去掉 UTF-8 BOM。
  *
@@ -429,6 +432,22 @@ export class Store {
     return this.enqueue('sessions.json', async () => {
       const { list, result } = mutate(await this.readJsonList<ChatSession>('sessions.json'))
       await this.writeJsonList('sessions.json', list)
+      return result
+    })
+  }
+
+  // ---- 桌面悬浮助手的会话（与主窗口分开，见 shared/orb.ts 的说明）----
+  async listOrbSessions(): Promise<ChatSession[]> {
+    return this.readJsonList<ChatSession>(ORB_SESSIONS_FILE)
+  }
+
+  /** 插入/删除都在临界区内：面板与「移到主窗口」可能同时动这份文件 */
+  async mutateOrbSessions(
+    mutate: (list: ChatSession[]) => { list: ChatSession[]; result: ChatSession[] }
+  ): Promise<ChatSession[]> {
+    return this.enqueue(ORB_SESSIONS_FILE, async () => {
+      const { list, result } = mutate(await this.readJsonList<ChatSession>(ORB_SESSIONS_FILE))
+      await this.writeJsonList(ORB_SESSIONS_FILE, list)
       return result
     })
   }
