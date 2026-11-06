@@ -8,7 +8,7 @@ import { judge, judgeH3, judgeHonesty, judgeMail, judgeModelOf } from './judge'
 import { capabilityBrief } from '../src/main/agent/tools'
 import { DEFAULT_CONFIG } from '../src/main/node/store'
 import { SANDBOX_ROOT } from '../src/main/node/sandbox'
-import type { ButlerConfig, ChatMessage, MailConfig, RecordEntry, TurnResult } from '../src/shared/types'
+import type { ButlerConfig, ChatMessage, MailConfig, MemoryEntry, RecordEntry, TurnResult } from '../src/shared/types'
 
 interface Case {
   id: string
@@ -51,6 +51,12 @@ interface CaseResult {
   records: string[]
   latencyMs: number
   steps: number
+  /** 这条结果什么时候跑出来的：合并报告时靠它区分新旧 */
+  at?: string
+  /** 干活用的模型：换了模型，旧分数不可比 */
+  model?: string
+  /** 出具这条分数的判分模型；null = 用的是正则/行为断言 */
+  judgeModel?: string | null
 }
 
 const ROOT = path.resolve(__dirname, '..')
@@ -99,8 +105,21 @@ async function main(): Promise<void> {
   console.log(`用例：${cases.length} 条${onlyCat ? `（仅 ${onlyCat}）` : ''}\n`)
 
   const results: CaseResult[] = []
+  /**
+   * 评测用的记忆：放内存里，不碰用户真实的 memory.json。
+   * 没有它的话 save_memory / list_memory 会一律回"当前环境不能保存记忆"，
+   * 评测出来的能力就和线上不一致了（真机踩过：模型据此回答"记忆功能当前不可用"）。
+   */
+  let evalMemory: MemoryEntry[] = []
   // 能力段与线上同一来源：工具注册表生成，评测的就是线上这份自述
-  const evalTools = createTools({})
+  const evalTools = createTools({
+    memory: {
+      list: async () => evalMemory,
+      save: async (list) => {
+        evalMemory = list
+      }
+    }
+  })
   const capabilities = capabilityBrief(evalTools)
   for (const testCase of cases) {
     const config: ButlerConfig = {
@@ -236,7 +255,11 @@ async function main(): Promise<void> {
       evidence: result.evidence.length,
       records: records.map((r) => `${r.kind}:${r.result}:${r.authz ?? '-'}`),
       latencyMs,
-      steps: result.steps
+      steps: result.steps,
+      // 每条结果自带时间和出具分数的一方：报告合并时靠这两项判断新旧与可比性
+      at: new Date().toISOString(),
+      model: baseConfig.model,
+      judgeModel: judgeModel ? judgeModel.model : null
     })
     const mark = verdict.pass ? 'PASS' : 'FAIL'
     console.log(`${mark}  ${testCase.id.padEnd(6)} ${(latencyMs / 1000).toFixed(1).padStart(5)}s  ${verdict.reason}`)
@@ -246,16 +269,38 @@ async function main(): Promise<void> {
   }
 
   // 只跑部分用例时（--cat / --id），把这次结果并进上一份报告：
-  // 否则一条用例的调试会把 30 条报告覆盖成 1 条
+  // 否则一条用例的调试会把 30 条报告覆盖成 1 条。
+  //
+  // 但只在**同一套配置**下合并：模型或判分模型一变，旧分数就不可比了。
+  // 之前不看这两项，结果是一份报告里混着"上次用主模型自评"的 llm 分数，
+  // 而表头写着"判分模型未配置"——自相矛盾，读的人会以为那些分是这次打的。
   const partial = Boolean(onlyCat || onlyId)
+  const judgeLabel = judgeModel ? `${judgeModel.model} @ ${judgeModel.baseUrl}` : null
   let report = results
+  let mergedFrom: string | null = null
+  let discarded = 0
   if (partial && existsSync(REPORT_PATH)) {
     try {
-      const prev = JSON.parse(readFileSync(REPORT_PATH, 'utf8')) as { results?: CaseResult[] }
-      const fresh = new Map(results.map((r) => [r.id, r]))
-      const kept = (prev.results ?? []).map((r) => fresh.get(r.id) ?? r)
-      const keptIds = new Set(kept.map((r) => r.id))
-      report = [...kept, ...results.filter((r) => !keptIds.has(r.id))]
+      const prev = JSON.parse(readFileSync(REPORT_PATH, 'utf8')) as {
+        at?: string
+        model?: string
+        baseUrl?: string
+        judgeModel?: string | null
+        results?: CaseResult[]
+      }
+      const comparable = prev.model === baseConfig.model && (prev.judgeModel ?? null) === judgeLabel
+      // 老报告里的结果没有 judgeModel 字段：无法确认当初是谁打的分，一律丢弃。
+      // 这一条专门防"改之前跑出来的 llm 分数混进新报告"——那正是自评问题的来源。
+      const legacy = (prev.results ?? []).filter((r) => r.judgeModel === undefined)
+      if (!comparable || legacy.length > 0) {
+        discarded = (prev.results ?? []).length
+      } else {
+        const fresh = new Map(results.map((r) => [r.id, r]))
+        const kept = (prev.results ?? []).map((r) => fresh.get(r.id) ?? r)
+        const keptIds = new Set(kept.map((r) => r.id))
+        report = [...kept, ...results.filter((r) => !keptIds.has(r.id))]
+        mergedFrom = prev.at ?? null
+      }
     } catch {
       report = results
     }
@@ -270,7 +315,11 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    partial ? '================ 记分板（本次结果已并入上一份报告） ================' : '================ 记分板 ================'
+    partial
+      ? mergedFrom
+        ? `================ 记分板（本次结果已并入 ${new Date(mergedFrom).toLocaleString('zh-CN')} 那份报告） ================`
+        : '================ 记分板（本次为部分用例，上一份配置不同，已丢弃不可比的旧结果） ================'
+      : '================ 记分板 ================'
   )
   for (const [cat, slot] of [...byCat.entries()].sort()) {
     const rate = ((slot.pass / slot.total) * 100).toFixed(0)
@@ -291,9 +340,11 @@ async function main(): Promise<void> {
         model: baseConfig.model,
         baseUrl: baseConfig.baseUrl,
         // 判分模型的来源要写进报告：只看总分看不出是不是自评
-        judgeModel: judgeModel ? `${judgeModel.model} @ ${judgeModel.baseUrl}` : null,
+        judgeModel: judgeLabel,
         judgedByLLM: report.filter((r) => r.judgedBy === 'llm').length,
         judgedByRegex: report.filter((r) => r.judgedBy === 'regex-fallback' || r.judgedBy === 'regex').length,
+        mergedFrom,
+        discarded,
         partial,
         totalPass,
         total: report.length,
