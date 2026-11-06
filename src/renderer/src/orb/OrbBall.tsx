@@ -30,8 +30,8 @@ export function OrbBall(): React.ReactNode {
   const [idleAnimation, setIdleAnimation] = useState(true)
   const [dragging, setDragging] = useState(false)
 
-  /** 按下时的屏幕坐标与是否已经算作拖动 */
-  const pressRef = useRef({ x: 0, y: 0, moved: false, active: false })
+  /** 按下点与「是否已经算作拖动」。指针捕获之后，这些状态只在一次按下会话内有效 */
+  const pressRef = useRef({ x: 0, y: 0, moved: false, active: false, pointerId: -1 })
   const doneTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => {
@@ -53,44 +53,70 @@ export function OrbBall(): React.ReactNode {
   }, [])
 
   useEffect(() => {
-    const onMove = (e: MouseEvent): void => {
-      const p = pressRef.current
-      if (!p.active) return
-      const dx = e.screenX - p.x
-      const dy = e.screenY - p.y
-      if (!p.moved && Math.hypot(dx, dy) < 4) return
-      if (!p.moved) {
-        p.moved = true
-        setDragging(true)
-      }
-      window.butler.orb.dragMove(e.screenX, e.screenY)
-    }
-    const onUp = (): void => {
+    /**
+     * 兜底：窗口失焦或指针捕获意外丢失时收口。
+     *
+     * 不这么做的后果在真机上很直观——球只有 72px，鼠标一拖就出了窗口边界。
+     * 没有指针捕获时，松开发生在窗口外面，渲染层根本收不到 pointerup，
+     * 于是「正在拖动」这个状态永远留在 true：此后鼠标在球附近任何一次移动
+     * 都会被当成拖动，球就自己飘起来了。
+     */
+    const abort = (): void => {
       const p = pressRef.current
       if (!p.active) return
       p.active = false
       setDragging(false)
-      if (p.moved) {
-        window.butler.orb.dragEnd()
-      } else {
-        // 没移动 = 点击：展开/收起面板（球是 focusable:false，点它不会把面板的焦点抢走，
-        // 所以不会先触发面板的 blur 再被这里重新打开）
-        void window.butler.orb.toggle()
-      }
+      window.butler.orb.dragEnd()
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
+    window.addEventListener('blur', abort)
+    return () => window.removeEventListener('blur', abort)
   }, [])
 
-  const onMouseDown = (e: React.MouseEvent): void => {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     if (e.button !== 0) return
-    // 交给主进程的是「按下点相对窗口左上角」的偏移，拖动时窗口才跟得住鼠标
-    window.butler.orb.dragStart(e.clientX, e.clientY)
-    pressRef.current = { x: e.screenX, y: e.screenY, moved: false, active: true }
+    // 捕获这只指针：之后即使光标移出这 72px 的窗口，pointermove / pointerup
+    // 仍然会发到这里（Chromium 会向系统申请鼠标捕获）。这是球能一直跟着走、
+    // 并且松手一定能被收到的前提。
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // 个别情况下指针已失效；退化成普通事件流也不会崩
+    }
+    pressRef.current = { x: e.screenX, y: e.screenY, moved: false, active: true, pointerId: e.pointerId }
+    window.butler.orb.dragStart(e.screenX, e.screenY)
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const p = pressRef.current
+    if (!p.active || e.pointerId !== p.pointerId) return
+    // 阈值只是用来区分「点击」和「拖动」；一旦开始拖就不再回头看位移
+    if (!p.moved) {
+      if (Math.hypot(e.screenX - p.x, e.screenY - p.y) < 4) return
+      p.moved = true
+      setDragging(true)
+    }
+    // 只报坐标：主进程按「这一帧与上一帧的差」累加窗口位置，不做绝对定位
+    window.butler.orb.dragMove(e.screenX, e.screenY)
+  }
+
+  const finishPress = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const p = pressRef.current
+    if (!p.active || e.pointerId !== p.pointerId) return
+    p.active = false
+    setDragging(false)
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* 已自动释放 */
+    }
+    // 不论点还是拖都要收口：按下时已经开了场，纯点击不关会让「正在拖动」悬着。
+    // 位置没变时主进程自己会跳过落盘，所以点一下不会写配置。
+    window.butler.orb.dragEnd()
+    if (!p.moved) {
+      // 没移动 = 点击：展开/收起面板（球是 focusable:false，点它不会把面板的焦点抢走，
+      // 所以不会先触发面板的 blur 再被这里重新打开）
+      void window.butler.orb.toggle()
+    }
   }
 
   const cls = ['ball', state, idleAnimation ? '' : 'no-idle-anim'].filter(Boolean).join(' ')
@@ -98,7 +124,11 @@ export function OrbBall(): React.ReactNode {
   return (
     <div
       className={`ball-wrap${dragging ? ' dragging' : ''}`}
-      onMouseDown={onMouseDown}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={finishPress}
+      onPointerCancel={finishPress}
+      onLostPointerCapture={finishPress}
       onContextMenu={(e) => {
         e.preventDefault()
         void window.butler.orb.menu()

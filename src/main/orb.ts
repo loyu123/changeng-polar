@@ -1,7 +1,7 @@
 import { BrowserWindow, globalShortcut, screen } from 'electron'
 import path from 'node:path'
 import type { OrbPrefs } from '../shared/types'
-import { DEFAULT_ORB_PREFS, ORB_SIZE, PANEL_HEIGHT, PANEL_WIDTH, clampToDisplay, defaultOrbPosition } from '../shared/orb'
+import { DEFAULT_ORB_PREFS, ORB_SIZE, PANEL_HEIGHT, PANEL_WIDTH, DragAccumulator, clampToDisplay, defaultOrbPosition } from '../shared/orb'
 
 /**
  * 桌面悬浮助手：一个是球，一个是面板。
@@ -18,9 +18,6 @@ let orbWindow: BrowserWindow | null = null
 let panelWindow: BrowserWindow | null = null
 
 let prefs: OrbPrefs = { ...DEFAULT_ORB_PREFS }
-
-/** 拖动中的偏移：按下点相对窗口左上角的位置 */
-let dragOffset = { x: 0, y: 0 }
 
 export interface OrbHooks {
   /** 球被移动了（松手时落盘，拖动过程中不写文件） */
@@ -237,29 +234,122 @@ export function togglePanel(): void {
  * 手动拖动。
  *
  * 不用 CSS 的 -webkit-app-region: drag：那个区域会把点击事件整个吃掉，
- * 球就再也点不开了。这里自己算位移，松手时按移动距离区分「点击」与「拖动」。
+ * 球就再也点不开了。
+ *
+ * 位移用「增量」而不是「光标绝对位置 − 抓取偏移」。
+ *
+ * 绝对式看似直接，实机上却会持续偏向某个方向：它要求「光标坐标」和
+ * 「窗口坐标」严格处在同一个坐标系里，只要主进程取的屏幕点与 setBounds
+ * 认定的原点差一点点（缩放取整、虚拟屏幕原点、透明窗口的边框修正），
+ * 每一帧都会把这个差值重复算进去，于是越拖越偏，且方向固定。
+ *
+ * 增量式不碰坐标系原点：只关心光标这一帧比上一帧挪了多少，把这个差值
+ * 累加到窗口位置上。差值为零时窗口一动不动，差值为正时窗口跟着走同样的距离。
+ * 另外它天然没有自我推进的问题——窗口移动不会改变「光标两次采样之间的差」。
+ *
+ * 采样坐标来自渲染层的 pointer 事件（screenX/screenY 是 CSS 像素，与
+ * setBounds 的 DIP 同一尺度），两边不会打架。
  */
-export function beginDrag(offsetX: number, offsetY: number): void {
-  dragOffset = { x: Math.round(offsetX), y: Math.round(offsetY) }
+let dragActive = false
+/** 增量累加器：把光标的逐帧位移换算成窗口位置 */
+const dragAcc = new DragAccumulator()
+/** 按下那一刻的窗口位置：用来判断这次到底有没有真的挪动过 */
+let dragStartPos = { x: 0, y: 0 }
+/**
+ * 尺寸全程钉死。
+ *
+ * Windows 上透明无边框窗口每调一次 setPosition 就把客户区往外撑 1px
+ * （实测 76 → 77 → … → 106）。所以这里一律用 setBounds 并把宽高一并写回，
+ * 而且固定用创建时的 ORB_SIZE，不读 getBounds().width——那个值可能是虚高的。
+ */
+const dragSize = { width: ORB_SIZE, height: ORB_SIZE }
+/** 拖动结束的兜底定时器：见 armDragWatchdog */
+let dragWatchdog: NodeJS.Timeout | null = null
+
+/**
+ * 兜底：一段时间没有任何移动事件就把这次拖动收口。
+ *
+ * 指针捕获正常时永远不会触发。它防的是捕获没拿到、pointerup 又发生在窗口外
+ * 的那种极端情况——那时渲染层会一直以为还在拖，主进程这边也就一直跟着光标跑，
+ * 表现为「没按键，球却跟着鼠标走」。宁可让一次拖动提前结束（再按一下即可），
+ * 也不要让状态永久卡在「正在拖动」。
+ */
+function armDragWatchdog(): void {
+  if (dragWatchdog) clearTimeout(dragWatchdog)
+  dragWatchdog = setTimeout(() => endDrag(), 5000)
 }
 
-export function moveOrbTo(screenX: number, screenY: number): void {
+function clearDragWatchdog(): void {
+  if (dragWatchdog) clearTimeout(dragWatchdog)
+  dragWatchdog = null
+}
+
+/**
+ * 开始拖动。cursor 是按下那一刻的光标屏幕坐标（渲染层 pointerdown 的
+ * screenX/screenY，CSS 像素，与 setBounds 的 DIP 同尺度）。
+ */
+export function beginDrag(cursor: { x: number; y: number }): void {
   const win = getOrbWindow()
   if (!win) return
-  win.setPosition(Math.round(screenX - dragOffset.x), Math.round(screenY - dragOffset.y))
+  const b = win.getBounds()
+  dragStartPos = { x: b.x, y: b.y }
+  dragAcc.begin({ x: b.x, y: b.y }, cursor)
+  dragActive = true
+  armDragWatchdog()
+  // 立刻就位一次：把可能已经被撑大的窗口拉回标准尺寸。
+  // 这一次不产生位移（位置不变），所以不会引起跳动。
+  if (b.width !== dragSize.width || b.height !== dragSize.height) {
+    win.setBounds({ x: b.x, y: b.y, width: dragSize.width, height: dragSize.height })
+  }
 }
 
-/** 松手：把落点夹进屏幕并落盘 */
+/**
+ * 拖动中：只把「光标这一帧比上一帧挪了多少」累加到窗口位置上。
+ * 不读绝对坐标，因此不受任何坐标系原点/缩放取整差异的影响。
+ *
+ * 每一步都夹进当前屏幕的可见区：球一旦出界，就可能再也拖不回来
+ * （窗口在屏幕外时收不到指针事件）。在过程中夹，而不是等松手才夹，
+ * 也顺带消除了「松手时球突然跳一下」的观感。
+ */
+export function moveOrbTo(cursor: { x: number; y: number }): void {
+  if (!dragActive) return
+  const win = getOrbWindow()
+  if (!win) return
+  armDragWatchdog()
+
+  const next = dragAcc.step(cursor)
+  if (!next) return
+  const area = screen.getDisplayNearestPoint({ x: cursor.x, y: cursor.y }).workArea
+  const pos = clampToDisplay(next.x, next.y, dragSize.width, area)
+  // 只有真的被夹住时才回写累加器。无条件回写会把取整后的小数抹掉——
+  // 每帧丢 0.3px，几十帧后就是可见的「拖不到位」（实测 60 帧少走 20px）。
+  if (pos.x !== next.x || pos.y !== next.y) dragAcc.set(pos)
+  win.setBounds({ x: pos.x, y: pos.y, width: dragSize.width, height: dragSize.height })
+}
+
+/** 松手：把落点夹进屏幕并落盘。重复调用是安全的 */
 export function endDrag(): void {
+  if (!dragActive) return
+  dragActive = false
+  dragAcc.end()
+  clearDragWatchdog()
   const win = getOrbWindow()
   if (!win) return
   const b = win.getBounds()
   const area = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
-  const pos = clampToDisplay(b.x, b.y, b.width, area)
-  win.setPosition(pos.x, pos.y)
+  // 用按下时钉住的尺寸来夹边，不用 b.width：后者可能已经被 setPosition 撑大过
+  const pos = clampToDisplay(b.x, b.y, dragSize.width, area)
+  // 一次纯点击（按住没动）也会走到这里。位置没变就别碰窗口、也别写配置——
+  // 球是要被反复点的，每点一下落一次盘没有必要
+  if (pos.x === dragStartPos.x && pos.y === dragStartPos.y) return
+  win.setBounds({ x: pos.x, y: pos.y, width: dragSize.width, height: dragSize.height })
   prefs = { ...prefs, x: pos.x, y: pos.y }
   hooks?.onPositionSaved(pos.x, pos.y)
   if (isPanelVisible()) positionPanel()
+}
+
+export function isDragging(): boolean {
+  return dragActive
 }
 
 /** 设置里改了位置/贴边等：把窗口挪回该在的地方 */
@@ -267,14 +357,14 @@ export function repositionOrb(): void {
   const win = getOrbWindow()
   if (!win) return
   const b = win.getBounds()
+  // 尺寸以创建的 72 为准，不读 b.width：透明窗口的 bounds 会被撑大（见 dragSize 的说明）
+  const size = ORB_SIZE
   const area = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
-  if (prefs.x === null || prefs.y === null) {
-    const pos = defaultOrbPosition(b.width, area)
-    win.setPosition(pos.x, pos.y)
-  } else {
-    const pos = clampToDisplay(prefs.x, prefs.y, b.width, area)
-    win.setPosition(pos.x, pos.y)
-  }
+  const pos =
+    prefs.x === null || prefs.y === null
+      ? defaultOrbPosition(size, area)
+      : clampToDisplay(prefs.x, prefs.y, size, area)
+  win.setBounds({ x: pos.x, y: pos.y, width: size, height: size })
   if (isPanelVisible()) positionPanel()
 }
 

@@ -221,6 +221,7 @@ void app.whenReady().then(async () => {
 
   // 定时任务调度器：启动即排程，错过今天这一次的任务会补跑一次
   taskRunner.start()
+
   app.on('activate', () => {
     if (!getMainWindow()) createWindow()
   })

@@ -70,3 +70,56 @@ export function defaultOrbPosition(
 ): { x: number; y: number } {
   return { x: area.x + area.width - size - 28, y: area.y + area.height - size - 28 }
 }
+
+/**
+ * 把光标连续采样换算成窗口位置的累加器。
+ *
+ * 拖动走的是「增量」：只关心光标这一帧比上一帧挪了多少，累加到窗口位置上。
+ * 这样完全不需要「光标坐标」和「窗口坐标」处在同一个原点——而正是那个前提
+ * 在真机上不成立（缩放取整、虚拟屏幕原点、透明窗口的边框修正），
+ * 导致绝对式算法每帧都重复同一个误差，表现为球越拖越偏、方向还固定。
+ *
+ * 累积值保持浮点：逐帧取整会把小数误差攒起来，几十帧后一样能看出偏移。
+ */
+export class DragAccumulator {
+  private pos = { x: 0, y: 0 }
+  private last = { x: 0, y: 0 }
+  private started = false
+
+  /** 按下：以窗口当前位置为基准，记住光标起点 */
+  begin(windowPos: { x: number; y: number }, cursor: { x: number; y: number }): void {
+    this.pos = { x: windowPos.x, y: windowPos.y }
+    this.last = { x: cursor.x, y: cursor.y }
+    this.started = true
+  }
+
+  /** 移动：返回窗口应当去的位置；光标没动就返回 null，调用方无需碰窗口 */
+  step(cursor: { x: number; y: number }): { x: number; y: number } | null {
+    if (!this.started) return null
+    const dx = cursor.x - this.last.x
+    const dy = cursor.y - this.last.y
+    this.last = { x: cursor.x, y: cursor.y }
+    if (dx === 0 && dy === 0) return null
+    this.pos = { x: this.pos.x + dx, y: this.pos.y + dy }
+    return { x: Math.round(this.pos.x), y: Math.round(this.pos.y) }
+  }
+
+  /**
+   * 外部修正累积值。
+   *
+   * 夹边之后窗口实际落在别处，累积值必须同步过去；否则下一帧又从中途那个
+   * 位置继续累加，球会在屏幕边缘来回弹。
+   */
+  set(pos: { x: number; y: number }): void {
+    if (!this.started) return
+    this.pos = { x: pos.x, y: pos.y }
+  }
+
+  end(): void {
+    this.started = false
+  }
+
+  get active(): boolean {
+    return this.started
+  }
+}

@@ -279,11 +279,14 @@ const api = {
     close: () => ipcRenderer.invoke('orb:close') as Promise<boolean>,
     toggle: () => ipcRenderer.invoke('orb:toggle') as Promise<boolean>,
 
-    /** 拖动：按下记偏移，移动报屏幕坐标，松手由主进程夹边并落盘 */
-    dragStart: (offsetX: number, offsetY: number) =>
-      ipcRenderer.send('orb:drag-start', { offsetX, offsetY }),
+    /**
+     * 拖动：渲染层只报光标位置，位移由主进程按增量累加。
+     * screenX/screenY 是 CSS 像素，与 setBounds 的 DIP 同一尺度。
+     */
+    dragStart: (screenX: number, screenY: number) =>
+      ipcRenderer.send('orb:drag-start', { x: screenX, y: screenY }),
     dragMove: (screenX: number, screenY: number) =>
-      ipcRenderer.send('orb:drag-move', { screenX, screenY }),
+      ipcRenderer.send('orb:drag-move', { x: screenX, y: screenY }),
     dragEnd: () => ipcRenderer.send('orb:drag-end'),
 
     sessions: {

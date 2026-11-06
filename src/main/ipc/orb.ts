@@ -56,12 +56,12 @@ export function registerOrbIpc(ctx: IpcContext): void {
     return true
   })
 
-  // 拖动：按下时记偏移，移动时按屏幕坐标定位，松手才夹边与落盘
-  ipcMain.on('orb:drag-start', (_e, payload: { offsetX: number; offsetY: number }) => {
-    beginDrag(Number(payload?.offsetX) || 0, Number(payload?.offsetY) || 0)
+  // 拖动：渲染层报告光标位置（screenX/screenY，CSS 像素 = DIP），主进程只累加增量
+  ipcMain.on('orb:drag-start', (_e, cursor: { x: number; y: number }) => {
+    beginDrag({ x: Number(cursor?.x) || 0, y: Number(cursor?.y) || 0 })
   })
-  ipcMain.on('orb:drag-move', (_e, payload: { screenX: number; screenY: number }) => {
-    moveOrbTo(Number(payload?.screenX) || 0, Number(payload?.screenY) || 0)
+  ipcMain.on('orb:drag-move', (_e, cursor: { x: number; y: number }) => {
+    moveOrbTo({ x: Number(cursor?.x) || 0, y: Number(cursor?.y) || 0 })
   })
   ipcMain.on('orb:drag-end', () => endDrag())
 
