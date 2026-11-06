@@ -349,16 +349,36 @@ export class Store {
     return this.readJsonList<ProjectDef>('projects.json')
   }
 
-  async saveProjects(list: ProjectDef[]): Promise<void> {
-    await this.enqueue('projects.json', () => this.writeJsonList('projects.json', list))
+  /**
+   * 项目写入：**整个读-改-写都在队列里**。
+   *
+   * 之前 handler 先 listProjects() 再 saveProjects()，读在队列外——两个入口同时
+   * 保存（对话页「存为方案」与项目页自动保存）仍会互相覆盖。把 mutate 交给 Store
+   * 在临界区内执行，才真的只有一份数据被改。
+   */
+  async mutateProjects(
+    mutate: (list: ProjectDef[]) => { list: ProjectDef[]; result: ProjectDef[] }
+  ): Promise<ProjectDef[]> {
+    return this.enqueue('projects.json', async () => {
+      const { list, result } = mutate(await this.readJsonList<ProjectDef>('projects.json'))
+      await this.writeJsonList('projects.json', list)
+      return result
+    })
   }
 
   async listTodos(): Promise<TodoDef[]> {
     return this.readJsonList<TodoDef>('todos.json')
   }
 
-  async saveTodos(list: TodoDef[]): Promise<void> {
-    await this.enqueue('todos.json', () => this.writeJsonList('todos.json', list))
+  /** 同 mutateProjects：待办的读-改-写也在临界区内完成 */
+  async mutateTodos(
+    mutate: (list: TodoDef[]) => { list: TodoDef[]; result: TodoDef[] }
+  ): Promise<TodoDef[]> {
+    return this.enqueue('todos.json', async () => {
+      const { list, result } = mutate(await this.readJsonList<TodoDef>('todos.json'))
+      await this.writeJsonList('todos.json', list)
+      return result
+    })
   }
 
   async listSessions(): Promise<ChatSession[]> {
@@ -367,5 +387,16 @@ export class Store {
 
   async saveSessions(list: ChatSession[]): Promise<void> {
     await this.enqueue('sessions.json', () => this.writeJsonList('sessions.json', list))
+  }
+
+  /** 同 mutateProjects：会话的插入/删除也在临界区内完成 */
+  async mutateSessions(
+    mutate: (list: ChatSession[]) => { list: ChatSession[]; result: ChatSession[] }
+  ): Promise<ChatSession[]> {
+    return this.enqueue('sessions.json', async () => {
+      const { list, result } = mutate(await this.readJsonList<ChatSession>('sessions.json'))
+      await this.writeJsonList('sessions.json', list)
+      return result
+    })
   }
 }

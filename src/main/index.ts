@@ -497,9 +497,12 @@ function registerIpc(): void {
   ipcMain.handle('projects:save', async (_e, raw: Partial<ProjectDef>) => {
     const name = String(raw?.name ?? '').trim().slice(0, 40)
     if (!name) throw new Error('项目名不能为空')
-    const list = await store.listProjects()
     const id = typeof raw?.id === 'string' && raw.id ? raw.id : randomUUID()
-    const existing = list.find((p) => p.id === id)
+
+    // 读-改-写整段交给 Store 排队：对话页「存为方案」和项目页自动保存撞在一起时，
+    // 谁后写就把谁整条覆盖，这是原来 listProjects() 在队列外造成的
+    return store.mutateProjects((list) => {
+      const existing = list.find((p) => p.id === id)
 
     // 未传 prompts / plans 时保留原值，避免旧界面（或半截 patch）把方案冲掉
     const prompts = Array.isArray(raw?.prompts)
@@ -576,17 +579,22 @@ function registerIpc(): void {
       createdAt: typeof raw?.createdAt === 'string' && raw.createdAt ? raw.createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }
-    const idx = list.findIndex((p) => p.id === proj.id)
-    if (idx >= 0) list[idx] = proj
-    else list.push(proj)
-    await store.saveProjects(list)
-    return list
+      const idx = list.findIndex((p) => p.id === proj.id)
+      if (idx >= 0) list[idx] = proj
+      else list.push(proj)
+      return { list, result: list }
+    })
   })
   ipcMain.handle('projects:delete', async (_e, id: string) => {
-    const list = (await store.listProjects()).filter((p) => p.id !== id)
-    await store.saveProjects(list)
+    const list = await store.mutateProjects((current) => {
+      const next = current.filter((p) => p.id !== id)
+      return { list: next, result: next }
+    })
     // 项目删了，挂在它下面的派发任务一起清掉，避免留下找不到归属的孤儿任务
-    await store.saveTodos((await store.listTodos()).filter((t) => t.projectId !== id))
+    await store.mutateTodos((current) => {
+      const next = current.filter((t) => t.projectId !== id)
+      return { list: next, result: next }
+    })
     return list
   })
 
@@ -630,17 +638,20 @@ function registerIpc(): void {
       createdAt: typeof raw?.createdAt === 'string' && raw.createdAt ? raw.createdAt : new Date().toISOString(),
       doneAt: status === 'done' ? (typeof raw?.doneAt === 'string' && raw.doneAt ? raw.doneAt : new Date().toISOString()) : undefined
     }
-    const list = await store.listTodos()
-    const idx = list.findIndex((t) => t.id === todo.id)
-    if (idx >= 0) list[idx] = todo
-    else list.push(todo)
-    await store.saveTodos(list)
+    await store.mutateTodos((current) => {
+      const next = [...current]
+      const idx = next.findIndex((t) => t.id === todo.id)
+      if (idx >= 0) next[idx] = todo
+      else next.push(todo)
+      return { list: next, result: next }
+    })
     return todo
   })
   ipcMain.handle('todos:delete', async (_e, id: string) => {
-    const list = (await store.listTodos()).filter((t) => t.id !== id)
-    await store.saveTodos(list)
-    return list
+    return store.mutateTodos((current) => {
+      const next = current.filter((t) => t.id !== id)
+      return { list: next, result: next }
+    })
   })
 
   // ---- 会话：从 localStorage 搬到 userData/sessions.json，可长期回看 ----
@@ -653,15 +664,18 @@ function registerIpc(): void {
       title: String(raw?.title ?? '未命名').slice(0, 80),
       messages: Array.isArray(raw?.messages) ? raw.messages.slice(0, 200) : []
     }
-    const list = (await store.listSessions()).filter((s) => s.id !== id)
-    list.unshift(entry)
-    await store.saveSessions(list.sort((a, b) => b.ts - a.ts).slice(0, 300))
+    await store.mutateSessions((current) => {
+      const list = current.filter((s) => s.id !== id)
+      list.unshift(entry)
+      return { list: list.sort((a, b) => b.ts - a.ts).slice(0, 300), result: [] }
+    })
     return entry
   })
   ipcMain.handle('sessions:delete', async (_e, id: string) => {
-    const list = (await store.listSessions()).filter((s) => s.id !== id)
-    await store.saveSessions(list)
-    return list
+    return store.mutateSessions((current) => {
+      const next = current.filter((s) => s.id !== id)
+      return { list: next, result: next }
+    })
   })
   ipcMain.handle('sessions:clear', async () => {
     await store.saveSessions([])
