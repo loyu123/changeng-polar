@@ -1,0 +1,371 @@
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import type {
+  AlwaysAllowedEntry,
+  AppNote,
+  AppSnapshot,
+  ButlerConfig,
+  ChatSession,
+  ProjectDef,
+  RecordEntry,
+  TaskDef,
+  TodoDef,
+  VerifyResult
+} from '../../shared/types'
+import { decodeConfigSecrets, encodeConfigSecrets, PLAIN_CODEC, type SecretCodec } from './secrets'
+
+export const DEFAULT_CONFIG: ButlerConfig = {
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: '',
+  model: 'gpt-4o-mini',
+  stream: true,
+  temperature: 0.2,
+  searchProvider: 'duckduckgo',
+  searchKey: '',
+  mail: { address: '', authCode: '', host: 'imap.qq.com', port: 993 },
+  mailAccounts: []
+}
+
+/** 动作记录单文件上限：超过就轮转成 .1，只保留最近两份 */
+const RECORDS_MAX_BYTES = 5 * 1024 * 1024
+
+/** 本地存储：配置 json + 记录 jsonl（append-only）+ 查证结果 json */
+export class Store {
+  /**
+   * 每个文件一条串行队列。
+   *
+   * 这里的写操作几乎都是「读全量 → 改 → 写回」。两个调用方撞在同一文件上时
+   * （最典型：定时任务跑完在写 lastRun，用户同时点了保存），后写的会把先写的
+   * 整个覆盖掉。按文件名排队，读-改-写就在同一段临界区里，不会再互相丢数据。
+   */
+  private readonly queues = new Map<string, Promise<unknown>>()
+
+  constructor(
+    private readonly dir: string,
+    /** 密钥加解密；评测脚本不注入时按明文读写 */
+    private readonly codec: SecretCodec = PLAIN_CODEC
+  ) {}
+
+  /** 密钥是否真的在加密（设置页据此决定提示文案） */
+  secretsEncrypted(): boolean {
+    return this.codec.active
+  }
+
+  private enqueue<T>(name: string, task: () => Promise<T>): Promise<T> {
+    const prev = this.queues.get(name) ?? Promise.resolve()
+    // 前一个任务失败也要继续排队，否则一次异常会把该文件的写全卡死
+    const next = prev.then(task, task)
+    this.queues.set(
+      name,
+      next.catch(() => undefined)
+    )
+    return next
+  }
+
+  private p(name: string): string {
+    return path.join(this.dir, name)
+  }
+
+  /** 先写 .tmp 再改名：进程被强杀时不会留下半截 JSON 把旧数据一起带走 */
+  private async writeAtomic(name: string, text: string): Promise<void> {
+    await fs.mkdir(this.dir, { recursive: true })
+    const tmp = this.p(`${name}.tmp`)
+    await fs.writeFile(tmp, text, 'utf8')
+    await fs.rename(tmp, this.p(name))
+  }
+
+  async init(): Promise<void> {
+    await fs.mkdir(this.dir, { recursive: true })
+  }
+
+  async getConfig(): Promise<ButlerConfig> {
+    try {
+      const raw = await fs.readFile(this.p('config.json'), 'utf8')
+      const parsed = { ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<ButlerConfig>) }
+      // 盘上是密文，内存里一律明文：调用方（模型请求、IMAP 登录）拿到的都是能直接用的值
+      return decodeConfigSecrets(parsed, this.codec)
+    } catch {
+      return { ...DEFAULT_CONFIG }
+    }
+  }
+
+  async saveConfig(patch: Partial<ButlerConfig>): Promise<ButlerConfig> {
+    return this.enqueue('config.json', async () => {
+      const next = { ...(await this.getConfig()), ...patch }
+      await this.writeAtomic('config.json', JSON.stringify(encodeConfigSecrets(next, this.codec), null, 2))
+      return next
+    })
+  }
+
+  async appendRecord(entry: Omit<RecordEntry, 'id' | 'ts'>): Promise<RecordEntry> {
+    const record: RecordEntry = {
+      ...entry,
+      id: randomUUID(),
+      ts: new Date().toISOString()
+    }
+    return this.enqueue('records.jsonl', async () => {
+      await fs.mkdir(this.dir, { recursive: true })
+      await this.rotateRecordsIfNeeded()
+      await fs.appendFile(this.p('records.jsonl'), `${JSON.stringify(record)}\n`, 'utf8')
+      return record
+    })
+  }
+
+  /**
+   * 记录只追加、不清理，几个月的日常使用之后单文件会到几十兆，
+   * 而 listRecords 每次都要整读进内存逐行解析——记录页会肉眼可见变慢。
+   * 超过阈值就整段改名成 .1，旧 .1 顺延成 .2，只留最近两份。
+   * 上限按"条数 × 每条约 300 字节"估，5MB 大约是一万六千条动作。
+   */
+  private async rotateRecordsIfNeeded(): Promise<void> {
+    const current = this.p('records.jsonl')
+    try {
+      const st = await fs.stat(current)
+      if (st.size < RECORDS_MAX_BYTES) return
+    } catch {
+      return // 还没有文件，不用轮转
+    }
+    try {
+      await fs.rm(`${current}.2`, { force: true })
+      await fs.rename(`${current}.1`, `${current}.2`).catch(() => undefined)
+      await fs.rename(current, `${current}.1`)
+    } catch {
+      /* 轮转失败不影响本次追加：大不了这次不转 */
+    }
+  }
+
+  /**
+   * 读最近的动作记录（最新的在前）。
+   * 跨轮转边界要接着往前读，否则刚轮转完的那一次记录页会突然空掉。
+   * 顺序上必须"从最新那个文件开始取"：先读 records.jsonl，不够再补 .1、.2，
+   * 凑够 limit 就停——反过来的话，限流截到的会是最旧的那批。
+   */
+  async listRecords(limit = 200): Promise<RecordEntry[]> {
+    const files = [this.p('records.jsonl'), `${this.p('records.jsonl')}.1`, `${this.p('records.jsonl')}.2`]
+    const out: RecordEntry[] = []
+    for (const file of files) {
+      if (out.length >= limit) break
+      let raw = ''
+      try {
+        raw = await fs.readFile(file, 'utf8')
+      } catch {
+        continue
+      }
+      const block: RecordEntry[] = []
+      for (const line of raw.split('\n')) {
+        const text = line.trim()
+        if (!text) continue
+        let parsed: any
+        try {
+          parsed = JSON.parse(text)
+        } catch {
+          continue
+        }
+        // 老版本写过 {t:'revert'} 标记：那条标记只改日志、不动文件，不承认它是撤销，当废行跳过
+        if (parsed.t === 'revert' || !parsed.kind) continue
+        block.push(parsed as RecordEntry)
+      }
+      // 文件内部是追加顺序（旧→新），取的时候要倒着走
+      for (let i = block.length - 1; i >= 0 && out.length < limit; i--) out.push(block[i])
+    }
+    return out
+  }
+
+  async getVerifyMap(): Promise<Record<string, VerifyResult>> {
+    try {
+      const raw = await fs.readFile(this.p('verify.json'), 'utf8')
+      return JSON.parse(raw) as Record<string, VerifyResult>
+    } catch {
+      return {}
+    }
+  }
+
+  async setVerify(result: VerifyResult): Promise<void> {
+    await this.enqueue('verify.json', async () => {
+      const map = await this.getVerifyMap()
+      map[result.appName] = result
+      await fs.mkdir(this.dir, { recursive: true })
+      await this.writeAtomic('verify.json', JSON.stringify(map, null, 2))
+    })
+  }
+
+  /** 卸载前抓的快照：按 id 存取，卸载后的对比（diff）凭这条记录回查 */
+  private async readSnapshots(): Promise<Record<string, AppSnapshot>> {
+    try {
+      const raw = await fs.readFile(this.p('snapshots.json'), 'utf8')
+      return JSON.parse(raw) as Record<string, AppSnapshot>
+    } catch {
+      return {}
+    }
+  }
+
+  async saveSnapshot(snapshot: AppSnapshot): Promise<void> {
+    await this.enqueue('snapshots.json', async () => {
+      const map = await this.readSnapshots()
+      map[snapshot.id] = snapshot
+      await fs.mkdir(this.dir, { recursive: true })
+      await this.writeAtomic('snapshots.json', JSON.stringify(map, null, 2))
+    })
+  }
+
+  async getSnapshot(id: string): Promise<AppSnapshot | null> {
+    return (await this.readSnapshots())[id] ?? null
+  }
+
+  /** 应用功能说明的手写备注：空文本视为删除该条 */
+  private async readNotes(): Promise<Record<string, AppNote>> {
+    try {
+      const raw = await fs.readFile(this.p('notes.json'), 'utf8')
+      return JSON.parse(raw) as Record<string, AppNote>
+    } catch {
+      return {}
+    }
+  }
+
+  async getNotes(): Promise<Record<string, AppNote>> {
+    return this.readNotes()
+  }
+
+  async saveNote(appName: string, text: string): Promise<AppNote | null> {
+    return this.enqueue('notes.json', async () => {
+      const notes = await this.readNotes()
+      const trimmed = text.trim()
+      if (!trimmed) {
+        delete notes[appName]
+        await fs.mkdir(this.dir, { recursive: true })
+        await this.writeAtomic('notes.json', JSON.stringify(notes, null, 2))
+        return null
+      }
+      const note: AppNote = { appName, text: trimmed.slice(0, 120), updatedAt: new Date().toISOString() }
+      notes[appName] = note
+      await fs.mkdir(this.dir, { recursive: true })
+      await this.writeAtomic('notes.json', JSON.stringify(notes, null, 2))
+      return note
+    })
+  }
+
+  /** 「始终允许」的记忆：持久化，才能在设置页看见并撤销 */
+  async listAlwaysAllowed(): Promise<AlwaysAllowedEntry[]> {
+    try {
+      const raw = await fs.readFile(this.p('auth-memory.json'), 'utf8')
+      const list = JSON.parse(raw) as AlwaysAllowedEntry[]
+      return Array.isArray(list) ? list : []
+    } catch {
+      return []
+    }
+  }
+
+  private async writeAlwaysAllowed(list: AlwaysAllowedEntry[]): Promise<void> {
+    await fs.mkdir(this.dir, { recursive: true })
+    await this.writeAtomic('auth-memory.json', JSON.stringify(list, null, 2))
+  }
+
+  async addAlwaysAllowed(entry: AlwaysAllowedEntry): Promise<void> {
+    await this.enqueue('auth-memory.json', async () => {
+      const list = await this.listAlwaysAllowed()
+      if (list.some((item) => item.key === entry.key)) return
+      await this.writeAlwaysAllowed([...list, entry])
+    })
+  }
+
+  async revokeAlwaysAllowed(key: string): Promise<AlwaysAllowedEntry[]> {
+    return this.enqueue('auth-memory.json', async () => {
+      const list = (await this.listAlwaysAllowed()).filter((item) => item.key !== key)
+      await this.writeAlwaysAllowed(list)
+      return list
+    })
+  }
+
+  async clearAlwaysAllowed(): Promise<void> {
+    await this.enqueue('auth-memory.json', () => this.writeAlwaysAllowed([]))
+  }
+
+  /** 通用 JSON 列表读写：定时任务与项目共用 */
+  private async readJsonList<T>(name: string): Promise<T[]> {
+    const file = this.p(name)
+    let raw = ''
+    try {
+      raw = await fs.readFile(file, 'utf8')
+    } catch {
+      return []
+    }
+    try {
+      const list = JSON.parse(raw) as T[]
+      return Array.isArray(list) ? list : []
+    } catch {
+      // 文件被写坏（例如进程被强杀留下半截）：先留个 .corrupt 备份，别让仅有的数据被空值覆盖掉
+      try {
+        await fs.copyFile(file, `${file}.corrupt`)
+      } catch {
+        /* 备份失败也不影响启动 */
+      }
+      return []
+    }
+  }
+
+  private async writeJsonList<T>(name: string, list: T[]): Promise<void> {
+    await this.writeAtomic(name, JSON.stringify(list, null, 2))
+  }
+
+  async listTasks(): Promise<TaskDef[]> {
+    return this.readJsonList<TaskDef>('tasks.json')
+  }
+
+  /** 新增或整条替换一条任务（读-改-写都在队列里，不会被界面的保存覆盖） */
+  async upsertTask(task: TaskDef): Promise<TaskDef[]> {
+    return this.enqueue('tasks.json', async () => {
+      const list = await this.readJsonList<TaskDef>('tasks.json')
+      const idx = list.findIndex((t) => t.id === task.id)
+      if (idx >= 0) list[idx] = task
+      else list.push(task)
+      await this.writeJsonList('tasks.json', list)
+      return list
+    })
+  }
+
+  /** 只改一条任务的指定字段：后台任务回写 lastRun/lastResult 走这里，避免整表覆盖 */
+  async updateTask(id: string, patch: Partial<TaskDef>): Promise<TaskDef | null> {
+    return this.enqueue('tasks.json', async () => {
+      const list = await this.readJsonList<TaskDef>('tasks.json')
+      const idx = list.findIndex((t) => t.id === id)
+      if (idx < 0) return null
+      const updated: TaskDef = { ...list[idx], ...patch }
+      list[idx] = updated
+      await this.writeJsonList('tasks.json', list)
+      return updated
+    })
+  }
+
+  async deleteTask(id: string): Promise<TaskDef[]> {
+    return this.enqueue('tasks.json', async () => {
+      const list = (await this.readJsonList<TaskDef>('tasks.json')).filter((t) => t.id !== id)
+      await this.writeJsonList('tasks.json', list)
+      return list
+    })
+  }
+
+  async listProjects(): Promise<ProjectDef[]> {
+    return this.readJsonList<ProjectDef>('projects.json')
+  }
+
+  async saveProjects(list: ProjectDef[]): Promise<void> {
+    await this.enqueue('projects.json', () => this.writeJsonList('projects.json', list))
+  }
+
+  async listTodos(): Promise<TodoDef[]> {
+    return this.readJsonList<TodoDef>('todos.json')
+  }
+
+  async saveTodos(list: TodoDef[]): Promise<void> {
+    await this.enqueue('todos.json', () => this.writeJsonList('todos.json', list))
+  }
+
+  async listSessions(): Promise<ChatSession[]> {
+    return this.readJsonList<ChatSession>('sessions.json')
+  }
+
+  async saveSessions(list: ChatSession[]): Promise<void> {
+    await this.enqueue('sessions.json', () => this.writeJsonList('sessions.json', list))
+  }
+}

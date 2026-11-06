@@ -1,0 +1,7 @@
+node_modules/
+node_modules_broken/
+out/
+dist/
+*.log
+evals/report.json
+.DS_Store
