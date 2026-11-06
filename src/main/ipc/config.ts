@@ -3,6 +3,7 @@ import type { AlwaysAllowedEntry, ButlerConfig, ChatMessage } from '../../shared
 import { chatCompletion, pingModel } from '../agent/llm'
 import { testMail } from '../node/mail'
 import { searchWeb } from '../node/web'
+import { mergeMemory, removeMemory } from '../node/memory'
 import type { IpcContext } from './app'
 
 /** 配置 / 密钥 / 自检 / 授权记忆 */
@@ -88,4 +89,26 @@ export function registerConfigIpc(ctx: IpcContext): void {
     ctx.alwaysAllowed.clear()
     return [] as AlwaysAllowedEntry[]
   })
+
+  // ---- 跨会话记忆：用户能看、能删、能自己加一条 ----
+  ipcMain.handle('memory:list', () => ctx.store.listMemory())
+  ipcMain.handle('memory:save', async (_e, input: { kind?: string; text?: string }) => {
+    let rejected = ''
+    const list = await ctx.store.mutateMemory((current) => {
+      const outcome = mergeMemory(current, { kind: input?.kind, text: input?.text })
+      if (!outcome.ok) {
+        rejected = outcome.reason
+        return { list: current, result: current }
+      }
+      return { list: outcome.list, result: outcome.list }
+    })
+    return rejected ? { ok: false, reason: rejected, list } : { ok: true, list }
+  })
+  ipcMain.handle('memory:delete', (_e, ref: string) =>
+    ctx.store.mutateMemory((current) => {
+      const { list } = removeMemory(current, String(ref ?? ''))
+      return { list, result: list }
+    })
+  )
+  ipcMain.handle('memory:clear', () => ctx.store.mutateMemory(() => ({ list: [], result: [] })))
 }

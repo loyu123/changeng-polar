@@ -7,6 +7,7 @@ import type {
   AppSnapshot,
   ButlerConfig,
   ChatSession,
+  MemoryEntry,
   ProjectDef,
   RecordEntry,
   TaskDef,
@@ -387,6 +388,26 @@ export class Store {
 
   async saveSessions(list: ChatSession[]): Promise<void> {
     await this.enqueue('sessions.json', () => this.writeJsonList('sessions.json', list))
+  }
+
+  // ---- 跨会话记忆 ----
+  async listMemory(): Promise<MemoryEntry[]> {
+    return this.readJsonList<MemoryEntry>('memory.json')
+  }
+
+  async saveMemory(list: MemoryEntry[]): Promise<void> {
+    await this.enqueue('memory.json', () => this.writeJsonList('memory.json', list))
+  }
+
+  /** 记忆的读-改-写也在临界区内完成，避免两次并发保存互相覆盖 */
+  async mutateMemory(
+    mutate: (list: MemoryEntry[]) => { list: MemoryEntry[]; result: MemoryEntry[] }
+  ): Promise<MemoryEntry[]> {
+    return this.enqueue('memory.json', async () => {
+      const { list, result } = mutate(await this.readJsonList<MemoryEntry>('memory.json'))
+      await this.writeJsonList('memory.json', list)
+      return result
+    })
   }
 
   /** 同 mutateProjects：会话的插入/删除也在临界区内完成 */

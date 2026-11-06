@@ -5,6 +5,7 @@ import type { AuthAnswer, AuthRequest, ChatMessage, ChatPayload, TaskDef, TurnRe
 import { runTurn, TOOL_BUDGET_STEPS, type GateHooks } from './agent/agent'
 import { buildSystemPrompt } from './agent/prompt'
 import { capabilityBrief, createTools } from './agent/tools'
+import { memoryBlock } from './node/memory'
 import type { Store } from './node/store'
 
 /**
@@ -108,7 +109,11 @@ export class TurnRuntime {
       },
       saveSnapshot: (snapshot) => store.saveSnapshot(snapshot),
       appNotes: () => store.getNotes(),
-      appVerify: () => store.getVerifyMap()
+      appVerify: () => store.getVerifyMap(),
+      memory: {
+        list: () => store.listMemory(),
+        save: (list) => store.saveMemory(list)
+      }
     }).filter((t) => toggles[t.name] !== false)
   }
 
@@ -165,10 +170,23 @@ export class TurnRuntime {
     // 能力开关（插件页）：toolToggles[name] === false 的工具不出现在本轮
     const tools = this.toolsFor(config.toolToggles ?? {})
 
+    // 跨会话记忆：每轮都读一次，用户刚删掉的东西不该还出现在提示词里
+    let memory = ''
+    try {
+      memory = memoryBlock(await this.opts.store.listMemory())
+    } catch {
+      /* 记忆读失败不该让整轮对话挂掉，当没有记忆处理 */
+    }
+
     const system: ChatMessage = {
       role: 'system',
       content: buildSystemPrompt(
-        { ...machineEnv(), hasSearch: config.searchProvider !== 'none', toolBudget: TOOL_BUDGET_STEPS },
+        {
+          ...machineEnv(),
+          hasSearch: config.searchProvider !== 'none',
+          toolBudget: TOOL_BUDGET_STEPS,
+          memory
+        },
         capabilityBrief(tools)
       )
     }

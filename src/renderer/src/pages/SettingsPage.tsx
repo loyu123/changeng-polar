@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AlwaysAllowedEntry, ButlerConfig, MailAccount } from '../../../shared/types'
+import type { AlwaysAllowedEntry, ButlerConfig, MailAccount, MemoryEntry } from '../../../shared/types'
+import { MEMORY_KIND_LABEL } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
 import RecordsPage from './RecordsPage'
 import AppsPage from './AppsPage'
@@ -84,6 +85,8 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   }, [section, onSectionChange])
 
   const [memory, setMemory] = useState<AlwaysAllowedEntry[]>([])
+  /** 跨会话记忆（与上面的授权记忆不是一回事：那是"始终允许"，这是"记住的事"） */
+  const [memories, setMemories] = useState<MemoryEntry[]>([])
 
   useEffect(() => {
     void window.butler.config.get().then((loaded) => {
@@ -96,7 +99,17 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
       setConfig(loaded)
     })
     void window.butler.auth.list().then(setMemory)
+    void window.butler.memory.list().then(setMemories)
   }, [])
+
+  const deleteMemory = async (id: string): Promise<void> => {
+    setMemories(await window.butler.memory.delete(id))
+  }
+
+  const clearMemory = async (): Promise<void> => {
+    if (!window.confirm('清除全部记忆？这不会删除对话记录，只是让长庚忘掉这些事。')) return
+    setMemories(await window.butler.memory.clear())
+  }
 
   const revoke = async (key: string): Promise<void> => {
     setMemory(await window.butler.auth.revoke(key))
@@ -371,6 +384,71 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 />
               </div>
             </div>
+
+            <div className="form-row" style={{ marginTop: 14 }}>
+              <label>判分模型（评测用，可选）</label>
+              <div className="hint" style={{ marginBottom: 8 }}>
+                评测脚本用它给回答打分。<b>必须与上面的模型不同</b>——同一个模型给自己打分，高分只能说明它自我感觉良好。
+                没配时，需要模型判分的用例会退化成正则断言，报告里会标明。
+              </div>
+              {config.judge ? (
+                <>
+                  <div className="grid2">
+                    <div className="form-row">
+                      <label>模型名</label>
+                      <input
+                        className="input"
+                        value={config.judge.model}
+                        placeholder="例如 deepseek-chat"
+                        onChange={(e) => update({ judge: { ...config.judge!, model: e.target.value } })}
+                      />
+                    </div>
+                    <div className="form-row">
+                      <label>API Key</label>
+                      <input
+                        className="input"
+                        type="password"
+                        value={config.judge.apiKey}
+                        placeholder="sk-…"
+                        onChange={(e) => update({ judge: { ...config.judge!, apiKey: e.target.value } })}
+                      />
+                    </div>
+                  </div>
+                  <div className="form-row">
+                    <label>接口地址</label>
+                    <input
+                      className="input"
+                      value={config.judge.baseUrl}
+                      placeholder="https://api.deepseek.com/v1"
+                      onChange={(e) => update({ judge: { ...config.judge!, baseUrl: e.target.value } })}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => update({ judge: undefined })}
+                  >
+                    清除判分模型
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() =>
+                    update({
+                      judge: {
+                        baseUrl: 'https://api.deepseek.com/v1',
+                        apiKey: '',
+                        model: '',
+                        stream: false,
+                        temperature: 0
+                      }
+                    })
+                  }
+                >
+                  配置判分模型
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )
@@ -624,6 +702,50 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
               <li>渲染层只能通过白名单通道调用，无 node 能力</li>
             </ul>
           </details>
+          <div className="cardbox">
+            <div className="ch">记忆（跨会话）</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              <div className="hint" style={{ marginBottom: 10 }}>
+                长庚记下的、下次对话还能想起来的事（偏好、正在做的项目、约定的规则）。
+                它会出现在每次对话的系统提示里，但<b>只是线索</b>——涉及本机事实仍然要现查。
+              </div>
+              {memories.length === 0 ? (
+                <div style={{ color: '#8E8E86', fontSize: 12 }}>还没有记下任何东西。对话里说「记住…」即可。</div>
+              ) : (
+                <>
+                  {memories.map((item) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '8px 0',
+                        borderTop: '1px solid #F1F1ED'
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12 }}>
+                          <span style={{ color: '#0067C0' }}>{MEMORY_KIND_LABEL[item.kind] ?? '记录'}</span>
+                          <span style={{ color: '#5A5A54', marginLeft: 8 }}>{item.text}</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: '#8E8E86' }}>
+                          {new Date(item.updatedAt).toLocaleString('zh-CN')}
+                        </div>
+                      </div>
+                      <button className="btn btn-ghost btn-sm" onClick={() => void deleteMemory(item.id)}>
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                  <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => void clearMemory()}>
+                    全部清除
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
           <div className="cardbox">
             <div className="ch">授权记忆（「始终允许」）</div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>

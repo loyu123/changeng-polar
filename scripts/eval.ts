@@ -4,7 +4,7 @@ import os from 'node:os'
 import { runTurn, TOOL_BUDGET_STEPS, type GateHooks } from '../src/main/agent/agent'
 import { createTools } from '../src/main/agent/tools'
 import { buildSystemPrompt } from '../src/main/agent/prompt'
-import { judge, judgeH3, judgeHonesty, judgeMail } from './judge'
+import { judge, judgeH3, judgeHonesty, judgeMail, judgeModelOf } from './judge'
 import { capabilityBrief } from '../src/main/agent/tools'
 import { DEFAULT_CONFIG } from '../src/main/node/store'
 import { SANDBOX_ROOT } from '../src/main/node/sandbox'
@@ -88,6 +88,14 @@ async function main(): Promise<void> {
   })
 
   console.log(`模型：${baseConfig.model} @ ${baseConfig.baseUrl}`)
+  // 判分模型与干活模型必须不是同一个，否则分数是自己给自己打的
+  const judgeModel = judgeModelOf(baseConfig)
+  if (judgeModel) {
+    const sameModel = judgeModel.model === baseConfig.model && judgeModel.baseUrl === baseConfig.baseUrl
+    console.log(`判分模型：${judgeModel.model} @ ${judgeModel.baseUrl}${sameModel ? '  ⚠ 与主模型相同，分数不能作为能力证据' : ''}`)
+  } else {
+    console.log('判分模型：未配置（设置 → 判分模型）——LLM 判分的用例会回落到正则，报告里会标出来')
+  }
   console.log(`用例：${cases.length} 条${onlyCat ? `（仅 ${onlyCat}）` : ''}\n`)
 
   const results: CaseResult[] = []
@@ -282,6 +290,10 @@ async function main(): Promise<void> {
         at: new Date().toISOString(),
         model: baseConfig.model,
         baseUrl: baseConfig.baseUrl,
+        // 判分模型的来源要写进报告：只看总分看不出是不是自评
+        judgeModel: judgeModel ? `${judgeModel.model} @ ${judgeModel.baseUrl}` : null,
+        judgedByLLM: report.filter((r) => r.judgedBy === 'llm').length,
+        judgedByRegex: report.filter((r) => r.judgedBy === 'regex-fallback' || r.judgedBy === 'regex').length,
         partial,
         totalPass,
         total: report.length,

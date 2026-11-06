@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import type { AppNote, AppSnapshot, Evidence, SearchHit, VerifyResult } from '../../shared/types'
+import type { AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit, VerifyResult } from '../../shared/types'
 import { listInstalledApps, listStartupItems } from '../node/registry'
 import { deleteToRecycle, listSandbox, SANDBOX_ROOT } from '../node/sandbox'
 import { captureSnapshot } from '../node/snapshot'
@@ -8,6 +8,7 @@ import { listRecentMail, readMailBody } from '../node/mail'
 import { installWinget, searchWinget, wingetAvailable, type WingetPackage } from '../node/install'
 import { launchUninstaller, planUninstall } from '../node/uninstall'
 import { fetchPage, searchWeb } from '../node/web'
+import { MEMORY_MAX_TEXT, mergeMemory, removeMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
 
 export interface ToolDeps {
@@ -21,6 +22,11 @@ export interface ToolDeps {
   appNotes?: () => Promise<Record<string, AppNote>>
   /** 查证结果（含官网 sentence）：台账的另一半，与手写备注一起构成"功能说明" */
   appVerify?: () => Promise<Record<string, VerifyResult>>
+  /** 跨会话记忆的读写（主进程注入 Store） */
+  memory?: {
+    list: () => Promise<MemoryEntry[]>
+    save: (list: MemoryEntry[]) => Promise<void>
+  }
 }
 
 function ev(partial: Omit<Evidence, 'id' | 'at'>): Evidence {
@@ -625,6 +631,135 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     run: async (): Promise<ToolResult> => ({ ok: false, summary: '这个工具必须先解析目标，直接执行被拒绝' })
   }
 
+  // ---- 跨会话记忆 ----
+
+  const memoryTools: ToolDef[] = [
+    {
+      name: 'save_memory',
+      label: '记住一件事（需确认）',
+      description:
+        '把一件"以后还用得上"的事记下来，下次对话还能想起来。适合：用户让你记住的偏好和习惯、正在做的项目与进度、约定的规则。不适合：一次性的问答内容、从工具读到的会变的事实（装了什么、有什么文件）、你自己的推测。同一件事重复保存只会刷新时间，不会重复记录。',
+      effect: 'write',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            description: `记忆类型：user=关于用户本人 / preference=偏好与习惯 / project=正在做的事 / fact=约定与规则。默认 fact`
+          },
+          text: { type: 'string', description: `一句话，最长 ${MEMORY_MAX_TEXT} 字` }
+        },
+        required: ['text']
+      },
+      describeTarget: (args) => ({
+        title: '记住一件事',
+        target: String(args.text ?? '').slice(0, 80),
+        impact: '只在本地记一条笔记，不改动系统；可在设置里删除',
+        undoHint: '设置 → 记忆'
+      }),
+      // write 档会先备份：这里存的是整个记忆列表的快照，撤销时据此还原
+      backup: async () => {
+        if (!deps.memory) return { ok: false, detail: '当前环境不能保存记忆' }
+        try {
+          const list = await deps.memory.list()
+          return { ok: true, undo: `备份了 ${list.length} 条记忆` }
+        } catch (err) {
+          return { ok: false, detail: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      run: async (args): Promise<ToolResult> => {
+        if (!deps.memory) return { ok: false, summary: '当前环境不能保存记忆' }
+        const list = await deps.memory.list()
+        const outcome = mergeMemory(list, { kind: args.kind, text: args.text })
+        if (!outcome.ok) return { ok: false, summary: `没有保存：${outcome.reason}` }
+        await deps.memory.save(outcome.list)
+        return {
+          ok: true,
+          summary: outcome.replaced
+            ? `这条之前记过，已刷新时间：「${outcome.entry.text}」`
+            : `已记住：「${outcome.entry.text}」（以后对话可以用上，可在设置里删除）`,
+          undo: '设置 → 记忆',
+          data: { id: outcome.entry.id, kind: outcome.entry.kind, text: outcome.entry.text },
+          evidence: [
+            ev({
+              type: 'local',
+              title: `记忆已更新（共 ${outcome.list.length} 条）`,
+              detail: '本地 memory.json · 只存在这台机器上'
+            })
+          ]
+        }
+      }
+    },
+    {
+      name: 'forget_memory',
+      label: '忘掉一条记忆（需确认）',
+      description:
+        '删掉一条之前记下的内容。用户说"忘记这个""记错了""删掉那条记忆"时用它。参数可以是记忆的 id，也可以直接给原文（会按内容匹配）。删之前建议先 list_memory 核对是哪一条。',
+      effect: 'write',
+      parameters: {
+        type: 'object',
+        properties: {
+          ref: { type: 'string', description: '记忆的 id，或要删除的那句话' }
+        },
+        required: ['ref']
+      },
+      describeTarget: (args) => ({
+        title: '忘掉一条记忆',
+        target: String(args.ref ?? '').slice(0, 80),
+        impact: '从本地记忆里删掉这条；其他数据不受影响',
+        undoHint: '设置 → 记忆（删除前有备份，可重新添加）'
+      }),
+      backup: async () => {
+        if (!deps.memory) return { ok: false, detail: '当前环境不能修改记忆' }
+        try {
+          const list = await deps.memory.list()
+          return { ok: true, undo: `备份了 ${list.length} 条记忆` }
+        } catch (err) {
+          return { ok: false, detail: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      run: async (args): Promise<ToolResult> => {
+        if (!deps.memory) return { ok: false, summary: '当前环境不能修改记忆' }
+        const list = await deps.memory.list()
+        const { list: next, removed } = removeMemory(list, String(args.ref ?? ''))
+        if (!removed) return { ok: false, summary: `没有找到要删除的记忆：${String(args.ref ?? '').slice(0, 60)}` }
+        await deps.memory.save(next)
+        return {
+          ok: true,
+          summary: `已删掉：「${removed.text}」`,
+          undo: '设置 → 记忆',
+          data: { removed: removed.text, remaining: next.length }
+        }
+      }
+    },
+    {
+      name: 'list_memory',
+      label: '看看自己记得什么',
+      description:
+        '列出之前记下的所有内容（只读）。用户问"你记得我什么""你记住了哪些东西"，或者删除前需要核对是哪一条时用它。',
+      effect: 'read',
+      parameters: { type: 'object', properties: {} },
+      describeTarget: () => ({
+        title: '读取记忆清单',
+        target: '本地 memory.json',
+        impact: '只读，不改动任何东西'
+      }),
+      run: async (): Promise<ToolResult> => {
+        if (!deps.memory) return { ok: false, summary: '当前环境没有记忆存储' }
+        const list = await deps.memory.list()
+        if (list.length === 0) return { ok: true, summary: '还没有记下任何东西', data: [] }
+        return {
+          ok: true,
+          summary: `共 ${list.length} 条记忆`,
+          data: list.map((item) => ({ id: item.id, kind: item.kind, text: item.text, updatedAt: item.updatedAt })),
+          evidence: [
+            ev({ type: 'local', title: `本地记忆清单（${list.length} 条）`, detail: 'memory.json · 只读' })
+          ]
+        }
+      }
+    }
+  ]
+
   return [
     listApps,
     listStartup,
@@ -635,6 +770,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     deleteToRecycleTool,
     readEmailTool,
     installAppTool,
-    uninstallAppTool
+    uninstallAppTool,
+    ...memoryTools
   ]
 }

@@ -58,6 +58,14 @@ export type SearchProvider = 'duckduckgo' | 'bing' | 'tavily' | 'serper' | 'bing
 export interface ButlerConfig extends ModelConfig {
   searchProvider: SearchProvider
   searchKey: string
+  /**
+   * 判分用的独立模型（评测脚本读它，不与干活的模型共用）。
+   *
+   * 为什么要分开：判分和智能体用同一个模型、同一份 config 时，等于自己给自己
+   * 打分——分数高只证明"这个模型觉得自己的回答对"，证明不了能力。
+   * 没配时评测会明确报"判分模型未配置"，而不是偷偷回落用主模型。
+   */
+  judge?: ModelConfig
   /** 旧版单账号邮箱（只读接入；address 为空 = 未配置）。mailAccounts 非空时不再使用 */
   mail?: MailConfig
   /** 多账号邮箱（只读接入）。数组第一个为默认账号；为空时回落到 mail */
@@ -252,8 +260,34 @@ export interface AppNote {
   updatedAt: string
 }
 
-/** 重装凭据：只保留下载路径/包 ID，不保留安装包本体 */
-export interface AppSource {
+/**
+ * 跨会话记忆的一条。
+ *
+ * 存的是"以后还用得上的事实"，不是聊天记录：聊天记录在 sessions.json 里，
+ * 这里只留可以被下次对话引用的一句话。
+ */
+export type MemoryKind = 'user' | 'preference' | 'project' | 'fact'
+
+export const MEMORY_KIND_LABEL: Record<MemoryKind, string> = {
+  user: '关于我',
+  preference: '偏好',
+  project: '在做的事',
+  fact: '约定与事实'
+}
+
+export interface MemoryEntry {
+  id: string
+  kind: MemoryKind
+  /** 一句话，最长 200 字 */
+  text: string
+  createdAt: string
+  /** 最后确认时间：重复保存同一条时只更新这个字段，不会堆出重复条目 */
+  updatedAt: string
+  /** 出自哪次对话（可选，便于回查原话） */
+  source?: string
+}
+
+/** 重装凭据：只保留下载路径/包 ID，不保留安装包本体 */export interface AppSource {
   appName: string
   version: string
   publisher: string

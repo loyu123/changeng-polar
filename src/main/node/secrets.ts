@@ -72,6 +72,7 @@ function mapSecrets(config: ButlerConfig, fn: (value: string) => string): Butler
     ...config,
     apiKey: fn(config.apiKey ?? ''),
     searchKey: fn(config.searchKey ?? ''),
+    ...(config.judge ? { judge: { ...config.judge, apiKey: fn(config.judge.apiKey ?? '') } } : {}),
     ...(config.mail ? { mail: { ...config.mail, authCode: fn(config.mail.authCode ?? '') } } : {}),
     ...(config.mailAccounts
       ? {

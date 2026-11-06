@@ -9,6 +9,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatSession,
+  MemoryEntry,
   ProjectDef,
   RecordEntry,
   SnapshotDiff,
@@ -139,6 +140,17 @@ const api = {
     list: () => ipcRenderer.invoke('auth:memory:list') as Promise<AlwaysAllowedEntry[]>,
     revoke: (key: string) => ipcRenderer.invoke('auth:memory:revoke', key) as Promise<AlwaysAllowedEntry[]>,
     clear: () => ipcRenderer.invoke('auth:memory:clear') as Promise<AlwaysAllowedEntry[]>
+  },
+
+  /** 跨会话记忆：用户能看、能删、能自己加一条 */
+  memory: {
+    list: () => ipcRenderer.invoke('memory:list') as Promise<MemoryEntry[]>,
+    save: (input: { kind?: string; text: string }) =>
+      ipcRenderer.invoke('memory:save', input) as Promise<
+        { ok: true; list: MemoryEntry[] } | { ok: false; reason: string; list: MemoryEntry[] }
+      >,
+    delete: (ref: string) => ipcRenderer.invoke('memory:delete', ref) as Promise<MemoryEntry[]>,
+    clear: () => ipcRenderer.invoke('memory:clear') as Promise<MemoryEntry[]>
   },
 
   /** 定时任务（主进程调度；到点无头跑一轮，需要授权的操作会被当场拒绝） */
