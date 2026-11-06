@@ -32,7 +32,9 @@ export function conclusionOf(text: string): string {
     out += sentence
     if (out.length >= MAX_LEN) break
   }
-  return (out || firstPara.slice(0, MAX_LEN)).replace(/\s+/g, ' ').trim()
+  // 整段没有句读时（英文、纯逗号长句）上面那句会把整段照收，这里兜住上限：
+  // 不截的话 TTS 会把 300 字的整段念出来，"只读结论"就成了"念全文"
+  return (out || firstPara).slice(0, MAX_LEN).replace(/\s+/g, ' ').trim()
 }
 
 export function speak(text: string): void {

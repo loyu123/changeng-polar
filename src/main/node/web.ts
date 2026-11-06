@@ -14,7 +14,7 @@ export interface SearchOutcome {
   durationMs: number
 }
 
-function unwrapDdg(href: string): string {
+export function unwrapDdg(href: string): string {
   const m = /[?&]uddg=([^&]+)/.exec(href)
   if (m) {
     try {
@@ -27,7 +27,7 @@ function unwrapDdg(href: string): string {
   return href
 }
 
-function unwrapBing(href: string): string {
+export function unwrapBing(href: string): string {
   // 形如 /ck/a?...&u=a1<base64url>&ntb=1，base64 部分只含 [A-Za-z0-9-_]
   const m = /[?&]u=a1([A-Za-z0-9\-_]+)/.exec(href)
   if (!m) return href
@@ -162,7 +162,7 @@ async function searchBingApi(query: string, apiKey: string, signal?: AbortSignal
 /** 检索词拆成"可判定的词元"：拉丁词 + 中文二元组，剔除"官网/下载"这类到处都有的词 */
 const STOPWORDS = new Set(['官网', '官方', '下载', '功能', '介绍', '什么', '怎么', '最新', '免费', '的是', '一个'])
 
-function relevanceTokens(query: string): string[] {
+export function relevanceTokens(query: string): string[] {
   const tokens = new Set<string>()
   for (const part of query.split(/[\s,，、。？?]+/)) {
     if (!part) continue

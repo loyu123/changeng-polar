@@ -11,5 +11,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "scripts/**/*.ts", "tests/main/**/*.ts", "vitest.config.ts"]
 }

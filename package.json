@@ -2,7 +2,8 @@
   "name": "butler-demo",
   "version": "0.4.1",
   "private": true,
-  "description": "管家 · P0 垂直切片 demo（可信回答 + 本机只读读取 + 记录）",
+  "description": "长庚 · 本地电脑管家（对话驱动，写操作全部穿授权闸门）",
+  "author": "loyu123",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -14,7 +15,11 @@
     "a4-baseline": "tsx scripts/a4-baseline.ts",
     "gate": "tsx scripts/gate-check.ts",
     "mock": "node scripts/mock-llm.cjs",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "pack:dir": "npm run build && electron-builder --dir",
+    "pack": "npm run build && electron-builder --win nsis portable"
   },
   "dependencies": {
     "imapflow": "^2.10.0",
@@ -27,9 +32,43 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
     "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5"
+    "vite": "^8.3.5",
+    "vitest": "^3.2.7"
+  },
+  "build": {
+    "appId": "com.loyu123.butler",
+    "productName": "长庚",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "artifactName": "changgeng-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "长庚",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "changgeng-${version}-portable.${ext}"
+    }
   }
 }
+

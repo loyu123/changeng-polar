@@ -118,7 +118,20 @@ export interface RecycleOutcome {
 /** 删除到回收站（可捞回）。路径必须落在沙箱内。 */
 export async function deleteToRecycle(filePath: string): Promise<RecycleOutcome> {
   const target = assertInside(filePath)
-  const stat = await fs.lstat(target)
+  let stat: Awaited<ReturnType<typeof fs.lstat>>
+  try {
+    stat = await fs.lstat(target)
+  } catch {
+    // 文件本来就不在：这是"失败"的一种，按返回值报告，别抛给上层——
+    // 抛出去会被包装成 "没有执行：ENOENT..."，模型拿到的信息比"文件不存在"更难解释清楚
+    return {
+      ok: false,
+      name: path.basename(target),
+      sizeKB: 0,
+      modifiedAt: '',
+      error: 'file not found'
+    }
+  }
   if (!stat.isFile()) throw new Error('沙箱里只演示删除单个文件')
   const raw = await runPs(RECYCLE_PS, [target])
   const parsed = JSON.parse(raw || '{}') as {

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次未完成的运行，省得排队等旧结果
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 类型检查 / 单测 / 构建
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm ci 按 package-lock.json 精确还原，保证 CI 与本地装的是同一批版本
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        run: npm test
+
+      # 构建日志要留档，同时不能让日志管道吞掉构建的失败。
+      # 默认管道的退出码取自最后一节（tee），构建挂了 CI 也会显示成绿的；
+      # 开 pipefail 之后退出码取管道里第一个非零，失败如实上报。
+      - name: 构建（留日志）
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee build.log
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_id }}
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -98,7 +98,12 @@ export function parseUninstallCommand(raw: string): ParsedCommand | string {
     }
   }
 
-  if (!exe) return '没有可执行文件'
+  if (!exe) {
+    // 整串里找不到 .exe：可能是 .bat/.vbs 之类，也可能是纯参数。
+    // 说"没有可执行文件"会误导——把实际是什么说出来，用户才知道该怎么办
+    const head = command.split(/\s+/)[0]
+    return /[\\/]/.test(head) ? `不是 .exe：${head}` : '没有可执行文件'
+  }
   if (!/\.exe$/i.test(exe)) return `不是 .exe：${exe}`
   const base = path.basename(exe).toLowerCase()
   if (SCRIPT_HOSTS.has(base)) return `是脚本宿主（${base}），等于执行任意命令，不做`
