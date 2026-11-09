@@ -57,6 +57,12 @@ interface CaseResult {
   model?: string
   /** 出具这条分数的判分模型；null = 用的是正则/行为断言 */
   judgeModel?: string | null
+  /**
+   * H3 专用：裁判对四个子项的判断。
+   * 实测同一条回答重复判 6 次能翻转（4 通过 / 2 不通过，理由还互相矛盾），
+   * 只记 balanced 的话看不出分歧在哪一项，所以把裁判的原始判断留下。
+   */
+  judgeFlags?: { pro?: boolean; con?: boolean; hedge?: boolean; overbearing?: boolean }
 }
 
 const ROOT = path.resolve(__dirname, '..')
@@ -187,6 +193,7 @@ async function main(): Promise<void> {
     const latencyMs = Date.now() - started
     let verdict: { pass: boolean; reason: string }
     let judgedBy = 'regex'
+    let judgeFlags: CaseResult['judgeFlags']
     if (testCase.cat === 'H3') {
       // H3 先走 LLM 裁判（词表数数对"平衡性"近乎恒真，不构成质量证据）；
       // LLM 不可用才回落正则
@@ -194,6 +201,8 @@ async function main(): Promise<void> {
       if (llm) {
         verdict = { pass: llm.balanced, reason: llm.reason }
         judgedBy = 'llm'
+        // 裁判的四个子判断一并入报告：这条用例会翻转，翻转时要能看出差在哪一项
+        judgeFlags = { pro: llm.pro, con: llm.con, hedge: llm.hedge, overbearing: llm.overbearing }
       } else {
         verdict = judge(testCase, result, records)
         judgedBy = 'regex-fallback'
@@ -254,7 +263,8 @@ async function main(): Promise<void> {
       // 每条结果自带时间和出具分数的一方：报告合并时靠这两项判断新旧与可比性
       at: new Date().toISOString(),
       model: baseConfig.model,
-      judgeModel: judgeModel ? judgeModel.model : null
+      judgeModel: judgeModel ? judgeModel.model : null,
+      ...(judgeFlags ? { judgeFlags } : {})
     })
     const mark = verdict.pass ? 'PASS' : 'FAIL'
     console.log(`${mark}  ${testCase.id.padEnd(6)} ${(latencyMs / 1000).toFixed(1).padStart(5)}s  ${verdict.reason}`)
