@@ -1,3 +1,5 @@
+**中文** | [English](README.en.md)
+
 # 长庚POLAR · 本地电脑管家
 
 Windows 11 上的私人电脑管家 demo。可信回答 + 桌面窗口 + 工具调用实测。
