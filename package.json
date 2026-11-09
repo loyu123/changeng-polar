@@ -37,7 +37,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.11"
   },
   "build": {
     "appId": "com.loyu123.changengpolar",
