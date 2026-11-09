@@ -117,6 +117,50 @@ function wingetFailText(code: number | null): string {
  * 症状是检索有结果却永远匹配不到精确 Id）。改按 2+ 空格分列：
  * 行结构固定为「名称  Id  版本 [匹配]」，名称里的单空格不影响。
  */
+/**
+ * 单空格分隔的"超宽行"。
+ *
+ * winget 的表格是按列宽补空格的，但**「名称」超出列宽时它不补**，name 与 Id 之间
+ * 只剩一个空格，于是一个整行被 `split(/\s{2,}/)` 切成 1 段、`cols.length < 3` 丢掉。
+ *
+ * 真机症状（2026-11-09，装哔哩哔哩来回两轮装不上）：
+ *   winget search --id Bilibili.Bilibili --exact
+ *   哔哩哔哩 Bilibili.Bilibili 1.20.0        ← 全是单空格
+ * 解析出 0 条 → 报"仓库里没有找到「Bilibili.Bilibili」"→ 模型改用中文名重试
+ * → 又是多条匹配 → 再被拒 → 死循环。
+ *
+ * 靠空格宽度切列本身不可靠（同一份输出里多空格行和单空格行并存），所以这里改用
+ * **Id 的形态**定位：Id 是 ASCII 且形如 `Publisher.Package`（含点），把它当锚点切开。
+ * name 用 lazy 匹配，这样 name 里带空格（`Microsoft .NET Host …`）也能切对。
+ *
+ * 那个 `(?=…[A-Za-z])` 是必须的：名称里经常带版本号（`Microsoft .NET Host - 7.0.20 (x64)`），
+ * 而 `7.0.20` 同样满足「数字+点+数字」的形态，会把 name 截断在版本号前。
+ * 真 Id 的发布者段几乎总含字母（`7zip.7zip`、`davidchiu66.TubeUltimatePlayer` 都算），
+ * 纯数字的点分串则只可能是版本号。
+ */
+const WIDE_ROW_RE =
+  /^(.+?)\s+(?=[A-Za-z0-9._+-]*[A-Za-z])([A-Za-z0-9][A-Za-z0-9._+-]*\.[A-Za-z0-9][A-Za-z0-9._+-]*)\s+(\S+)/
+
+/** 从一行里切出 name / id / version；切不出返回 null */
+function parseRow(line: string): WingetPackage | null {
+  // 先走正常的"多空格对齐"路径——绝大多数行是这种
+  const cols = line.split(/\s{2,}/)
+  if (cols.length >= 3) {
+    const [name, id, rawVersion] = cols
+    // 版本列可能与「匹配」列粘连（单空格分隔），只取开头的版本号本体
+    const version = rawVersion.match(/^[0-9][A-Za-z0-9.+]*/)?.[0] ?? rawVersion
+    // Id 是 winget 的包标识（ASCII，形如 Publisher.Package），靠它排除误切
+    if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) && id.includes('.') && name && version) {
+      return { name, id, version }
+    }
+  }
+  // 兜底：名称超宽导致整行单空格，用 Id 形态当锚点
+  const m = WIDE_ROW_RE.exec(line)
+  if (!m) return null
+  const [, name, id, version] = m
+  return { name: name.trim(), id, version }
+}
+
 export function parseWingetTable(text: string): WingetPackage[] {
   const lines = text.split(/\r?\n/)
   const headerIdx = lines.findIndex((l) => /^(Name|名称)\s+(Id|ID)\s+(Version|版本)/i.test(l))
@@ -125,15 +169,8 @@ export function parseWingetTable(text: string): WingetPackage[] {
   for (let i = headerIdx + 2; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line || /^-+$/.test(line)) continue
-    const cols = line.split(/\s{2,}/)
-    if (cols.length < 3) continue
-    const [name, id, rawVersion] = cols
-    // 版本列可能与「匹配」列粘连（单空格分隔），只取开头的版本号本体
-    const version = rawVersion.match(/^[0-9][A-Za-z0-9.+]*/)?.[0] ?? rawVersion
-    // Id 是 winget 的包标识（ASCII，形如 Publisher.Package），靠它排除误切
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || !id.includes('.')) continue
-    if (!name || !version) continue
-    pkgs.push({ name, id, version })
+    const pkg = parseRow(line)
+    if (pkg) pkgs.push(pkg)
   }
   return pkgs
 }

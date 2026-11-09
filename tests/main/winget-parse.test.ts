@@ -67,6 +67,67 @@ describe('parseWingetTable', () => {
     ].join('\n')
     expect(parseWingetTable(text)).toEqual([])
   })
+
+  /**
+   * 名称超出列宽时 winget 不补空格，name 与 Id 之间只剩一个空格。
+   * 真机原文（2026-11-09）：`winget search --id Bilibili.Bilibili --exact` 的输出
+   * 就是这种，旧实现按 2+ 空格切列，切不开 → 整行丢弃 → 报"仓库里没有找到"。
+   * 后果是装中文软件时死循环：报中文名→多条匹配→模型改用 Id→却说找不到→再报中文名。
+   */
+  it('名称超宽、整行单空格（真机原文）：仍要解析出来', () => {
+    const text = [
+      '名称     ID                版本',
+      '---------------------------------',
+      '哔哩哔哩 Bilibili.Bilibili 1.20.0'
+    ].join('\n')
+    expect(parseWingetTable(text)).toEqual([{ name: '哔哩哔哩', id: 'Bilibili.Bilibili', version: '1.20.0' }])
+  })
+
+  it('同一份输出里多空格行与单空格行混排', () => {
+    const text = [
+      '名称                 ID                            版本         匹配',
+      '------------------------------------------------------------------------------',
+      '哔哩哔哩             Bilibili.Bilibili              1.20.0',
+      'BiliSail             CKopoer.BiliSail               1.2.8005     Tag: 哔哩哔哩',
+      'Tube_Ultimate_Player davidchiu66.TubeUltimatePlayer 0.2.31       Tag: 哔哩哔哩'
+    ].join('\n')
+    expect(parseWingetTable(text)).toEqual([
+      { name: '哔哩哔哩', id: 'Bilibili.Bilibili', version: '1.20.0' },
+      { name: 'BiliSail', id: 'CKopoer.BiliSail', version: '1.2.8005' },
+      { name: 'Tube_Ultimate_Player', id: 'davidchiu66.TubeUltimatePlayer', version: '0.2.31' }
+    ])
+  })
+
+  it('单空格行里名称本身带点（Node.js）不会把 name 当成 Id', () => {
+    const text = [
+      '名称     ID                版本',
+      '---------------------------------',
+      'Node.js 10 OpenJS.NodeJS.10 10.24.1'
+    ].join('\n')
+    expect(parseWingetTable(text)).toEqual([
+      { name: 'Node.js 10', id: 'OpenJS.NodeJS.10', version: '10.24.1' }
+    ])
+  })
+
+  it('单空格行里名称带空格与括号，也切得对', () => {
+    const text = [
+      '名称     ID                版本',
+      '---------------------------------',
+      'Microsoft .NET Host - 7.0.20 (x64) Microsoft.DotNet.Host 7.0.20'
+    ].join('\n')
+    expect(parseWingetTable(text)).toEqual([
+      { name: 'Microsoft .NET Host - 7.0.20 (x64)', id: 'Microsoft.DotNet.Host', version: '7.0.20' }
+    ])
+  })
+
+  it('切不出 Id 的行（纯文本提示）仍然丢弃', () => {
+    const text = [
+      '名称    ID    版本',
+      '-------------------------',
+      '正在下载安装包 请稍候'
+    ].join('\n')
+    expect(parseWingetTable(text)).toEqual([])
+  })
 })
 
 /**
