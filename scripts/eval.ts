@@ -6,7 +6,7 @@ import { createTools } from '../src/main/agent/tools'
 import { buildSystemPrompt } from '../src/main/agent/prompt'
 import { judge, judgeH3, judgeHonesty, judgeMail, judgeModelOf } from './judge'
 import { capabilityBrief } from '../src/main/agent/tools'
-import { DEFAULT_CONFIG } from '../src/main/node/store'
+import { configPath, describeMissing, loadScriptConfig } from './lib/load-config'
 import { SANDBOX_ROOT } from '../src/main/node/sandbox'
 import type { ButlerConfig, ChatMessage, MailConfig, MemoryEntry, RecordEntry, TurnResult } from '../src/shared/types'
 
@@ -62,28 +62,23 @@ interface CaseResult {
 const ROOT = path.resolve(__dirname, '..')
 const CASES_PATH = path.join(ROOT, 'evals', 'cases.json')
 const REPORT_PATH = path.join(ROOT, 'evals', 'report.json')
-const CONFIG_PATH = path.join(process.env.APPDATA ?? os.homedir(), 'butler-demo', 'config.json')
-
-function loadConfig(): ButlerConfig {
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      return { ...DEFAULT_CONFIG, ...(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Partial<ButlerConfig>) }
-    } catch {
-      /* 落到默认值 */
-    }
-  }
-  return { ...DEFAULT_CONFIG }
-}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const onlyCat = args.find((a) => a.startsWith('--cat='))?.split('=')[1]
   const onlyId = args.find((a) => a.startsWith('--id='))?.split('=')[1]
 
-  const baseConfig = loadConfig()
+  const loaded = loadScriptConfig()
+  const baseConfig = loaded.config
+  // 凭据是怎么来的必须打出来：解密失败和"Key 填错了"在 401 里长得一模一样
+  console.log(`凭据：${loaded.secretSource}`)
+  for (const note of loaded.fromEnv) console.log(`配置来源：${note}`)
+  // 关键：不能只看 apiKey 非空。盘上是密文时它同样"非空"，
+  // 发出去就是一个 Bearer enc:v1:...，服务端回 401，看起来像模型挂了
   if (!baseConfig.apiKey && !/localhost|127\.0\.0\.1/i.test(baseConfig.baseUrl)) {
-    console.error(`未找到可用的模型配置：${CONFIG_PATH}`)
-    console.error('请先在应用「设置」里填好 baseUrl / model / apiKey，再跑评测。')
+    console.error(`未找到可用的模型配置：${configPath()}`)
+    if (loaded.missing.length > 0) console.error(`\n${describeMissing(loaded)}`)
+    else console.error('请先在应用「设置」里填好 baseUrl / model / apiKey，再跑评测。')
     process.exit(1)
   }
 

@@ -1,10 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { verifyApp } from '../src/main/verify'
 import { listInstalledApps } from '../src/main/node/registry'
-import { DEFAULT_CONFIG } from '../src/main/node/store'
+import { loadScriptConfig } from './lib/load-config'
 import type { ButlerConfig } from '../src/shared/types'
 
 /**
@@ -24,7 +23,6 @@ import type { ButlerConfig } from '../src/shared/types'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const BASELINE_PATH = path.join(ROOT, 'evals', 'a4-baseline.json')
 const REPORT_PATH = path.join(ROOT, 'evals', 'a4-report.json')
-const CONFIG_PATH = path.join(process.env.APPDATA ?? os.homedir(), 'butler-demo', 'config.json')
 
 interface Sample {
   name: string
@@ -45,14 +43,7 @@ interface Baseline {
 }
 
 function loadConfig(): ButlerConfig {
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      return { ...DEFAULT_CONFIG, ...(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Partial<ButlerConfig>) }
-    } catch {
-      /* 落到默认值 */
-    }
-  }
-  return { ...DEFAULT_CONFIG }
+  return loadScriptConfig().config
 }
 
 function arg(name: string): string | undefined {

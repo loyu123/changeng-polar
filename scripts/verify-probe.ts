@@ -1,9 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { verifyApp } from '../src/main/verify'
 import { listInstalledApps } from '../src/main/node/registry'
-import { DEFAULT_CONFIG } from '../src/main/node/store'
+import { loadScriptConfig } from './lib/load-config'
 import type { ButlerConfig } from '../src/shared/types'
 
 /**
@@ -18,17 +15,8 @@ import type { ButlerConfig } from '../src/shared/types'
  * 判定口径：命中 = 找到一个**官方页面**，且模型能从正文里抄出一句话说明。
  * 命中分两条路径，报告里分开计：注册表登记的产品网址直连 vs 检索出来再抓。
  */
-const CONFIG_PATH = path.join(process.env.APPDATA ?? os.homedir(), 'butler-demo', 'config.json')
-
 function loadConfig(): ButlerConfig {
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      return { ...DEFAULT_CONFIG, ...(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Partial<ButlerConfig>) }
-    } catch {
-      /* 落到默认值 */
-    }
-  }
-  return { ...DEFAULT_CONFIG }
+  return loadScriptConfig().config
 }
 
 function arg(name: string): string | undefined {
