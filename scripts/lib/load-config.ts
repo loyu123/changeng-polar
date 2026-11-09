@@ -222,7 +222,7 @@ function decryptViaElectron(): DecryptOutcome {
 
 /** 应用落配置的位置；报错信息里要写给人看 */
 export function configPath(): string {
-  return path.join(process.env.APPDATA ?? os.homedir(), 'butler-demo', 'config.json')
+  return path.join(process.env.APPDATA ?? os.homedir(), 'changeng-polar', 'config.json')
 }
 
 /** 读配置，把加密的密钥换成明文 */

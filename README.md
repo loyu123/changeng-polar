@@ -1,4 +1,4 @@
-# 管家 · 本地电脑管家 Demo
+# 长庚POLAR · 本地电脑管家
 
 Windows 11 上的私人电脑管家 demo。可信回答 + 桌面窗口 + 工具调用实测。
 
@@ -47,7 +47,7 @@ $env:BUTLER_MAIL_AUTHCODE="..."         # 邮箱授权码（M1 组用例）
 npm run eval
 ```
 
-数据都落在 `%APPDATA%\butler-demo\`：`config.json`（模型/检索/邮箱凭据，落盘前经 safeStorage 加密）、
+数据都落在 `%APPDATA%\changeng-polar\`：`config.json`（模型/检索/邮箱凭据，落盘前经 safeStorage 加密）、
 `records.jsonl`（append-only 动作记录，5MB 轮转，只留最近三份）、`verify.json`（查证缓存）、
 `auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆），以及任务/项目/待办/会话各一份 JSON。
 
@@ -246,7 +246,7 @@ tests/                     单测（vitest，不连网、不读注册表）
 - 外链与 `ms-settings:` 一律交给系统打开，应用内不加载远程页面。
 - 只读动作在记录页撤回列显示「—」——没有可撤回的东西，不假装可撤销。
 - 授权卡可全程键盘操作（聚焦主按钮 / Tab 循环 / Enter 确认 / Esc 拒绝）；跑动中可点「停止」，会同时中断请求并放掉挂起的授权卡。
-- 「始终允许」会落盘到 `%APPDATA%\butler-demo\auth-memory.json`，重启仍生效；设置页能看、能撤销。**只有 `install_app` 进这张表**（key 含包名 + 版本，换包或换版本即失效）；删除与卸载永远逐次弹卡。
+- 「始终允许」会落盘到 `%APPDATA%\changeng-polar\auth-memory.json`，重启仍生效；设置页能看、能撤销。**只有 `install_app` 进这张表**（key 含包名 + 版本，换包或换版本即失效）；删除与卸载永远逐次弹卡。
 
 ## Demo 明确没做
 

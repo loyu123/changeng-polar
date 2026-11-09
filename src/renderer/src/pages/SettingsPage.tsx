@@ -371,7 +371,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   <input
                     className="input"
                     value={acc.address}
-                    placeholder="test@example.com"
+                    placeholder="you@example.com"
                     onChange={(e) => updateAccount(acc.id, { address: e.target.value })}
                   />
                 </div>

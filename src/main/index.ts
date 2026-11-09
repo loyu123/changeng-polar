@@ -162,7 +162,7 @@ void app.whenReady().then(async () => {
   for (const entry of await store.listAlwaysAllowed()) alwaysAllowed.add(entry.key)
 
   // Windows 的系统通知要靠 AppUserModelID 归属到应用，打包后的快捷方式也用它分组
-  app.setAppUserModelId('com.loyu123.butler')
+  app.setAppUserModelId('com.loyu123.changengpolar')
 
   // 演示沙箱只是闸门的验收脚手架，仅开发态造一次。
   // 正式运行时不再往用户临时目录里塞假文件（删了下次开机又长出来，很怪）

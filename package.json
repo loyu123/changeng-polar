@@ -1,5 +1,5 @@
 {
-  "name": "butler-demo",
+  "name": "changeng-polar",
   "version": "0.4.1",
   "private": true,
   "description": "长庚 · 本地电脑管家（对话驱动，写操作全部穿授权闸门）",
@@ -40,7 +40,7 @@
     "vitest": "^3.2.7"
   },
   "build": {
-    "appId": "com.loyu123.butler",
+    "appId": "com.loyu123.changengpolar",
     "productName": "长庚POLAR",
     "electronDist": "node_modules/electron/dist",
     "directories": {

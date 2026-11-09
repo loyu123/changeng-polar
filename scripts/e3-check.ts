@@ -16,7 +16,7 @@ function main(): void {
   }
 
   console.log(`--- 1) 审计流水核对（关键词：${keyword}）---`)
-  const auditPath = path.join(process.env.APPDATA ?? os.homedir(), 'butler-demo', 'records.jsonl')
+  const auditPath = path.join(process.env.APPDATA ?? os.homedir(), 'changeng-polar', 'records.jsonl')
   let installs = 0
   if (existsSync(auditPath)) {
     for (const line of readFileSync(auditPath, 'utf8').split('\n')) {

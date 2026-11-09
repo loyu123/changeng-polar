@@ -11,3 +11,6 @@ release/
 
 # 图标脚本的预览图，不是打包产物
 build/_sheet.png
+
+# 评测产物：每次跑都会重写，且含本机 IP 与已装软件清单，不进仓库
+evals/a4-report.json

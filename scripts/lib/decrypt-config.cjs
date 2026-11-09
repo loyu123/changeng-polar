@@ -6,7 +6,7 @@
  * 这个 API，`node scripts/eval.ts` 无论怎么读都只能拿到 `enc:v1:...` 这串密文。
  *
  * 为什么不能省掉 app.setPath：Electron 默认的 userData 是 %APPDATA%\Electron，
- * 那里面的 Local State 是另一把密钥（或根本不存在），拿它去解 butler-demo 的密文只会抛
+ * 那里面的 Local State 是另一把密钥（或根本不存在），拿它去解 changeng-polar 的密文只会抛
  * "Error while decrypting the ciphertext provided"。踩过这个坑，症状是解密失败但看起来
  * 像凭据坏了。
  *
@@ -25,7 +25,7 @@ const path = require('node:path')
 const MARKER = '__BUTLER_CONFIG__'
 const ENC_PREFIX = 'enc:v1:'
 
-const appUserData = path.join(process.env.APPDATA || app.getPath('appData'), 'butler-demo')
+const appUserData = path.join(process.env.APPDATA || app.getPath('appData'), 'changeng-polar')
 const configFile = path.join(appUserData, 'config.json')
 const sourceState = path.join(appUserData, 'Local State')
 
