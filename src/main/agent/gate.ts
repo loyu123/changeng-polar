@@ -180,6 +180,7 @@ export async function executeThroughGate(
       authz,
       snapshot: result.snapshotId,
       sourceUrl: result.sourceUrl,
+      installedName: result.installedName,
       ...extra
     })
   }

@@ -190,3 +190,27 @@ export async function listStartupItems(force = false): Promise<{ items: StartupI
   startupCache = { at: Date.now(), value: items }
   return { items, durationMs: Date.now() - started }
 }
+
+export interface StartupDiff {
+  /** 装完之后新冒出来的自启项 */
+  added: string[]
+  /** 装之前有、装之后没了：正常安装不该出现，出现说明有别的东西被动了 */
+  removed: string[]
+}
+
+/**
+ * 两次启动项扫描的差集，按 name 比。
+ *
+ * 纯函数，不在扫描里算：两次扫描之间可能夹着别的进程在动自启项，
+ * 而这里只陈述"前后差异"，不推断是谁加的——措辞上也要守住这条。
+ */
+export function diffStartupNames(before: string[], after: string[]): StartupDiff {
+  const b = new Set(before)
+  const a = new Set(after)
+  // 两边都先过 Set：启动项允许重名（注册表 Run 键与启动文件夹里各有一个同名项），
+  // 不去重的话 added 会冒出重复项，界面上看着像"加了两个"
+  return {
+    added: [...a].filter((name) => !b.has(name)),
+    removed: [...b].filter((name) => !a.has(name))
+  }
+}

@@ -391,6 +391,15 @@ export interface RecordEntry {
   sourceUrl?: string
   /** 卸载前存的状态快照 id（用来回答"卸完少了什么"） */
   snapshot?: string
+  /**
+   * 安装成功后登记的程序显示名（注册表 DisplayName）。
+   *
+   * 为什么记名字而不是只记 winget 包 Id：应用台账（list_installed_apps）的键是
+   * DisplayName，要回答"这个程序是不是管家装的、什么时候装的"必须能对上那一行。
+   * winget 包 Id 与 DisplayName 不保证一致，所以两条都留：Id 进 sourceUrl 那条记录
+   * 的 data，显示名进这个字段。
+   */
+  installedName?: string
 }
 
 /**

@@ -204,3 +204,85 @@ export async function installWinget(id: string, signal?: AbortSignal): Promise<I
   if (r.code !== 0) return { ok: false, detail: `winget 安装失败：${wingetFailText(r.code)} · ${tail}` }
   return { ok: true, detail: tail || 'winget 报告安装成功', sourceUrl }
 }
+
+/**
+ * 装完核对：winget 自己说成功不算数。
+ *
+ * 为什么必须单独查一遍：`--silent` 拉起的是厂商安装器，网易云这类是外壳程序，
+ * 外壳退出码与"真的装上了"不一定一致；网络断了、UAC 被拒、安装器静默失败，
+ * winget 都可能报成功。台账上写"已安装"而机器上什么都没有，比装不上更糟。
+ */
+const LIST_TIMEOUT_MS = 60_000
+
+/** winget 明确表示"没装"的措辞（不同版本/语言不同） */
+const NOT_INSTALLED_RE =
+  /找不到与输入条件匹配|找不到与输入条件相符|No installed package found|No package found matching input criteria/i
+
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export interface InstalledCheck {
+  found: boolean
+  /** winget 报的显示名（注册表 DisplayName 通常与它一致，但不是保证） */
+  name?: string
+  version?: string
+  detail: string
+}
+
+/**
+ * 从 winget list 的输出里取「显示名 / 版本」。
+ *
+ * 不能复用 parseWingetTable：那个按 2+ 空格切列，对 search 的输出成立，
+ * 而 list 在名称超过列宽时列间只剩**一个**空格（真机实测整行是
+ * `7-Zip 26.05 (x64) 7zip.7zip 26.05 26.06 winget`），按 2+ 空格一条都切不出来。
+ * 改成"按已知的 Id 反切"：Id 左边是显示名，右边第一个词是版本——
+ * 与列宽、语言、对齐方式都无关。
+ */
+export function parseListedRow(text: string, id: string): { name: string; version: string } | null {
+  const needle = id.toLowerCase()
+  const isIdChar = (ch: string | undefined): boolean => ch !== undefined && /[a-z0-9._+-]/.test(ch)
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    // 表头、分隔线都不是数据行
+    if (!line || /^(名称|Name)\s+/i.test(line) || /^-+$/.test(line)) continue
+    const lower = line.toLowerCase()
+    const at = lower.indexOf(needle)
+    if (at < 0) continue
+    // Id 必须自成一段，否则 NetEase.CloudMusic 会命中 NetEase.CloudMusic.Beta 那一行
+    if (isIdChar(lower[at - 1]) || isIdChar(lower[at + needle.length])) continue
+    const name = line.slice(0, at).trim()
+    if (!name) continue
+    const version = line.slice(at + id.length).trim().split(/\s+/)[0] ?? ''
+    return { name, version }
+  }
+  return null
+}
+
+export async function checkInstalled(id: string, signal?: AbortSignal): Promise<InstalledCheck> {
+  assertPackageId(id)
+  const r = await runWinget(
+    ['list', '--id', id, '--exact', '--accept-source-agreements', '--disable-interactivity'],
+    LIST_TIMEOUT_MS,
+    signal
+  )
+  if (r.missing) return { found: false, detail: '这台机器上没有 winget，无法核对安装结果' }
+  if (r.code === -2) return { found: false, detail: '核对被中止（用户停止）' }
+  if (r.code === -1) return { found: false, detail: 'winget list 超过 60 秒没有返回，未能核对' }
+
+  const row = parseListedRow(r.output, id)
+  if (row) {
+    return {
+      found: true,
+      name: row.name,
+      version: row.version,
+      detail: `winget list 列出 ${id} ${row.version}`.trim()
+    }
+  }
+  if (NOT_INSTALLED_RE.test(r.output)) return { found: false, detail: 'winget list 报告没有匹配的已安装程序' }
+  // 输出格式将来变了也别误报"没装"：整份输出里逐字出现这个 Id 就算查到
+  if (new RegExp(escapeRe(id), 'i').test(r.output)) {
+    return { found: true, detail: `winget list 输出里出现了 ${id}` }
+  }
+  return { found: false, detail: `winget list 没有返回 ${id}（退出码 ${r.code}）` }
+}

@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import type { AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit, VerifyResult } from '../../shared/types'
-import { listInstalledApps, listStartupItems } from '../node/registry'
+import type { AppInfo, AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit, VerifyResult } from '../../shared/types'
+import { diffStartupNames, listInstalledApps, listStartupItems, type StartupDiff } from '../node/registry'
 import { deleteToRecycle, listSandbox, SANDBOX_ROOT } from '../node/sandbox'
 import { captureSnapshot } from '../node/snapshot'
 import { listRecentMail, readMailBody } from '../node/mail'
-import { installWinget, searchWinget, wingetAvailable, type WingetPackage } from '../node/install'
+import {
+  checkInstalled,
+  installWinget,
+  searchWinget,
+  wingetAvailable,
+  type InstalledCheck,
+  type WingetPackage
+} from '../node/install'
 import { launchUninstaller, planUninstall } from '../node/uninstall'
 import { fetchPage, searchWeb } from '../node/web'
 import { MEMORY_MAX_TEXT, mergeMemory, removeMemory } from '../node/memory'
@@ -26,6 +33,113 @@ export interface ToolDeps {
   memory?: {
     list: () => Promise<MemoryEntry[]>
     save: (list: MemoryEntry[]) => Promise<void>
+  }
+  /**
+   * 管家装过的程序：注册表显示名 → 安装时间（ISO）。
+   * 来自审计记录里 effect=install 且成功的那几条，应用台账据此标"是不是管家装的"。
+   */
+  butlerInstalls?: () => Promise<Record<string, string>>
+}
+
+/**
+ * 注册表的 InstallDate 是 YYYYMMDD 字符串。
+ * 格式对不上就原样返回，不去猜它是什么日期——猜错比空着更糟。
+ */
+function formatInstallDate(raw: string): string | null {
+  const text = (raw ?? '').trim()
+  if (!text) return null
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(text)
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : text
+}
+
+interface InstallVerification {
+  /** 是否真的在程序清单里查到了 */
+  confirmed: boolean
+  /** 注册表里的那一行（查不到就是 null） */
+  app: AppInfo | null
+  /** 登记进审计的显示名 */
+  displayName: string
+  /** 一句话结论，直接并进工具 summary */
+  note: string
+}
+
+/**
+ * 装完核对：winget 说成功之后，再自己查三件事。
+ *
+ * 全部用 force=true：注册表与启动项各有 TTL 缓存（5 分钟 / 1 分钟），
+ * 装完不强制刷新，读到的还是装之前那一份，"核对通过"就成了自己骗自己。
+ */
+async function verifyInstall(
+  chosen: WingetPackage,
+  beforeStartup: string[] | null,
+  signal?: AbortSignal
+): Promise<InstallVerification> {
+  let check: InstalledCheck
+  try {
+    check = await checkInstalled(chosen.id, signal)
+  } catch (err) {
+    check = { found: false, detail: `核对失败：${err instanceof Error ? err.message : String(err)}` }
+  }
+
+  let apps: AppInfo[] = []
+  try {
+    apps = (await listInstalledApps(true)).apps
+  } catch {
+    apps = []
+  }
+  // winget 的 name 与注册表 DisplayName 不保证一致，所以两级匹配：先全等、再包含。
+  // 包含匹配只在**唯一命中**时采用：否则查 "WeChat" 可能挑到 "WeChat Work"，
+  // 报告出来的安装路径就是另一个程序的。都找不到就认"没核实到"，不硬凑一行上去
+  const wanted = [check.name, chosen.name]
+    .map((n) => (n ?? '').trim().toLowerCase())
+    .filter((n) => n.length >= 2)
+  const exact = apps.find((a) => wanted.includes(a.name.toLowerCase()))
+  const loose = exact ? [] : apps.filter((a) => wanted.some((w) => a.name.toLowerCase().includes(w)))
+  const app = exact ?? (loose.length === 1 ? loose[0] : null)
+
+  let startup: StartupDiff | null = null
+  if (beforeStartup) {
+    try {
+      startup = diffStartupNames(
+        beforeStartup,
+        (await listStartupItems(true)).items.map((i) => i.name)
+      )
+    } catch {
+      startup = null
+    }
+  }
+
+  const confirmed = check.found || Boolean(app)
+  const parts: string[] = []
+  if (confirmed) {
+    const where = app?.installLocation ? `，装到 ${app.installLocation}` : ''
+    parts.push(`核过程序清单：${app?.name ?? check.name ?? chosen.name} 在册${where}`)
+  } else {
+    parts.push(`核对没对上（${check.detail}）：安装器可能还没写完，或安装被中途取消`)
+  }
+  if (app) {
+    const date = formatInstallDate(app.installDate)
+    if (date) parts.push(`注册表登记安装日期 ${date}`)
+  }
+  if (startup && (startup.added.length > 0 || startup.removed.length > 0)) {
+    if (startup.added.length > 0) {
+      const shown = startup.added.slice(0, 4).join('、')
+      parts.push(
+        `安装前后新增 ${startup.added.length} 个开机自启项（${shown}${startup.added.length > 4 ? '…' : ''}），这是两次扫描的差异，未必全是它加的`
+      )
+    }
+    if (startup.removed.length > 0) {
+      parts.push(`另有 ${startup.removed.length} 个自启项在安装前后消失，不正常，值得看一眼`)
+    }
+  } else if (startup) {
+    parts.push('安装前后开机自启项没有变化')
+  }
+
+  return {
+    confirmed,
+    app,
+    displayName: app?.name ?? check.name ?? chosen.name,
+    note: parts.join('；')
   }
 }
 
@@ -61,7 +175,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     name: 'list_installed_apps',
     label: '读取已安装程序清单',
     description:
-      '读取本机已安装程序清单（来自注册表 Uninstall 键，只读）。可回答"装了什么、版本、发布者、装在哪"。用户给程序写过功能备注时，行里会带 note 字段——那是用户自己的记录，回答"这个程序是干什么的"时优先引用它；没有 note 就如实说没有登记说明。',
+      '读取本机已安装程序清单（来自注册表 Uninstall 键，只读）。可回答"装了什么、版本、发布者、装在哪、什么时候装的"。用户给程序写过功能备注时，行里会带 note 字段——那是用户自己的记录，回答"这个程序是干什么的"时优先引用它；没有 note 就如实说没有登记说明。installedByButler 非空表示这个程序是管家装的，值就是当时的安装时间。',
     effect: 'read',
     parameters: {
       type: 'object',
@@ -94,6 +208,13 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       } catch {
         verifies = {}
       }
+      // 管家装过的程序（显示名 → 安装时间）：台账据此回答"这个是管家装的吗"
+      let installs: Record<string, string> = {}
+      try {
+        installs = (await deps.butlerInstalls?.()) ?? {}
+      } catch {
+        installs = {}
+      }
       const query = String(args.query ?? '').trim().toLowerCase()
       const includeSystem = args.include_system === true
       const limit = Math.min(Math.max(Number(args.limit ?? 40), 1), 200)
@@ -110,6 +231,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           version: a.version,
           publisher: a.publisher,
           installLocation: a.installLocation,
+          installDate: formatInstallDate(a.installDate),
+          installedByButler: installs[a.name] ?? null,
           sizeMB: a.sizeKB ? Math.round((a.sizeKB / 1024) * 10) / 10 : null,
           note: notes[a.name]?.text ?? null,
           description: verifies[a.name]?.status === 'verified' ? verifies[a.name].sentence : null,
@@ -449,7 +572,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     name: 'install_app',
     label: '安装软件（需授权）',
     description:
-      '通过 winget（Windows 官方包管理器）安装一个软件：先在 winget 仓库检索，唯一匹配才出授权卡，静默安装。来源与哈希校验由 winget 负责，不在桌面留安装包；安装不可撤回，装完可在「设置 → 应用」卸载。授权卡上用户可以点「始终允许」：只对同一个包的同一版本生效（换个包/换版本仍要重新授权），并可在「设置 → 授权记忆」里撤销。用户没有明确同意前不要调用；winget 里没有或有多条匹配时会拒绝，此时如实转述。',
+      '通过 winget（Windows 官方包管理器）安装一个软件：先在 winget 仓库检索，唯一匹配才出授权卡，静默安装。来源与哈希校验由 winget 负责，不在桌面留安装包；安装不可撤回，装完可在「设置 → 应用」卸载。装完会自动核对程序清单与新增的开机自启项，核对结果会附在返回里：**核对没对上时必须如实说"没核实到装好了"，不要因为 winget 报了成功就告诉用户已经装好**。授权卡上用户可以点「始终允许」：只对同一个包的同一版本生效（换个包/换版本仍要重新授权），并可在「设置 → 授权记忆」里撤销。用户没有明确同意前不要调用；winget 里没有或有多条匹配时会拒绝，此时如实转述。',
     effect: 'install',
     // 全注册表唯一开「始终允许」的档位：安装是系统改动但非销毁，key 含包名+版本，
     // 换目标即失效；删除/卸载（销毁类）永远逐次弹卡，不允许记忆
@@ -494,26 +617,55 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         target: {
           title: `安装：${chosen.name}`,
           target: `${chosen.id} ${chosen.version} · 来源 winget 官方仓库`,
-          impact: `通过 winget 静默安装到系统（${chosen.id}）；来源与哈希校验由 winget 负责，不在桌面留安装包`,
+          // 静默安装真正的代价必须写在卡上：用户批准时看不到安装器界面，
+          // 也就没机会取消任何默认勾选。这句话是他在批准前唯一的信息来源
+          impact: `通过 winget 静默安装到系统（${chosen.id}）：全程不出现可点的安装界面，所以安装器默认勾上的东西（开机自启、桌面快捷方式等）会照原样生效，过程中取消不了。装完会自动核对程序清单与新增的自启项并写进记录。来源与哈希由 winget 校验，不在桌面留安装包。`,
           undoHint: '安装不可撤回；装完可在「设置 → 应用」里卸载',
           reinstallHint: `安装源：winget（Id: ${chosen.id}）`
         },
         execute: async (): Promise<ToolResult> => {
+          // 装之前先扫一次自启项：装完只陈述前后差异，不推断是谁加的。
+          // 扫不到就当没有基准线，后面就不聊自启项（宁可不提，也不猜）
+          const beforeStartup = await listStartupItems(true)
+            .then((r) => r.items.map((i) => i.name))
+            .catch(() => null)
+
           const outcome = await installWinget(chosen.id, ctx.signal)
           if (!outcome.ok) {
             return { ok: false, summary: `没能安装「${chosen.name}」：${outcome.detail}` }
           }
+
+          const verified = await verifyInstall(chosen, beforeStartup, ctx.signal)
+          const headline = verified.confirmed
+            ? `已通过 winget 静默安装「${chosen.name}」（${chosen.id}）`
+            : `winget 报告安装成功，但核对没对上：程序清单里查不到「${chosen.name}」（${chosen.id}）`
+
           return {
-            ok: true,
-            summary: `已通过 winget 静默安装「${chosen.name}」（${chosen.id}）。可以用 list_installed_apps 确认，或去「设置 → 应用」查看`,
+            // winget 说成功、我们却查不到，这条就按未成功上报（审计记 partial），
+            // 让模型如实说"没核实到"，而不是替 winget 宣布装好了
+            ok: verified.confirmed,
+            summary: `${headline}。${verified.note}`,
             undo: '安装不可撤回（卸载可再找管家）',
             sourceUrl: outcome.sourceUrl,
-            data: { id: chosen.id, version: chosen.version, source: 'winget', sourceUrl: outcome.sourceUrl },
+            // 只登记核实到的显示名：没核实到就不往台账上写"管家装的"
+            installedName: verified.confirmed ? verified.displayName : undefined,
+            data: {
+              id: chosen.id,
+              version: chosen.version,
+              source: 'winget',
+              sourceUrl: outcome.sourceUrl,
+              installedName: verified.displayName,
+              installLocation: verified.app?.installLocation || null,
+              installDate: verified.app ? formatInstallDate(verified.app.installDate) : null,
+              confirmed: verified.confirmed
+            },
             evidence: [
               ev({
                 type: 'local',
                 title: `安装：${chosen.name}`,
-                detail: `winget 静默安装 · Id ${chosen.id} · 用户授权后执行${outcome.sourceUrl ? ` · 安装包来源 ${outcome.sourceUrl}` : ''}`
+                detail: `winget 静默安装 · Id ${chosen.id} · 用户授权后执行 · 装后核对${
+                  verified.confirmed ? '通过' : '未对上'
+                }${outcome.sourceUrl ? ` · 安装包来源 ${outcome.sourceUrl}` : ''}`
               })
             ]
           }

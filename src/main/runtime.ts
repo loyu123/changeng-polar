@@ -136,6 +136,22 @@ export class TurnRuntime {
       memory: {
         list: () => store.listMemory(),
         save: (list) => store.saveMemory(list)
+      },
+      /**
+       * 管家装过的程序（显示名 → 安装时间），供应用台账标注"是不是管家装的"。
+       *
+       * 不另建台账文件：装成功的动作本来就在 records.jsonl 里，多存一份就多一处会不一致。
+       * 只读最近 500 条，滚出这个窗口的老安装记录会查不到——标注是"有据可查的加分项"，
+       * 查不到就当不是，不猜。
+       */
+      butlerInstalls: async () => {
+        const out: Record<string, string> = {}
+        for (const entry of await store.listRecords(500)) {
+          if (entry.effect !== 'install' || entry.result !== 'ok' || !entry.installedName) continue
+          // listRecords 最新的在前：第一次遇到的就是这台机器上最近一次装它
+          if (!out[entry.installedName]) out[entry.installedName] = entry.ts
+        }
+        return out
       }
     })
     return filterTools(all, { toggles, readOnly })

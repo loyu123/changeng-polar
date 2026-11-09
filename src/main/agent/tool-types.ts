@@ -27,6 +27,11 @@ export interface ToolResult {
   snapshotId?: string
   /** 安装来源的真实下载地址（安装类工具写入，审计台账据此可查"从哪装的"） */
   sourceUrl?: string
+  /**
+   * 安装成功后解析到的程序显示名（注册表 DisplayName）。
+   * 进审计记录，应用台账据此回答"这个是不是管家装的"。
+   */
+  installedName?: string
 }
 
 /** 授权卡上的文案：给人看，模型看不懂也没关系 */
