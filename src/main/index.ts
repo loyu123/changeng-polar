@@ -184,6 +184,7 @@ void app.whenReady().then(async () => {
     executeTurn: (params) => runtime.executeTurn(params),
     auth: {
       answer: (authId, answer) => broker.answer(authId, answer),
+      choose: (choiceId, value) => broker.choose(choiceId, value),
       settleRequest: (requestId, answer) => broker.settleRequest(requestId, answer)
     },
     tasks: {

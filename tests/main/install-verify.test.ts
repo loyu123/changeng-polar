@@ -6,7 +6,7 @@ import { createTools } from '../../src/main/agent/tools'
  * 装完核对这条链路上"能在单测里锁住"的部分。
  *
  * 真正的核对要调 winget、读注册表（见 scripts/ 下的冒烟脚本），单测只锁三件
- * 会悄悄退回去的事：自启项差集的语义、卡上有没有把静默安装的代价说清楚、
+ * 会悄悄退回去的事：自启项差集的语义、卡上有没有把安装的代价说清楚、
  * 台账行有没有带安装时间与来源。
  */
 
@@ -35,10 +35,13 @@ describe('diffStartupNames', () => {
 describe('install_app 授权卡文案', () => {
   const tool = createTools().find((t) => t.name === 'install_app')!
 
-  it('卡上必须写明：静默安装会让默认勾选直接生效', () => {
-    // 原来写的是"不在桌面留安装包"，恰好说反了：--silent 的代价正是取消不了任何勾选。
-    // 用户在批准时看不到安装器界面，这句话是唯一的信息来源
-    expect(tool.description).toContain('静默')
+  it('描述里写明会弹安装器、要等用户点完，并交代用户取消不算失败', () => {
+    // 曾经这里断言的是"静默"：那时真的用 --silent，代价是默认勾选直接生效。
+    // 现在一律交互式，描述必须跟着改成"界面会弹出来、等他点完"，
+    // 否则模型会以为装完立刻返回，用户还在点它就开始报结果
+    expect(tool.description).toContain('安装界面')
+    expect(tool.description).not.toContain('静默安装')
+    expect(tool.description).toMatch(/取消/)
     expect(tool.label).toContain('安装')
   })
 

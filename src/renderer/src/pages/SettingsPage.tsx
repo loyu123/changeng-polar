@@ -1,5 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AlwaysAllowedEntry, ButlerConfig, DesktopPrefs, MailAccount, MemoryEntry, OrbPrefs } from '../../../shared/types'
+import type {
+  AlwaysAllowedEntry,
+  ButlerConfig,
+  DesktopPrefs,
+  MailAccount,
+  MemoryEntry,
+  OrbPrefs
+} from '../../../shared/types'
 import type { DesktopState } from '../../../shared/desktop'
 import { MEMORY_KIND_LABEL } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
@@ -774,6 +781,19 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 className={`sw${readOnly ? '' : ' on'} fixed`}
                 title={readOnly ? '只读模式下没有可执行的写操作' : '本版固定开启：销毁类与安装类每次都弹卡'}
               >
+                <i />
+              </span>
+            </div>
+            <div className="row">
+              <div className="rl">
+                <b>装软件时弹出它自己的安装界面</b>
+                <span>
+                  装软件一律走软件自己的安装向导：<b>安装位置、桌面快捷方式、开机自启都在那里由你选</b>，
+                  长庚不替你勾，也不做静默安装——那样等于替你接受了所有默认选项。<br />
+                  这一轮对话会等你在向导里点完；点「取消」就等于什么都没装。
+                </span>
+              </div>
+              <span className="sw on fixed" title="固定行为：始终拉起软件自己的安装器，不做静默安装">
                 <i />
               </span>
             </div>

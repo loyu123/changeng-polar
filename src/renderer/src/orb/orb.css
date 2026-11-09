@@ -529,6 +529,28 @@ textarea {
   gap: 6px;
   margin-top: 8px;
 }
+/* 候选列表竖排：一项一行，名字长也不挤（窄面板里横排会截断名字） */
+.authc-btns.col {
+  flex-direction: column;
+}
+.abtn.opt {
+  justify-content: flex-start;
+  height: auto;
+  padding: 6px 10px;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.4;
+}
+/* 候选的补充行（安装类是包 Id+版本，打开文件夹类是完整路径）：
+   同名候选只看名字分不出谁是谁，路径必须露出来 */
+.abtn .abtn-detail {
+  display: block;
+  margin-top: 1px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ink3);
+  word-break: break-all;
+}
 .abtn {
   height: 26px;
   padding: 0 10px;

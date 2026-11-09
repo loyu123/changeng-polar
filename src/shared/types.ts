@@ -477,6 +477,33 @@ export interface AuthRequest {
   allowAlways: boolean
 }
 
+/**
+ * 候选项：用户报的名称有歧义时，让用户在卡上自己选一个。
+ *
+ * 为什么要做成卡而不是让模型转述：之前是「有多条匹配就把候选写进一段文字，
+ * 让模型念给用户听，用户回答，模型再报一次 Id」，来回两三轮还容易传错。
+ * 把候选做成可点的按钮，选择是一次点击，且**用户看到的名字就是他批准的对象**。
+ */
+export interface ToolChoiceOption {
+  /** 选完回传给工具的值（安装类就是 winget 包 Id） */
+  value: string
+  /** 卡上给人看的名字 */
+  label: string
+  /** 一行补充：包 Id、版本、来源 */
+  detail?: string
+}
+
+/** 候选择卡：问的是「是哪一个」，不是「同不同意」，所以和授权卡分开 */
+export interface ToolChoiceRequest {
+  id: string
+  /** 哪个工具在问 */
+  tool: string
+  title: string
+  hint?: string
+  options: ToolChoiceOption[]
+  requestedAt: string
+}
+
 export interface ToolTrace {
   name: string
   label: string
@@ -505,6 +532,10 @@ export type ChatEvent =
   | { requestId: string; type: 'auth'; request: AuthRequest }
   /** 授权卡超时：渲染层把对应的卡标记为「已超时」，不用等 turn 结束 */
   | { requestId: string; type: 'authExpired'; authId: string }
+  /** 名称有歧义：请用户从候选里选一个（必须回 chat:choose，否则超时视为取消） */
+  | { requestId: string; type: 'choice'; request: ToolChoiceRequest }
+  /** 候选择卡超时：标记为已取消 */
+  | { requestId: string; type: 'choiceExpired'; choiceId: string }
   | { requestId: string; type: 'done'; result: TurnResult }
   | { requestId: string; type: 'error'; message: string }
 

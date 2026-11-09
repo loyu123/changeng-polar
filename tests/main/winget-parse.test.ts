@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseListedRow, parseWingetTable } from '../../src/main/node/install'
+import { matchedByName, parseListedRow, parseWingetTable, rankCandidates } from '../../src/main/node/install'
 
 /**
  * winget search 的对齐文本表解析。
@@ -15,8 +15,8 @@ describe('parseWingetTable', () => {
       '微信               Tencent.WeChat           3.9.10  winget'
     ].join('\n')
     expect(parseWingetTable(text)).toEqual([
-      { name: '网易云音乐', id: 'NetEase.CloudMusic', version: '2.10.6' },
-      { name: '微信', id: 'Tencent.WeChat', version: '3.9.10' }
+      { name: '网易云音乐', id: 'NetEase.CloudMusic', version: '2.10.6', match: 'winget' },
+      { name: '微信', id: 'Tencent.WeChat', version: '3.9.10', match: 'winget' }
     ])
   })
 
@@ -26,7 +26,7 @@ describe('parseWingetTable', () => {
       '------------------------------------------',
       '7-Zip       7zip.7zip              24.09  winget'
     ].join('\n')
-    expect(parseWingetTable(text)).toEqual([{ name: '7-Zip', id: '7zip.7zip', version: '24.09' }])
+    expect(parseWingetTable(text)).toEqual([{ name: '7-Zip', id: '7zip.7zip', version: '24.09', match: 'winget' }])
   })
 
   it('版本列与「匹配」列粘连（单空格）时只取版本号本体', () => {
@@ -92,9 +92,9 @@ describe('parseWingetTable', () => {
       'Tube_Ultimate_Player davidchiu66.TubeUltimatePlayer 0.2.31       Tag: 哔哩哔哩'
     ].join('\n')
     expect(parseWingetTable(text)).toEqual([
-      { name: '哔哩哔哩', id: 'Bilibili.Bilibili', version: '1.20.0' },
-      { name: 'BiliSail', id: 'CKopoer.BiliSail', version: '1.2.8005' },
-      { name: 'Tube_Ultimate_Player', id: 'davidchiu66.TubeUltimatePlayer', version: '0.2.31' }
+      { name: '哔哩哔哩', id: 'Bilibili.Bilibili', version: '1.20.0', match: undefined },
+      { name: 'BiliSail', id: 'CKopoer.BiliSail', version: '1.2.8005', match: 'Tag: 哔哩哔哩' },
+      { name: 'Tube_Ultimate_Player', id: 'davidchiu66.TubeUltimatePlayer', version: '0.2.31', match: 'Tag: 哔哩哔哩' }
     ])
   })
 
@@ -182,5 +182,78 @@ describe('parseListedRow', () => {
   it('表头行不会被当成数据行', () => {
     // 表头里也有 "ID" 两个字，但它不是包 Id
     expect(parseListedRow('名称              ID        版本', 'ID')).toBeNull()
+  })
+})
+
+/**
+ * 候选排序与"是不是名字命中"。
+ *
+ * 真机输出（winget search kimi，2026-11）：前三条名字里有 kimi，
+ * 后面七条是清单里打了 kimi 标签的——ChatALL、LM Studio、Chatbox 都不是
+ * 「Kimi 客户端」。用户说「Kimi」时，卡上前几项必须是他想的那几个。
+ */
+describe('rankCandidates / matchedByName', () => {
+  const kimiRows = parseWingetTable(
+    [
+      '名称                                             ID                                   版本     匹配',
+      '------------------------------------------------------------------------------------------------------------',
+      'Kimi                                             MoonshotAI.Kimi                      3.2.24   ',
+      'Kimi CLI                                         MoonshotAI.KimiCLI                   1.52.0   Command: kimi',
+      'Kimi Code CLI                                    MoonshotAI.KimiCodeCLI               2.5.2    Command: kimi',
+      'ChatALL                                          AI-Shifu.ChatALL                     1.85.110 Tag: kimi',
+      'LM Studio                                        ElementLabs.LMStudio                 0.4.28+2 Tag: kimi'
+    ].join('\n')
+  )
+
+  it('名字命中的排在只靠标签命中的前面', () => {
+    const ranked = rankCandidates(kimiRows, 'kimi')
+    expect(ranked.slice(0, 3).map((p) => p.id)).toEqual([
+      'MoonshotAI.Kimi',
+      'MoonshotAI.KimiCLI',
+      'MoonshotAI.KimiCodeCLI'
+    ])
+  })
+
+  it('完全同名排第一，其次是同前缀', () => {
+    const ranked = rankCandidates(kimiRows, 'kimi')
+    expect(ranked[0].name).toBe('Kimi')
+  })
+
+  it('名字命中与标签命中分得开（Chatbox 类不算「Kimi 客户端」）', () => {
+    const byName = kimiRows.filter((p) => matchedByName(p, 'kimi'))
+    expect(byName.map((p) => p.id)).toEqual(['MoonshotAI.Kimi', 'MoonshotAI.KimiCLI', 'MoonshotAI.KimiCodeCLI'])
+  })
+
+  it('检索词为空时原样返回，不乱排', () => {
+    expect(rankCandidates(kimiRows, '  ').map((p) => p.id)).toEqual(kimiRows.map((p) => p.id))
+  })
+
+  it('排序不改动入参数组（上层还要拿原顺序做别的判断）', () => {
+    const before = kimiRows.map((p) => p.id)
+    rankCandidates(kimiRows, 'kimi')
+    expect(kimiRows.map((p) => p.id)).toEqual(before)
+  })
+
+  /**
+   * 真机踩到的假阳性：Id `XINGInc.AkasakiMinato` 里 "akasak**imi**nato" 藏着 kimi。
+   * 对 Id 做子串匹配会把「赤咲 湊」这种毫不相干的包塞进候选卡。
+   */
+  it('Id 按段比，不按子串（AkasakiMinato 不算 kimi）', () => {
+    const noise = { name: 'CeVIO Voice Package - 赤咲 湊', id: 'XINGInc.AkasakiMinato', version: '1.1.2' }
+    expect(matchedByName(noise, 'kimi')).toBe(false)
+    expect(matchedByName({ name: 'Kimi CLI', id: 'MoonshotAI.KimiCLI', version: '1.5' }, 'kimi')).toBe(true)
+  })
+
+  /**
+   * 另一个真机排序错：`7-Zip` 与用户敲的 `7zip` 只差一个连字符，
+   * 按原字符串比既不 startsWith 也不 includes，于是排到了 Dark7zip、Py7Zip 后面。
+   */
+  it('名字标点归一后，7-Zip 排在 Dark7zip / Py7Zip 前面', () => {
+    const rows = [
+      { name: 'Dark7zip', id: 'ozone10.7zip.Dark', version: '26.02' },
+      { name: 'Py7Zip', id: 'Gabtyss.Py7z', version: '2.0.0' },
+      { name: '7-Zip', id: '7zip.7zip', version: '26.06' }
+    ]
+    expect(rankCandidates(rows, '7zip')[0].name).toBe('7-Zip')
   })
 })

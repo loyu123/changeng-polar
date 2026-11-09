@@ -131,6 +131,13 @@ const api = {
     /** 授权卡作答：once=只这一次 / always=始终允许（仅当卡片允许） / deny=拒绝 */
     answer: (authId: string, answer: AuthAnswer) =>
       ipcRenderer.invoke('chat:answer', { authId, answer }) as Promise<boolean>,
+    /**
+     * 候选卡作答：value 必须取自卡上给出的 options。
+     *
+     * 选完不等于装：主进程会拿这个值重新解析一次目标，再弹正常的授权卡。
+     */
+    choose: (choiceId: string, value: string) =>
+      ipcRenderer.invoke('chat:choose', { choiceId, value }) as Promise<boolean>,
     onEvent: (handler: (event: ChatEvent) => void) => {
       const listener = (_e: unknown, payload: ChatEvent) => handler(payload)
       ipcRenderer.on('chat:event', listener)

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AuthAnswer, AuthRequest, AuthzDecision, RecordEntry, RecordKind } from '../../shared/types'
+import type { AuthAnswer, AuthRequest, AuthzDecision, RecordEntry, RecordKind, ToolChoiceRequest } from '../../shared/types'
 import type { ToolContext, ToolDef, ToolPlan, ToolResult, ToolTarget } from './tool-types'
 
 /**
@@ -18,6 +18,13 @@ export type { AuthAnswer }
 export interface GateHooks {
   /** 弹授权卡，等用户点；超时/无人应答返回 deny */
   requestAuth: (request: AuthRequest) => Promise<AuthAnswer>
+  /**
+   * 名称有歧义时请用户在候选里挑一个；返回 null = 用户取消或超时。
+   *
+   * 不提供这个钩子的环境（评测、离线验收）会退回旧行为：当作解析失败拒绝。
+   * 这样 eval 的判据不用跟着改，也不会因为"没人能点"而卡住。
+   */
+  requestChoice?: (choice: ToolChoiceRequest) => Promise<string | null>
   /** 「始终允许」白名单：key = `${tool}::${target}` */
   isRemembered: (key: string) => boolean
   remember: (key: string, request: AuthRequest) => void
@@ -112,6 +119,16 @@ function trim(text: string, max = 120): string {
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max)}…`
 }
 
+/** plan 抛异常一律当作解析失败，不让它冒到闸门外面 */
+async function safePlan(def: ToolDef, args: Record<string, any>, ctx: ToolContext): Promise<ToolPlan> {
+  if (!def.plan) return { ok: false, reason: `${def.name} 没有声明解析方式` }
+  try {
+    return await def.plan(args, ctx)
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 export async function executeThroughGate(
   def: ToolDef,
   args: Record<string, any>,
@@ -134,11 +151,84 @@ export async function executeThroughGate(
   let target: ToolTarget
   let execute: () => Promise<ToolResult>
   if (def.plan) {
-    let planned: ToolPlan
-    try {
-      planned = await def.plan(args, ctx)
-    } catch (err) {
-      planned = { ok: false, reason: err instanceof Error ? err.message : String(err) }
+    let planned = await safePlan(def, args, ctx)
+    /**
+     * 语义有歧义：先把选择权交给用户，再拿他选的那个值**重新解析一次**。
+     *
+     * order 很重要：不是"用户选完就直接装"，而是"用户选完 → 重新 plan → 再走授权卡"。
+     * 用户批准的仍然是那张写着「安装：哔哩哔哩 / Bilibili.Bilibili 1.20.0」的卡，
+     * 安装的代价（会弹安装器、要他自己点完）那一段他也照样看得到——选候选不等于同意安装。
+     */
+    if (!planned.ok && planned.choice && hooks.requestChoice) {
+      const choice = planned.choice
+      const picked = await hooks.requestChoice({
+        id: `choice_${randomUUID().slice(0, 8)}`,
+        tool: def.name,
+        title: choice.title,
+        hint: choice.hint,
+        options: choice.options,
+        requestedAt: new Date().toISOString()
+      })
+      if (!picked) {
+        hooks.record({
+          kind: 'refuse',
+          title: `没有执行：${def.label}`,
+          sub: '用户取消了候选选择，什么都没有改动',
+          result: 'rejected',
+          reversible: false,
+          effect: def.effect,
+          target: trim(choice.title)
+        })
+        return { ok: false, blocked: true, summary: '用户取消了候选选择，什么都没有改动；如实说明是用户取消的，不要猜他要装哪个。' }
+      }
+      const nextArgs = { ...args, [choice.pickInto]: picked }
+      planned = await safePlan(def, nextArgs, ctx)
+      /**
+       * 选完之后必须还能解析出目标，而且解析出的目标里得带用户选的那个值。
+       * 拿不出目标就是工具实现错了（或仓库刚好变了），这时拒绝比执行安全——
+       * 否则就成了「用户选的是 A、实际装的是 B」，正是 K7 要堵的那条缝。
+       *
+       * 措辞不替工具猜原因：这里既可能是"还是不确定选哪个"，也可能是工具
+       * 明确拒绝（比如选完才发现那个软件已经装着了）。一律写成"仍解析不出
+       * 唯一目标"会把后者说成我们没搞清，而真话就在 reason 里。
+       */
+      if (!planned.ok) {
+        hooks.record({
+          kind: 'refuse',
+          title: `没有执行：${def.label}`,
+          sub: `选了 ${picked} 之后没有继续：${trim(planned.reason)}`,
+          result: 'rejected',
+          reversible: false,
+          effect: def.effect,
+          target: trim(picked)
+        })
+        return { ok: false, blocked: true, summary: `选了 ${picked} 之后没有继续：${planned.reason}` }
+      }
+      if (!planned.target.target.includes(picked)) {
+        hooks.record({
+          kind: 'refuse',
+          title: `没有执行：${def.label}`,
+          sub: `解析结果与你的选择不一致（选的是 ${picked}，解析成 ${trim(planned.target.target)}）`,
+          result: 'rejected',
+          reversible: false,
+          effect: def.effect,
+          target: trim(picked)
+        })
+        return {
+          ok: false,
+          blocked: true,
+          summary: `解析结果和你选的 ${picked} 对不上，为免装错东西，这次没有继续。`
+        }
+      }
+      hooks.record({
+        kind: 'ui',
+        title: `选择：${choice.title}`,
+        sub: `${picked}（你从 ${choice.options.length} 个候选里选的，选定后还会再确认一次）`,
+        result: 'ok',
+        reversible: false,
+        target: trim(picked)
+      })
+      args = nextArgs
     }
     if (!planned.ok) {
       // 解析不出唯一目标 → 不弹卡、不执行。让用户批准一个"还没确定的东西"没有意义

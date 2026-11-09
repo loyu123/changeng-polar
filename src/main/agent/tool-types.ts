@@ -4,6 +4,7 @@ import type {
   Evidence,
   RecordEntry,
   RecordKind,
+  ToolChoiceOption,
   ToolEffect
 } from '../../shared/types'
 
@@ -44,15 +45,33 @@ export interface ToolTarget {
 }
 
 /**
+ * 语义有歧义时的候选集：让用户点一个，而不是让模型猜或来回念候选。
+ *
+ * 只声明「有哪些选项」和「选中后写回哪个参数」，不自己执行——
+ * 用户选完之后，闸门会拿写回后的参数**重新走一次 plan**，
+ * 于是"卡片上写的目标"与"真正执行的动作"依然出自同一次解析（K7 那条不变量没破）。
+ */
+export interface ToolChoice {
+  title: string
+  hint?: string
+  /** 选中的 value 写回哪个参数名，然后重新 plan 一次 */
+  pickInto: string
+  options: ToolChoiceOption[]
+}
+
+/**
  * 预解析结果：卡片上写的目标，与真正要执行的动作，出自同一次解析。
  *
  * 这是补 K7 的那一半：如果卡片用 describeTarget(args)、执行用 run(args) 各自算一遍，
  * 两次解析之间任何一点差异（简化展示名、回退默认值、注册表刚好变了）
  * 都会变成「用户批准的是 A，实际动的是 B」。
+ *
+ * `ok: false` + 带 `choice` = 还缺一个用户决定，不是失败：闸门会先去问，
+ * 问完重新 plan。没有选择能力的环境（评测、离线验收）按失败处理，保持旧行为。
  */
 export type ToolPlan =
   | { ok: true; target: ToolTarget; execute: () => Promise<ToolResult> }
-  | { ok: false; reason: string }
+  | { ok: false; reason: string; choice?: ToolChoice }
 
 export interface ToolDef {
   name: string

@@ -40,8 +40,8 @@ function schemaOf(tools: ToolDef[]): ToolSchema[] {
   }))
 }
 
-/** 超长时收缩 data 数组而不是截断字符串，保证交给模型的永远是合法 JSON */
-function trimToolPayload(result: ToolResult): string {
+/** 超长时收缩 data 数组而不是截断字符串，保证交给模型的永远是合法 JSON（导出供测试） */
+export function trimToolPayload(result: ToolResult): string {
   const full = { ok: result.ok, summary: result.summary, data: result.data, undo: result.undo }
   const payload = JSON.stringify(full)
   if (payload.length <= MAX_TOOL_CHARS) return payload
@@ -58,6 +58,28 @@ function trimToolPayload(result: ToolResult): string {
       if (candidate.length <= MAX_TOOL_CHARS) return candidate
       if (items.length === 1) break
       items = items.slice(0, Math.max(1, Math.floor(items.length / 2)))
+    }
+  }
+
+  /**
+   * 带 `text` 的对象（读文件那一类）：**截短正文**，而不是整包丢掉。
+   *
+   * 丢掉的话模型只会看到一句"明细过长已省略"，于是对用户说"读不了"——
+   * 可文件明明读到了。宁可少给一半字，也要把已经读到的内容送到它面前，
+   * 并在 note 里说清截到哪儿，让它知道结论只覆盖这一段。
+   */
+  const withText = full.data as { text?: unknown } | null
+  if (withText && typeof withText.text === 'string' && withText.text.length > 0) {
+    const original = withText.text
+    let keep = Math.floor(original.length / 2)
+    while (keep > 200) {
+      const candidate = JSON.stringify({
+        ...full,
+        data: { ...withText, text: original.slice(0, keep), complete: false },
+        note: `正文过长（原 ${original.length} 字），已截断为前 ${keep} 字；结论只覆盖这一段`
+      })
+      if (candidate.length <= MAX_TOOL_CHARS) return candidate
+      keep = Math.floor(keep / 2)
     }
   }
 

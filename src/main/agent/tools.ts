@@ -8,12 +8,27 @@ import { listRecentMail, readMailBody } from '../node/mail'
 import {
   checkInstalled,
   installWinget,
+  matchedByName,
+  rankCandidates,
   searchWinget,
   wingetAvailable,
   type InstalledCheck,
   type WingetPackage
 } from '../node/install'
 import { launchUninstaller, planUninstall } from '../node/uninstall'
+import { resolveLaunch } from '../node/launch'
+import { appIdentity, findOpenWindow, type LaunchProbe } from '../node/running'
+import { planFolder } from '../node/folder'
+import {
+  DEFAULT_MAX_CHARS,
+  HARD_MAX_CHARS,
+  fileKindOf,
+  isExecutableFile,
+  planFile,
+  readFileSlice,
+  unsupportedReason,
+  type FileRead
+} from '../node/file'
 import { fetchPage, searchWeb } from '../node/web'
 import { MEMORY_MAX_TEXT, mergeMemory, removeMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
@@ -21,6 +36,43 @@ import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
 export interface ToolDeps {
   /** 打开系统设置页（由主进程注入，评测脚本里为空实现） */
   openSettings?: (page: string) => Promise<void>
+  /**
+   * 启动一个开始菜单快捷方式：主进程注入 `shell.openPath`，成功返回空字符串。
+   *
+   * 只传快捷方式路径，不传 exe、不传参数——参数拼接是另一类风险，
+   * 而"打开程序"这件事用不着它。
+   */
+  launchShortcut?: (filePath: string) => Promise<string>
+  /**
+   * 启动前先看一眼：这个快捷方式指向哪个 exe、现在有哪些进程和可见窗口。
+   *
+   * 用来避免"已经开着的程序又被启动一份"——用户点了两次不是因为想开两个，
+   * 而是因为他看不见已经有窗口了。
+   */
+  probeLaunch?: (lnkPath: string) => Promise<LaunchProbe>
+  /** 把已经开着的那个窗口调到前面（拿不到窗口就返回 false，不影响"它开着"这个结论） */
+  focusApp?: (pid: number) => Promise<boolean>
+  /**
+   * 启动系统应用清单里的条目（`shell:AppsFolder\<AppID>`）。
+   *
+   * 豆包、商店应用这类**不建任何快捷方式**的程序只有这一条路。
+   * 传进去的 AppID 来自 `Get-StartApps`，不是模型给的字符串。
+   */
+  launchAppsFolder?: (appId: string) => Promise<string>
+  /**
+   * 在资源管理器里打开一个**目录**。主进程注入 `shell.openPath`，成功返回空字符串。
+   *
+   * 只接目录路径：同一个外壳接口对文件会"打开"（exe 就是执行），
+   * 所以路径的合法性由 node/folder.ts 在解析阶段就卡死，不靠这里再判断。
+   */
+  openFolder?: (dirPath: string) => Promise<string>
+  /**
+   * 用系统默认程序打开一个**文件**。主进程注入 `shell.openPath`，成功返回空字符串。
+   *
+   * 和 openFolder 是同一个外壳接口，但分开注入：后缀该不该放行由 node/file.ts
+   * 在解析阶段定（会执行的后缀一律拒绝），这里不再重复判断。
+   */
+  openFile?: (filePath: string) => Promise<string>
   /** 查已查证的官网地址：注册表没登记下载来源时的兜底（重装入口） */
   officialSite?: (appName: string) => Promise<string | undefined>
   /** 卸载前的快照落盘（主进程注入 Store；评测脚本可不注入，只跳过存档） */
@@ -145,6 +197,54 @@ async function verifyInstall(
 
 function ev(partial: Omit<Evidence, 'id' | 'at'>): Evidence {
   return { id: `ev_${randomUUID().slice(0, 8)}`, at: new Date().toISOString(), ...partial }
+}
+
+/**
+ * 把一段读出来的内容包成工具结果。
+ *
+ * summary 里必须写清"读了多少、还剩多少"：这是模型判断"能不能说'全文讲的是…'"
+ * 的唯一依据。写成"已读取"这种笼统的话，模型就会拿前 3000 字当全文总结，
+ * 而用户完全看不出结论只覆盖了开头。
+ *
+ * nextOffset 为非空时，把 offset 参数的名字也写进 summary——模型照着念就能接着读，
+ * 不用去猜参数怎么传。
+ */
+function describeRead(read: FileRead): ToolResult {
+  const sizeKB = Math.max(1, Math.round(read.sizeBytes / 1024))
+  const covered = read.offset + read.text.length
+  const partial = read.nextOffset !== null
+  const span = partial
+    ? `第 ${read.offset + 1}~${covered} 字，共 ${read.totalChars} 字，还剩 ${read.totalChars - covered} 字`
+    : read.offset > 0
+      ? `第 ${read.offset + 1}~${covered} 字（已到结尾，共 ${read.totalChars} 字）`
+      : `全文 ${read.totalChars} 字`
+  const tail = partial
+    ? `。**只读到一部分**：总结时必须说明结论只覆盖这 ${read.text.length} 字；要接着读就再调一次、offset=${read.nextOffset}`
+    : ''
+  return {
+    ok: true,
+    summary: `读取「${read.name}」（${sizeKB}KB · ${read.encoding}）：${span}${tail}`,
+    data: {
+      path: read.path,
+      name: read.name,
+      kind: read.kind,
+      encoding: read.encoding,
+      sizeKB,
+      totalChars: read.totalChars,
+      offset: read.offset,
+      nextOffset: read.nextOffset,
+      /** 已经读到结尾了，模型据此可以放心说"全文" */
+      complete: !partial,
+      text: read.text
+    },
+    evidence: [
+      ev({
+        type: 'local',
+        title: `读取文件：${read.name}`,
+        detail: `${read.path} · ${read.encoding} · ${span}`
+      })
+    ]
+  }
 }
 
 /**
@@ -568,11 +668,382 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     }
   }
 
+  /**
+   * 打开程序 = 替用户双击开始菜单或桌面上的那个快捷方式。
+   *
+   * 定 ui 档而不是 install 档：它不安东西、不改注册表、不留痕迹，关掉就恢复原样，
+   * 和「打开系统设置页」是同一类动作。真正需要授权的是"改动机器"，不是"看见一个窗口"。
+   *
+   * 但它也不是完全没有边：只认快捷方式（.lnk，见 node/launch.ts），
+   * 而且卸载/修复/更新/命令提示符那几类被排除在外——
+   * 「打开哔哩哔哩」不能弹出卸载确认框。
+   */
+  const launchAppTool: ToolDef = {
+    name: 'launch_app',
+    label: '打开程序',
+    description:
+      '打开一个已安装的程序（等价于用户自己双击它的图标），不改动任何东西。用户说"打开哔哩哔哩""把豆包打开""我要玩 ICEY""把计算器打开"时用它。它能开的是这台机器上装着的程序：开始菜单和桌面上的快捷方式、Steam 这类协议启动的游戏、以及系统应用清单里不建快捷方式的程序（商店应用、计算器、记事本等）。**它不打开网页、不打开文件夹**（网页用 web_fetch 取内容，文件夹用 open_folder）。程序名对不上唯一一个时工具会拒绝并列出候选，**这时不要自己挑一个，把名字念给用户让他确认**。如果工具说已经开着，就如实转述"本来就开着、窗口已经叫到前面"，不要说成刚打开。',
+    effect: 'ui',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '要打开的程序名，就是在开始菜单、桌面上或"所有应用"列表里显示的那个名字' },
+        reason: { type: 'string', description: '为什么要打开，一句话' }
+      },
+      required: ['name']
+    },
+    plan: async (args): Promise<ToolPlan> => {
+      const name = String(args.name ?? '').trim()
+      if (!name) return { ok: false, reason: '没有给出要打开的程序名' }
+      // 用"现在的"清单解析：缓存的 60 秒里程序可能刚装上/刚卸掉；
+      // 快捷方式都找不到时，它还会去问系统应用清单（豆包那类不建快捷方式的程序）
+      const planned = await resolveLaunch(name)
+      if (!planned.ok) return { ok: false, reason: planned.reason }
+      const shortcut = planned.shortcut
+      const kind = shortcut.kind ?? 'shortcut'
+      return {
+        ok: true,
+        target: {
+          title: `打开：${shortcut.name}`,
+          target: kind === 'apps-folder' ? `系统应用清单：${shortcut.path}` : shortcut.path,
+          impact: '只是把这个程序启动起来，不改动机器上的任何东西；窗口归你，关掉就行'
+        },
+        execute: async (): Promise<ToolResult> => {
+          /**
+           * 已经开着就别再开一份。
+           *
+           * 判断口径写在 node/running.ts：只认**有可见窗口**的同名进程。
+           * 探不到进程表（权限、PowerShell 抽风）时当它没开，照常启动——
+           * "多开一个窗口"比"明明没开却说已经开了"轻得多。
+           *
+           * apps-folder 条目跳过这一步：它们的 AppID（`Doubao.ChatApp`、
+           * `Microsoft.WindowsCalculator_...!App`）没法可靠地映射到进程名，
+           * 猜错的代价是"用户想开却被告知已经开着"——比多按一次激活重得多。
+           * 而这类程序本身多是单实例激活，按第二次通常只是把窗口叫到前面。
+           */
+          if (deps.probeLaunch && kind !== 'apps-folder') {
+            const probe = await deps.probeLaunch(shortcut.path).catch(() => null)
+            const open = probe ? findOpenWindow(probe.processes, appIdentity(shortcut, probe.targetPath)) : null
+            if (open) {
+              const focused = deps.focusApp ? await deps.focusApp(open.pid).catch(() => false) : false
+              return {
+                ok: true,
+                summary: focused
+                  ? `「${shortcut.name}」本来就开着，没有再启动一份，已经把它那个窗口叫到前面来了`
+                  : `「${shortcut.name}」本来就开着（进程 ${open.name}），没有再启动一份。窗口没被叫到前面来，可能被最小化了或者在别的桌面`,
+                evidence: [
+                  ev({
+                    type: 'local',
+                    title: `已经在运行：${shortcut.name}`,
+                    detail: `进程 ${open.name}（PID ${open.pid}）· 没有启动第二份 · 不改动机器`
+                  })
+                ]
+              }
+            }
+          }
+
+          const launch =
+            kind === 'apps-folder'
+              ? deps.launchAppsFolder
+              : deps.launchShortcut
+          if (!launch) {
+            return {
+              ok: false,
+              summary:
+                kind === 'apps-folder'
+                  ? '当前环境不能启动系统应用清单里的程序，可以自己在开始菜单里点开它'
+                  : '当前环境不能启动程序（没有可用的桌面外壳），可以自己双击它的图标打开'
+            }
+          }
+
+          const error = await launch(shortcut.path)
+          if (error) {
+            return {
+              ok: false,
+              summary: `没能打开「${shortcut.name}」：${error}。可能是快捷方式已经失效、程序被卸载了但快捷方式还留着，也可能是 Store 应用（MSIX 包）的激活被系统拦下了。如实告诉用户这次没打开，可以让他自己双击图标试试；不要换个名字重试`
+            }
+          }
+          return {
+            ok: true,
+            summary: `已经打开「${shortcut.name}」（${shortcut.path}）。启动后不会自动关闭，用户可以直接用；如果窗口没出现，可能它要加载几十秒，也可能被最小化到了托盘`,
+            evidence: [
+              ev({
+                type: 'local',
+                title: `打开程序：${shortcut.name}`,
+                // 写明是从开始菜单还是桌面找到的：同一个程序两处都有时，便于事后核对打开的是哪一份
+                detail: `${shortcut.source === 'desktop' ? '桌面' : '开始菜单'}快捷方式 ${shortcut.path} · 不改动机器`
+              })
+            ]
+          }
+        }
+      }
+    },
+    run: async (): Promise<ToolResult> => {
+      return { ok: false, summary: 'launch_app 必须先解析出唯一目标（plan），直接 run 不会被放行' }
+    }
+  }
+
+  /**
+   * 打开文件夹：用户说"打开桌面上的「应用软件」"时走这条。
+   *
+   * 和 launch_app 分开是有原因的：文件夹不是快捷方式，开始菜单里根本没有，
+   * 硬塞进「打开程序」里会让那个工具既认程序又认目录，最后两边都说不准。
+   */
+  const openFolderTool: ToolDef = {
+    name: 'open_folder',
+    label: '打开文件夹',
+    description:
+      '在资源管理器里打开一个文件夹（等价于用户自己双击它），不改动任何文件。用户说"打开 XX 文件夹"时用它。三种说法都认：光一个名字（桌面/下载/文档/图片/音乐/视频/用户目录、各磁盘根、桌面上的文件夹，以及各盘往下三层、用户目录往下四层的目录）、从认得的目录往下写一截（形如 文档\\报告）、或者完整路径（形如 D:\\资料\\项目）。它只开本机磁盘上的目录：网络共享（\\\\主机\\共享）和单个文件都不开，也不要拿它去"打开"某个 exe。名字对不上唯一一个时会**自动弹出候选卡让用户自己挑**（同一名字在多个盘、多处都有时尤其常见），这时不要自己替用户挑、也不要重复调用；同一个名字既指系统目录又指别处时，打的是系统目录（"图片"就是图片库）。',
+    effect: 'ui',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '文件夹名字（如「应用软件」「下载」）、从认得的目录往下写一截（如「文档\\报告」）、或完整路径（如 D:\\资料\\项目）' },
+        reason: { type: 'string', description: '为什么要打开，一句话' }
+      },
+      required: ['name']
+    },
+    plan: async (args): Promise<ToolPlan> => {
+      const query = String(args.name ?? '').trim()
+      if (!query) return { ok: false, reason: '没有给出要打开的文件夹' }
+      // 每次现扫：桌面上的文件夹是用户随手建的，缓存一分钟会让"刚建好的找不到"
+      const planned = planFolder(query)
+      if (!planned.ok) {
+        /**
+         * 名字对上了好几个 → 做成可点的候选卡，而不是让模型念一段候选再等用户重说一遍。
+         *
+         * 用户报「kcareone」时，D 盘下确实有 KCareOne-ALL / -MAIN / -SQL / -TPS 四条，
+         * 谁也不知道他要的是哪个——念一段文字过去，他得再用一句话描述，来回两三轮；
+         * 卡片上点一下就到了。
+         *
+         * 写回的是**完整路径**（不是名字）：重新 plan 时它走"给的就是路径"那条分支，
+         * 落到哪一个不依赖候选集有没有变。闸门还会核对解析出的目标里含不含这个路径
+         * （K7），所以"点的是 D:\KCareOne-ALL，开的是别处"这种缝补不上。
+         */
+        const pool = planned.candidates ?? []
+        if (pool.length > 1) {
+          const options = pool.slice(0, 8).map((c) => ({
+            value: c.path,
+            label: c.name,
+            detail: c.path
+          }))
+          return {
+            ok: false,
+            reason: `有 ${pool.length} 个叫「${query}」的文件夹，等用户在候选卡上选`,
+            choice: {
+              title: `要打开哪一个「${query}」？`,
+              hint:
+                pool.length > options.length
+                  ? `找到 ${pool.length} 个，只列前 ${options.length} 个。点一下就在资源管理器里打开，不看里面的文件。`
+                  : `找到 ${pool.length} 个，点一下就在资源管理器里打开，不改动里面的任何文件。`,
+              pickInto: 'name',
+              options
+            }
+          }
+        }
+        return { ok: false, reason: planned.reason }
+      }
+      const folder = planned.folder
+      return {
+        ok: true,
+        target: {
+          title: `打开文件夹：${folder.name}`,
+          target: folder.path,
+          impact: '只在资源管理器里打开这个文件夹，不移动、不改动里面的任何文件'
+        },
+        execute: async (): Promise<ToolResult> => {
+          if (!deps.openFolder) {
+            return { ok: false, summary: '当前环境不能打开文件夹（没有可用的桌面外壳），可以自己在资源管理器里打开' }
+          }
+          const error = await deps.openFolder(folder.path)
+          if (error) {
+            return {
+              ok: false,
+              summary: `没能打开「${folder.name}」：${error}。如实告诉用户这次没打开，不要换个名字重试`
+            }
+          }
+          return {
+            ok: true,
+            summary: `已经在资源管理器里打开「${folder.name}」（${folder.path}）。只是打开了这个文件夹，没有改动里面的任何文件`,
+            evidence: [
+              ev({ type: 'local', title: `打开文件夹：${folder.name}`, detail: `${folder.path} · 不改动文件` })
+            ]
+          }
+        }
+      }
+    },
+    run: async (): Promise<ToolResult> => {
+      return { ok: false, summary: 'open_folder 必须先解析出唯一目标（plan），直接 run 不会被放行' }
+    }
+  }
+
+  /**
+   * 打开一个文件 = 替用户双击它。
+   *
+   * 和 open_folder 是一对，但边界不同：那边只认目录，这边只认文件。
+   * 而"双击一个文件"在 Windows 上对某些后缀是**执行**——.exe 是运行、.ps1 是跑脚本、
+   * .lnk 是顺着跳到别处、.reg 是改注册表。这类后缀在这里直接拒掉：
+   * 要开程序走 launch_app（那条路有自己的门槛和候选卡），不从这里绕进来。
+   *
+   * 定 ui 档：打开一个文档不改动机器，和"打开设置页""打开文件夹"是同一类。
+   */
+  const openFileTool: ToolDef = {
+    name: 'open_file',
+    label: '打开文件',
+    description:
+      '用系统默认程序打开一个文件（相当于用户自己双击它），不改动文件内容。用户说"把那个 Word 打开""打开桌面的报告.pdf""我要看那张表"时用它。三种说法都认：完整路径（D:\\资料\\报告.docx）、从认得的目录往下写（文档\\报告.docx）、光一个文件名（报告.docx，只在桌面/下载/文档里找）。同名有多个时**会自动弹候选卡让用户挑**，这时不要自己选、也不要重复调用。它**不执行程序**：exe / bat / cmd / ps1 / lnk / msi / reg 这类会执行的后缀会被拒绝（开程序要用 launch_app），也不打开文件夹（用 open_folder）和网络共享。用户要的是"读出内容并总结"时用 read_file，不要用这个。',
+    effect: 'ui',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '文件路径或文件名（如「报告.docx」「文档\\报告.docx」「D:\\资料\\报告.docx」）' },
+        reason: { type: 'string', description: '为什么要打开，一句话' }
+      },
+      required: ['path']
+    },
+    plan: async (args): Promise<ToolPlan> => {
+      const query = String(args.path ?? '').trim()
+      if (!query) return { ok: false, reason: '没有给出要打开的文件' }
+      const planned = planFile(query)
+      if (!planned.ok) {
+        const pool = planned.candidates ?? []
+        if (pool.length > 1) {
+          const options = pool.slice(0, 8).map((f) => ({ value: f.path, label: f.name, detail: f.path }))
+          return {
+            ok: false,
+            reason: `有 ${pool.length} 个叫「${query}」的文件，等用户在候选卡上选`,
+            choice: {
+              title: `要打开哪一个「${query}」？`,
+              hint: `找到 ${pool.length} 个。点一下就用默认程序打开，不看也不改里面的内容。`,
+              pickInto: 'path',
+              options
+            }
+          }
+        }
+        return { ok: false, reason: planned.reason }
+      }
+      const file = planned.file
+      if (isExecutableFile(file.path)) {
+        return {
+          ok: false,
+          reason: `「${file.name}」是会执行的文件（不是文档），双击它等于运行它。要开程序用 launch_app，要读它的内容用 read_file；这里不替你执行`
+        }
+      }
+      return {
+        ok: true,
+        target: {
+          title: `打开文件：${file.name}`,
+          target: file.path,
+          impact: '只是用系统默认程序把它打开，不改动文件内容'
+        },
+        execute: async (): Promise<ToolResult> => {
+          if (!deps.openFile) {
+            return { ok: false, summary: '当前环境不能打开文件（没有可用的桌面外壳），可以自己在资源管理器里双击它' }
+          }
+          const error = await deps.openFile(file.path)
+          if (error) {
+            return {
+              ok: false,
+              summary: `没能打开「${file.name}」：${error}。如实告诉用户这次没打开，不要换个名字重试`
+            }
+          }
+          return {
+            ok: true,
+            summary: `已经用系统默认程序打开「${file.name}」（${file.path}）。只是打开了它，没有改动内容`,
+            evidence: [ev({ type: 'local', title: `打开文件：${file.name}`, detail: `${file.path} · 不改动内容` })]
+          }
+        }
+      }
+    },
+    run: async (): Promise<ToolResult> => {
+      return { ok: false, summary: 'open_file 必须先解析出唯一目标（plan），直接 run 不会被放行' }
+    }
+  }
+
+  /**
+   * 读一个文件的内容，交给模型看。
+   *
+   * **读完要总结**是这个工具存在的主要理由：用户说"看看这个文件写了什么""帮我总结这份材料"，
+   * 光把文件打开给他看是没用的——他自己会点。真正的价值是把字读出来、压缩成结论。
+   *
+   * 三个设计取舍：
+   * 1. `readsPrivateData`：读到的可能是合同、账单、密钥。读过之后本轮就算被污染，
+   *    后面任何往外发的动作（web_search / web_fetch）都要先弹一张确认卡。
+   *    没有这道闸，「读桌面那个 docx」+「搜一下里面的公司名」就能把文件内容送出去。
+   * 2. **分段读**：默认一次 3200 字，返回 totalChars 和 nextOffset。长文件只读了一段时，
+   *    模型必须照着说"只读了前 X 字"，而不是拿前面一小段编出全文结论。
+   * 3. **读不了就说读不了**：PDF、老式 .doc/.xls、图片、压缩包一律如实拒绝，
+   *    绝不吐一段乱码。读错比不读糟得多——错的内容会被当成事实讲给用户。
+   */
+  const readFileTool: ToolDef = {
+    name: 'read_file',
+    label: '读取文件内容（只读）',
+    description:
+      '把一个文件的文字内容读出来，交给模型阅读和总结。用户说"看看这个文件写了什么""总结一下这份材料""这份文档讲了啥""这几个数字对不对"时用它，**用它而不是 open_file**——用户要的是结论，不是自己盯着屏幕看。三种说法都认：完整路径、从认得的目录往下写（文档\\报告.docx）、光一个文件名（只在桌面/下载/文档里找）；同名多个会弹候选卡让用户挑。能读的是纯文本（txt/md/csv/json/代码/日志等，UTF-8 和 GBK 都能认）和 Office 文档（.docx / .xlsx / .pptx）。**PDF、老式 .doc/.xls、图片、压缩包、音视频读不了**，工具会如实说明，这时不要再试第二次、也不要用别的工具绕，直接告诉用户"这个格式我读不了，可以帮你打开自己看"。只读，不改动文件。长文件一次读不完：返回里有 totalChars 和 nextOffset，需要就带 offset 再读一段；**只读了一部分时必须说明结论只覆盖读到的那部分**，不要把局部当全文。',
+    effect: 'read',
+    // 文件内容可能是合同、账单、密钥：读过之后本轮被污染，往外发要先确认
+    readsPrivateData: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '文件路径或文件名（如「报告.docx」「文档\\报告.docx」「D:\\资料\\笔记.md」）' },
+        offset: { type: 'number', description: '从第几个字符开始读，默认 0。上一段没读完时用返回值里的 nextOffset 接着读' },
+        maxChars: { type: 'number', description: `本次最多读多少字，默认 ${DEFAULT_MAX_CHARS}，上限 ${HARD_MAX_CHARS}` },
+        reason: { type: 'string', description: '为什么要读，一句话（用户想从里面知道什么）' }
+      },
+      required: ['path']
+    },
+    plan: async (args): Promise<ToolPlan> => {
+      const query = String(args.path ?? '').trim()
+      if (!query) return { ok: false, reason: '没有给出要读的文件' }
+      const planned = planFile(query)
+      if (!planned.ok) {
+        const pool = planned.candidates ?? []
+        if (pool.length > 1) {
+          const options = pool.slice(0, 8).map((f) => ({ value: f.path, label: f.name, detail: f.path }))
+          return {
+            ok: false,
+            reason: `有 ${pool.length} 个叫「${query}」的文件，等用户在候选卡上选`,
+            choice: {
+              title: `要读哪一个「${query}」？`,
+              hint: `找到 ${pool.length} 个。只读文字，不改动文件。`,
+              pickInto: 'path',
+              options
+            }
+          }
+        }
+        return { ok: false, reason: planned.reason }
+      }
+      const file = planned.file
+      // 格式在读之前就判掉：读 tier 不弹卡，先读一遍再发现是 PDF 等于白读一次
+      const kind = fileKindOf(file.path)
+      if (kind === 'unsupported') return { ok: false, reason: unsupportedReason(file.path) }
+      const offset = Math.max(0, Math.floor(Number(args.offset ?? 0)) || 0)
+      return {
+        ok: true,
+        target: {
+          title: `读取文件：${file.name}`,
+          target: file.path,
+          impact: '只读：不修改、不移动、不删除这个文件'
+        },
+        execute: async (): Promise<ToolResult> => {
+          const maxChars = Number(args.maxChars ?? DEFAULT_MAX_CHARS)
+          const outcome = readFileSlice(file.path, { offset, maxChars })
+          if (!outcome.ok) return { ok: false, summary: outcome.reason }
+          return describeRead(outcome.read)
+        }
+      }
+    },
+    run: async (): Promise<ToolResult> => {
+      return { ok: false, summary: 'read_file 必须先解析出唯一目标（plan），直接 run 不会被放行' }
+    }
+  }
+
   const installAppTool: ToolDef = {
     name: 'install_app',
     label: '安装软件（需授权）',
     description:
-      '通过 winget（Windows 官方包管理器）安装一个软件：先在 winget 仓库检索，唯一匹配才出授权卡，静默安装。来源与哈希校验由 winget 负责，不在桌面留安装包；安装不可撤回，装完可在「设置 → 应用」卸载。装完会自动核对程序清单与新增的开机自启项，核对结果会附在返回里：**核对没对上时必须如实说"没核实到装好了"，不要因为 winget 报了成功就告诉用户已经装好**。授权卡上用户可以点「始终允许」：只对同一个包的同一版本生效（换个包/换版本仍要重新授权），并可在「设置 → 授权记忆」里撤销。用户没有明确同意前不要调用；winget 里没有或有多条匹配时会拒绝，此时如实转述。',
+      '通过 winget（Windows 官方包管理器）安装一个软件：先在 winget 仓库检索，唯一匹配才出授权卡，然后**拉起这个软件自己的安装界面**由用户在窗口里点完（安装位置、快捷方式、开机自启都由他选）。来源与哈希校验由 winget 负责，不在桌面留安装包；安装不可撤回，装完可在「设置 → 应用」卸载。**装之前会先查一遍它是不是已经装着了**：已经装了就一个字节都不动、直接告诉你它在了，这时如实转告用户，**不要重试、不要劝他重装，也不要提"帮你升级"——要不要升级由软件自己提示**；他要看到这个程序就调用 launch_app。只有用户明确说要重装/修复时才传 force=true。**调用后要在界面上等用户点完，可能好几分钟；用户在安装器里点「取消」时工具会说明是用户取消，不要当成失败、也不要劝他再试一次。**装完会自动核对程序清单与新增的开机自启项，核对结果会附在返回里：**核对没对上时必须如实说"没核实到装好了"，不要因为 winget 报了成功就告诉用户已经装好**。授权卡上用户可以点「始终允许」：只对同一个包的同一版本生效（换个包/换版本仍要重新授权），并可在「设置 → 授权记忆」里撤销。用户没有明确同意前不要调用。名字有歧义（多个候选）时会自动弹出候选卡让用户自己点，这时不要自己替用户挑、也不要重复调用；仓库里没有这个词时，先把口语名/拼音/错拼翻成官方名称或英文名再调一次。',
     effect: 'install',
     // 全注册表唯一开「始终允许」的档位：安装是系统改动但非销毁，key 含包名+版本，
     // 换目标即失效；删除/卸载（销毁类）永远逐次弹卡，不允许记忆
@@ -581,7 +1052,12 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       type: 'object',
       properties: {
         name: { type: 'string', description: '软件名，尽量用官方名称；winget 里的 Id 也接受' },
-        reason: { type: 'string', description: '为什么要装，一句话' }
+        reason: { type: 'string', description: '为什么要装，一句话' },
+        force: {
+          type: 'boolean',
+          description:
+            '只在用户明确说要「重装/修复」时才传 true。默认 false：已经装着的软件不会再装一遍，工具会直接告诉你它已经在了'
+        }
       },
       required: ['name']
     },
@@ -598,28 +1074,91 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         return { ok: false, reason: err instanceof Error ? err.message : String(err) }
       }
       if (candidates.length === 0) {
-        return { ok: false, reason: `winget 仓库里没有找到「${name}」。让它去官网下载安装包自己装，或确认名称后重试` }
-      }
-      const exact = candidates.find((p) => p.id.toLowerCase() === name.toLowerCase())
-      const chosen = exact ?? null
-      if (!chosen) {
-        const list = candidates
-          .slice(0, 5)
-          .map((p) => `${p.name}（Id: ${p.id} · ${p.version}）`)
-          .join('；')
         return {
           ok: false,
-          reason: `winget 里有多条匹配，不能猜：${list}。让用户确认要哪个（报 Id），或用更精确的名称重试`
+          reason: `winget 仓库里没有「${name}」这个词（winget 只做字面匹配，没有模糊搜索）。**先把它翻成官方名称或英文名再调一次，不要原样重试**：口语/拼音/错拼要还原，例如「bibib」「阿B」→「哔哩哔哩」、「微信」→「WeChat」、「剪映」→「CapCut」。换成别的说法都搜不到，才能说仓库里没有，让用户去官网下载`
         }
       }
+      /**
+       * 唯一化阶梯：能确定的就直接走授权卡，确定不了才弹候选卡。
+       *
+       * 只有两种「能确定」：
+       *  1. 用户报的就是包 Id（`Bilibili.Bilibili`）——那没有歧义可言。
+       *     这条也是候选卡选完重新解析时走的路径，必须留：
+       *     选完再问一次就成了死循环。
+       *  2. 按名字只剩一个候选（`微信` → 只有 Tencent.WeChat）。
+       *
+       * 名字**完全相等**不算「能确定」，这是有意的：搜 kimi 时 Kimi / Kimi CLI /
+       * Kimi Code CLI 三条名字都像，用户说的「Kimi」既可能是桌面客户端，
+       * 也可能是那个命令行编程工具。差一个字的「哔哩哔哩直播姬」同理。
+       * 与其替他猜，不如让他点一下——卡的第一个选项就是完全同名那个，回车即可。
+       */
+      const idExact = candidates.find((p) => p.id.toLowerCase() === name.toLowerCase()) ?? null
+      /**
+       * 名字里带检索词的优先，只靠 Tag/Command 命中的往后放。
+       * 搜 kimi：三条名字命中，其余是清单里打了 kimi 标签的（Chatbox、LM Studio）
+       * ——用户说的「Kimi」不会是它们，所以名字命中存在时就不拿它们占候选位。
+       */
+      const named = candidates.filter((p) => matchedByName(p, name))
+      const pool = rankCandidates(named.length > 0 ? named : candidates, name)
+      const chosen = idExact ?? (pool.length === 1 ? pool[0] : null)
+      if (!chosen) {
+        // 有候选但都不能确定是哪一个：做成可点的候选卡让用户自己点。
+        // 以前是把候选写进一段文字让模型转述，来回两三轮还容易传错
+        const options = pool.slice(0, 8).map((p) => ({
+          value: p.id,
+          label: p.name,
+          detail: `${p.id} · ${p.version}`
+        }))
+        return {
+          ok: false,
+          reason: `winget 里有 ${pool.length} 个候选，等用户在候选卡上选`,
+          choice: {
+            title: `你要装哪一个「${name}」？`,
+            hint:
+              pool.length > options.length
+                ? `按「${name}」找到 ${pool.length} 个包，只列前 ${options.length} 个。选定后还会再弹一次安装确认卡。`
+                : `按「${name}」找到 ${pool.length} 个包。选定后还会再弹一次安装确认卡。`,
+            pickInto: 'name',
+            options
+          }
+        }
+      }
+      /**
+       * 装前查重：机器上已经有了就别再走安装。
+       *
+       * 这一步不是"省事"：winget 在没有可升级版本时会直接放弃安装（退出码非 0），
+       * 而它拉起安装器的那张卡用户已经点过同意了——他会以为是"又装了一遍"。
+       * 更糟的是没有可升级版本时 winget 什么都不做，我们却可能按装完了上报。
+       *
+       * 查重失败（winget 卡住/查不到）按"不确定"处理，继续走安装：
+       * 宁可多问一次卡，也不能因为查重没答上来就拒绝用户真正要的安装。
+       */
+      if (args.force !== true) {
+        const existing = await checkInstalled(chosen.id, ctx.signal).catch(() => null)
+        if (existing?.found) {
+          const known = existing.name ?? chosen.name
+          const version = existing.version ? `（版本 ${existing.version}）` : ''
+          return {
+            ok: false,
+            reason: `「${known}」${version}已经装在这台机器上了，这一轮没有安装任何东西。**直接告诉用户它已经在了，不要重复调用 install_app，也不要劝他重装或升级**——需要更新的话软件自己会提示。他想看到这个程序的话，调用 launch_app 打开「${known}」就行。只有用户明确说要重装/修复，才带 force=true 再调一次。`
+          }
+        }
+      }
+
       return {
         ok: true,
         target: {
           title: `安装：${chosen.name}`,
           target: `${chosen.id} ${chosen.version} · 来源 winget 官方仓库`,
-          // 静默安装真正的代价必须写在卡上：用户批准时看不到安装器界面，
-          // 也就没机会取消任何默认勾选。这句话是他在批准前唯一的信息来源
-          impact: `通过 winget 静默安装到系统（${chosen.id}）：全程不出现可点的安装界面，所以安装器默认勾上的东西（开机自启、桌面快捷方式等）会照原样生效，过程中取消不了。装完会自动核对程序清单与新增的自启项并写进记录。来源与哈希由 winget 校验，不在桌面留安装包。`,
+          /**
+           * 卡上的「影响」是用户在批准前唯一的信息来源。
+           *
+           * 最要紧的一句是「会有界面弹出来、位置和勾选你说了算」——
+           * 之前这里是"全程没有界面、取消不了"（那时真的用 --silent），
+           * 现在改成一律交互式，那句话就成了假话，必须跟着改。
+           */
+          impact: `会启动这个软件自己的安装界面（${chosen.id}）：安装位置、桌面快捷方式、开机自启都在那个界面里由你决定，长庚不替你选。**需要你在弹出的窗口里点完**，这一轮对话会等你——点「取消」就等于什么都没装。装完会自动核对程序清单与新增的自启项并写进记录。来源与哈希由 winget 校验，不在桌面留安装包。`,
           undoHint: '安装不可撤回；装完可在「设置 → 应用」里卸载',
           reinstallHint: `安装源：winget（Id: ${chosen.id}）`
         },
@@ -631,13 +1170,30 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
             .catch(() => null)
 
           const outcome = await installWinget(chosen.id, ctx.signal)
+          if (outcome.cancelled) {
+            // 用户自己点的取消不是故障：别让模型说成"安装失败"或再劝一次
+            return { ok: false, summary: `「${chosen.name}」${outcome.detail}` }
+          }
+          /**
+           * 走到这里说明装前查重没查到，但 winget 说"已经装了"——
+           * 清单缓存、用户自己刚装过、或查重那一步超时都会这样。
+           * 这时候**什么都没装**，绝不能顺着下面"装完了"的流程宣布安装成功：
+           * 那会让用户以为刚装上是新版本。
+           */
+          if (outcome.alreadyInstalled) {
+            return {
+              ok: false,
+              summary: `「${chosen.name}」本来就在这台机器上，这一轮没有安装任何东西（winget 发现已有此包，直接没有运行安装程序）。如实告诉用户它已经在了，不要重试 install_app，也不要劝他重装——需要更新时软件自己会提示；他想看到这个程序就调用 launch_app 打开它。`,
+              data: { id: chosen.id, version: chosen.version, source: 'winget', alreadyInstalled: true }
+            }
+          }
           if (!outcome.ok) {
             return { ok: false, summary: `没能安装「${chosen.name}」：${outcome.detail}` }
           }
 
           const verified = await verifyInstall(chosen, beforeStartup, ctx.signal)
           const headline = verified.confirmed
-            ? `已通过 winget 静默安装「${chosen.name}」（${chosen.id}）`
+            ? `已通过 winget 安装「${chosen.name}」（${chosen.id}）`
             : `winget 报告安装成功，但核对没对上：程序清单里查不到「${chosen.name}」（${chosen.id}）`
 
           return {
@@ -663,7 +1219,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
               ev({
                 type: 'local',
                 title: `安装：${chosen.name}`,
-                detail: `winget 静默安装 · Id ${chosen.id} · 用户授权后执行 · 装后核对${
+                detail: `winget 交互式安装（安装器界面里由用户确认） · Id ${chosen.id} · 用户授权后执行 · 装后核对${
                   verified.confirmed ? '通过' : '未对上'
                 }${outcome.sourceUrl ? ` · 安装包来源 ${outcome.sourceUrl}` : ''}`
               })
@@ -921,6 +1477,10 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     listSandboxTool,
     deleteToRecycleTool,
     readEmailTool,
+    launchAppTool,
+    openFolderTool,
+    openFileTool,
+    readFileTool,
     installAppTool,
     uninstallAppTool,
     ...memoryTools

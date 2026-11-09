@@ -4,14 +4,20 @@ import type { ToolContext } from '../../src/main/agent/tool-types'
 /**
  * install_app 的装后核对。
  *
- * 锁的是这一条：**winget 报成功不等于装上了**。`--silent` 拉起的是厂商安装器，
+ * 锁的是这一条：**winget 报成功不等于装上了**。`--interactive` 拉起的是厂商安装器，
  * 外壳退出码、UAC 被拒、静默失败都可能让 winget 报成功而机器上什么都没有。
  * 台账上写"已安装"比装不上更糟，所以核对没对上时工具必须报失败。
  */
 
 const hoisted = vi.hoisted(() => ({
-  /** checkInstalled 说有没有查到 */
+  /** checkInstalled 说有没有查到（装完之后那次） */
   checkFound: true,
+  /** 装前查重那一次：机器上本来就有 → plan 直接拒绝，根本走不到安装 */
+  preInstalled: false,
+  /** 装前查重直接抛错（winget 卡住 / 环境异常） */
+  checkThrows: false,
+  /** 装前查重漏了、winget 自己发现已装（清单缓存、用户刚装过） */
+  wingetAlreadyInstalled: false,
   /** 注册表里的程序清单 */
   apps: [] as Array<Record<string, unknown>>,
   /** 两次启动项扫描之间的名字集合（安装前 / 安装后共用同一个数组，靠 mutate 模拟变化） */
@@ -19,17 +25,27 @@ const hoisted = vi.hoisted(() => ({
   startupAfter: [] as string[]
 }))
 
+let checkCalls = 0
+
 vi.mock('../../src/main/node/install', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/main/node/install')>()
   return {
     ...actual,
     wingetAvailable: async () => true,
     searchWinget: async () => [{ name: '网易云音乐', id: 'NetEase.CloudMusic', version: '2.10.6' }],
-    installWinget: async () => ({ ok: true, detail: 'ok', sourceUrl: 'https://example.com/cloudmusic.exe' }),
-    checkInstalled: async () =>
-      hoisted.checkFound
-        ? { found: true, name: '网易云音乐', version: '2.10.6', detail: 'listed' }
-        : { found: false, detail: 'winget list 报告没有匹配的已安装程序' }
+    installWinget: async () =>
+      hoisted.wingetAlreadyInstalled
+        ? { ok: false, alreadyInstalled: true, detail: '这台机器上本来就有这个软件，winget 没有执行安装' }
+        : { ok: true, detail: 'ok', sourceUrl: 'https://example.com/cloudmusic.exe' },
+    checkInstalled: async () => {
+      // 第一次是装前查重，之后都是装后核对：两次问的是同一个函数但含义不同，
+      // 混在一起会让"装完核对"的用例全被查重挡在 plan 阶段
+      const isPreflight = checkCalls++ === 0
+      if (isPreflight && hoisted.checkThrows) throw new Error('winget list 超时')
+      const found = isPreflight ? hoisted.preInstalled : hoisted.checkFound
+      if (!found) return { found: false, detail: 'winget list 报告没有匹配的已安装程序' }
+      return { found: true, name: '网易云音乐', version: '2.10.6', detail: 'listed' }
+    }
   }
 })
 
@@ -69,20 +85,30 @@ async function planFor(name = 'NetEase.CloudMusic') {
 
 beforeEach(() => {
   hoisted.checkFound = true
+  hoisted.preInstalled = false
+  hoisted.checkThrows = false
+  hoisted.wingetAlreadyInstalled = false
   hoisted.apps = []
   hoisted.startupBefore = []
   hoisted.startupAfter = []
   startupPass = 0
+  checkCalls = 0
 })
 
 describe('install_app 授权卡', () => {
-  it('卡上写明静默安装的代价：默认勾选会照原样生效、过程中取消不了', async () => {
-    // 用户批准时看不到安装器界面，这句话是他唯一的信息来源。
-    // 原来的文案是"不在桌面留安装包"，恰好说反了
+  /**
+   * 卡片「影响」栏是用户批准前唯一的信息来源。
+   * 曾经这里写的是"全程没有界面、取消不了"（那时真的走 --silent），
+   * 改成一律交互式之后那句话就成了假话——用户会看到安装器，而且能改安装位置。
+   */
+  it('说明会弹安装界面、位置与勾选由用户定，不再说「取消不了」', async () => {
     const planned = await planFor()
-    expect(planned.target.impact).toContain('静默安装')
-    expect(planned.target.impact).toContain('默认勾上')
-    expect(planned.target.impact).toContain('取消不了')
+    expect(planned.target.impact).toContain('安装界面')
+    expect(planned.target.impact).toContain('安装位置')
+    expect(planned.target.impact).toContain('由你决定')
+    // 静默模式已删除，这句警告不能再出现
+    expect(planned.target.impact).not.toContain('取消不了')
+    expect(planned.target.impact).not.toContain('静默')
   })
 
   it('卡上交代了装完会核对，并保留来源与不可撤回的口径', async () => {
@@ -90,6 +116,60 @@ describe('install_app 授权卡', () => {
     expect(planned.target.impact).toContain('核对')
     expect(planned.target.target).toContain('NetEase.CloudMusic')
     expect(planned.target.undoHint).toContain('不可撤回')
+  })
+})
+
+describe('install_app 装前查重（已经装过就别再装一遍）', () => {
+  /**
+   * 用户最容易踩的那一步：忘了自己装过，又说一次"帮我装哔哩哔哩"。
+   * 以前这里会照常弹安装卡、拉起安装器，winget 发现没有可升级版本就什么都不做，
+   * 我们却顺着"装完了"的流程宣布装好了。现在要在**弹卡之前**就拦住。
+   */
+  it('已经装着 → plan 直接拒绝，并指向 launch_app', async () => {
+    hoisted.preInstalled = true
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+
+    expect(planned.ok).toBe(false)
+    if (planned.ok) return
+    expect(planned.reason).toContain('已经装在')
+    expect(planned.reason).toContain('2.10.6')
+    // 拦住之后必须给出下一步：光说"不用装了"用户还是看不到东西
+    expect(planned.reason).toContain('launch_app')
+    // 不能顺口提"升级"——升级由软件自己提示，我们不掺和
+    expect(planned.reason).toContain('不要劝他重装或升级')
+  })
+
+  it('被拦住时不弹候选卡也不弹授权卡（没得选、也没什么可批准）', async () => {
+    hoisted.preInstalled = true
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    expect(planned.ok).toBe(false)
+    if (planned.ok) return
+    expect(planned.choice).toBeUndefined()
+  })
+
+  it('用户明确说要重装 → force:true 放行（修复安装是正当需求）', async () => {
+    hoisted.preInstalled = true
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic', force: true }, ctx)
+    expect(planned.ok).toBe(true)
+  })
+
+  it('查重没答上来（winget 卡住/报错）不拦：宁可多问一次卡，也别挡住真的要装', async () => {
+    // checkInstalled 抛错 → 当作"不确定"，继续走安装
+    hoisted.checkThrows = true
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    expect(planned.ok).toBe(true)
+  })
+
+  it('查重漏了、winget 自己发现已装 → 报"本来就在"，不能宣布安装成功', async () => {
+    hoisted.wingetAlreadyInstalled = true
+    const planned = await planFor()
+    const result = await planned.execute()
+
+    expect(result.ok).toBe(false)
+    expect(result.summary).toContain('本来就在')
+    expect(result.summary).not.toContain('已通过 winget 安装')
+    // 也不该登记成"管家装的"
+    expect(result.installedName).toBeUndefined()
   })
 })
 
@@ -147,7 +227,7 @@ describe('install_app 装后核对', () => {
     expect(result.installedName).toBe('网易云音乐')
   })
 
-  it('装完新增的自启项会报出来（静默安装补回可观测性）', async () => {
+  it('装完新增的自启项会报出来（交互式安装没有任何机器可读的回执）', async () => {
     hoisted.startupBefore = ['OneDrive']
     hoisted.startupAfter = ['OneDrive', 'CloudMusic']
     hoisted.apps = [

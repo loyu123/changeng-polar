@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AuthBroker, machineEnv } from '../../src/main/runtime'
-import type { AuthRequest } from '../../src/shared/types'
+import type { AuthRequest, ToolChoiceRequest } from '../../src/shared/types'
 
 /**
  * 授权卡的登记簿。
@@ -115,6 +115,84 @@ describe('AuthBroker · 超时', () => {
       await expect(waiting).resolves.toBe('once')
       await vi.advanceTimersByTimeAsync(120_000)
       expect(events.some((e) => e.type === 'authExpired')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('AuthBroker · 候选卡', () => {
+  const choiceReq = (id: string): ToolChoiceRequest => ({
+    id,
+    tool: 'install_app',
+    title: '你要装哪一个「kimi」？',
+    hint: '选定后还会再弹一次安装确认卡',
+    options: [
+      { value: 'MoonshotAI.Kimi', label: 'Kimi', detail: 'MoonshotAI.Kimi · 3.2.24' },
+      { value: 'MoonshotAI.KimiCLI', label: 'Kimi CLI', detail: 'MoonshotAI.KimiCLI · 1.52.0' }
+    ],
+    requestedAt: new Date().toISOString()
+  })
+
+  it('用户点了某一项 → 闸门拿到那个值', async () => {
+    const broker = new AuthBroker()
+    const events: Array<{ type: string }> = []
+    const waiting = broker.waitChoice(choiceReq('g1'), 'req-g', (p) => events.push(p as never))
+    expect(broker.choose('g1', 'MoonshotAI.KimiCLI')).toBe(true)
+    await expect(waiting).resolves.toBe('MoonshotAI.KimiCLI')
+    expect(events[0]?.type).toBe('choice')
+  })
+
+  /**
+   * 渲染层传来的 value 是不可信输入：它会被写回工具参数、再拿去解析执行。
+   * 只认卡上真列出的值，才守得住「用户点了 A、实际装 B」那条缝。
+   */
+  it('不在候选集里的值一律按「没选」处理（挡住伪造的 Id）', async () => {
+    const broker = new AuthBroker()
+    const waiting = broker.waitChoice(choiceReq('g2'), 'req-g2', () => {})
+    expect(broker.choose('g2', 'Evil.Package')).toBe(true) // 卡确实在等，返回 true
+    await expect(waiting).resolves.toBeNull() // 但值没被采纳
+  })
+
+  it('认识/已作答过的 choiceId 返回 false', () => {
+    const broker = new AuthBroker()
+    expect(broker.choose('nope', 'MoonshotAI.Kimi')).toBe(false)
+  })
+
+  it('同一张卡只能作答一次', async () => {
+    const broker = new AuthBroker()
+    const waiting = broker.waitChoice(choiceReq('g3'), 'req-g3', () => {})
+    expect(broker.choose('g3', 'MoonshotAI.Kimi')).toBe(true)
+    expect(broker.choose('g3', 'MoonshotAI.KimiCLI')).toBe(false)
+    await expect(waiting).resolves.toBe('MoonshotAI.Kimi')
+  })
+
+  it('用户点停止 → 候选卡按「没选」收口（不替用户挑一个）', async () => {
+    const broker = new AuthBroker()
+    const waiting = broker.waitChoice(choiceReq('g4'), 'req-g4', () => {})
+    broker.settleRequest('req-g4', 'deny')
+    await expect(waiting).resolves.toBeNull()
+    expect(broker.choose('g4', 'MoonshotAI.Kimi')).toBe(false)
+  })
+
+  it('授权卡与候选卡挂在同一请求下，收口时一起清掉', async () => {
+    const broker = new AuthBroker()
+    const auth = broker.wait(req('g5'), 'req-g5', () => {})
+    const choice = broker.waitChoice(choiceReq('g6'), 'req-g5', () => {})
+    broker.settleRequest('req-g5', 'deny')
+    await expect(auth).resolves.toBe('deny')
+    await expect(choice).resolves.toBeNull()
+  })
+
+  it('超时按「取消」返回并通知渲染层，不会自动选一个', async () => {
+    vi.useFakeTimers()
+    try {
+      const broker = new AuthBroker()
+      const events: Array<{ type: string; choiceId?: string }> = []
+      const waiting = broker.waitChoice(choiceReq('g7'), 'req-g7', (p) => events.push(p as never))
+      await vi.advanceTimersByTimeAsync(60_001)
+      await expect(waiting).resolves.toBeNull()
+      expect(events.some((e) => e.type === 'choiceExpired' && e.choiceId === 'g7')).toBe(true)
     } finally {
       vi.useRealTimers()
     }

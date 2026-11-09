@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuthAnswer, AuthRequest, ChatMessage, ChatSession, Evidence } from '../../../shared/types'
+import type { AuthAnswer, AuthRequest, ChatMessage, ChatSession, Evidence, ToolChoiceRequest } from '../../../shared/types'
 import { MarkdownText } from '../components/MarkdownText'
 
 /** 与主进程 runtime.ts 的 AUTH_TIMEOUT_MS 对齐：卡 60 秒没人理就按拒绝收口 */
 const AUTH_TIMEOUT_MS = 60_000
+
+/** 候选卡的两个非选项状态（与 ChatPage 一致，\u0000 开头不会撞真实候选值） */
+const CANCEL = '\u0000cancel'
+const EXPIRED = '\u0000expired'
 
 interface Msg {
   id: string
@@ -16,6 +20,8 @@ interface Msg {
   evidence: Evidence[]
   auth?: AuthRequest
   authAnswer?: AuthAnswer
+  choice?: ToolChoiceRequest
+  choiceAnswer?: string
 }
 
 const SUGGESTS = ['这台机器上装了哪些应用', '今天有哪些开机自启', '看看邮箱未读', '下载文件夹里最大的文件']
@@ -50,6 +56,63 @@ const EFFECT_LABEL: Record<string, { text: string; danger: boolean }> = {
   write: { text: '会改动内容 · 可撤回', danger: false },
   ui: { text: '只打开界面', danger: false },
   read: { text: '只读', danger: false }
+}
+
+/**
+ * 紧凑候选卡：名字有歧义时先让用户在窄面板里点一个。
+ *
+ * 面板小，但补充行（包 Id+版本 / 完整路径）**必须露出来**：
+ * 同名候选只看名字分不出谁是谁，折进 title 提示等于在触屏和键盘操作下没有。
+ * 没有这张卡，抽屉里点「装个 Kimi」会 60 秒超时，然后告诉用户"你取消了选择"，
+ * 而用户根本没看见任何卡。宁可窄一点，不能假装问过。
+ */
+function CompactChoice({
+  request,
+  answer,
+  onPick
+}: {
+  request: ToolChoiceRequest
+  answer?: string
+  onPick: (value: string) => void
+}): React.ReactNode {
+  const picked = answer && answer !== CANCEL && answer !== EXPIRED ? answer : null
+  const pickedLabel = picked ? (request.options.find((o) => o.value === picked)?.label ?? picked) : null
+  return (
+    <div className="authc" role="group" aria-label={`需要选择：${request.title}`}>
+      <div className="authc-h">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <path d="M2.6 8.4h3.1l1.5 1.7h1.6l1.5-1.7h3.1" />
+          <path d="M8 2.6v5.8M5.6 4.8 8 2.6l2.4 2.2" />
+        </svg>
+        {answer ? '已选择' : '需要你选一个'}
+        <span className="tag">名字有歧义</span>
+      </div>
+      <div className="authc-t">{request.title}</div>
+      {answer === EXPIRED ? (
+        <div className="authc-result">60 秒未响应，已按取消处理，这一步没有执行</div>
+      ) : answer === CANCEL ? (
+        <div className="authc-result">你取消了选择，这一步没有执行</div>
+      ) : pickedLabel ? (
+        <div className="authc-result">你选了「{pickedLabel}」，正在按这个继续</div>
+      ) : (
+        <>
+          <div className="authc-btns col">
+            {request.options.map((opt) => (
+              <button key={opt.value} className="abtn ghost opt" title={opt.detail} onClick={() => onPick(opt.value)}>
+                {opt.label}
+                {opt.detail && <span className="abtn-detail">{opt.detail}</span>}
+              </button>
+            ))}
+          </div>
+          <div className="authc-btns">
+            <button className="abtn deny" onClick={() => onPick(CANCEL)}>
+              都不是
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -238,6 +301,19 @@ export function OrbPanel(): React.ReactNode {
     inputRef.current?.focus()
   }
 
+  const pickChoice = async (request: ToolChoiceRequest, value: string): Promise<void> => {
+    setMessages((prev) =>
+      prev.map((m) => (m.choice?.id === request.id ? { ...m, choiceAnswer: value, status: undefined } : m))
+    )
+    try {
+      await window.butler.chat.choose(request.id, value)
+    } catch {
+      /* 主进程可能已经收口 */
+    }
+    reportStatus('think')
+    inputRef.current?.focus()
+  }
+
   const stop = async (): Promise<void> => {
     stoppedRef.current = true
     if (activeReq) await window.butler.chat.abort(activeReq)
@@ -276,6 +352,12 @@ export function OrbPanel(): React.ReactNode {
       } else if (event.type === 'authExpired') {
         patch(botId, (m) => (m.auth?.id === event.authId ? { ...m, authAnswer: 'expired', status: undefined } : m))
         reportStatus('think')
+      } else if (event.type === 'choice') {
+        patch(botId, (m) => ({ ...m, choice: event.request, choiceAnswer: undefined, status: '等你选一个…' }))
+        reportStatus('ask')
+      } else if (event.type === 'choiceExpired') {
+        patch(botId, (m) => (m.choice?.id === event.choiceId ? { ...m, choiceAnswer: EXPIRED, status: undefined } : m))
+        reportStatus('think')
       }
     })
 
@@ -287,7 +369,8 @@ export function OrbPanel(): React.ReactNode {
           text: m.text ? `${m.text}\n\n（已停止）` : '（已停止，这次没有继续）',
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
         reportStatus('idle')
       } else if (result && 'error' in result) {
@@ -296,7 +379,8 @@ export function OrbPanel(): React.ReactNode {
           error: result.error,
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
         reportStatus('idle')
       } else if (result) {
@@ -306,7 +390,8 @@ export function OrbPanel(): React.ReactNode {
           evidence: result.evidence,
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
         reportStatus('done')
       }
@@ -500,6 +585,9 @@ export function OrbPanel(): React.ReactNode {
                     </div>
                   )}
 
+                  {m.choice && (
+                    <CompactChoice request={m.choice} answer={m.choiceAnswer} onPick={(v) => void pickChoice(m.choice!, v)} />
+                  )}
                   {m.auth && <CompactAuth request={m.auth} answer={m.authAnswer} onAnswer={(a) => void answerAuth(m.auth!, a)} />}
 
                   {m.error && <div className="txt err">出错了：{m.error}</div>}

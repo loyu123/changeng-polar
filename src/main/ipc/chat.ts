@@ -22,6 +22,16 @@ export function registerChatIpc(ctx: IpcContext): void {
     return ctx.auth.answer(payload.authId, payload.answer)
   })
 
+  /**
+   * 用户点了候选卡上的一项：把选中的值交回闸门，闸门会拿它**重新解析一次**，
+   * 再弹正常的授权卡。所以这里点完不等于装，界面上也要说清楚。
+   */
+  ipcMain.handle('chat:choose', (_e, payload: { choiceId: string; value: string }) => {
+    if (!payload || typeof payload.choiceId !== 'string' || typeof payload.value !== 'string') return false
+    // 只接受卡上真有的值：Broker 里核对，见 AuthBroker.choose
+    return ctx.auth.choose(payload.choiceId, payload.value)
+  })
+
   ipcMain.handle('chat:send', async (event, payload: { requestId: string; messages: ChatMessage[] }) => {
     const { requestId, messages } = payload
     const controller = new AbortController()

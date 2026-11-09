@@ -25,9 +25,11 @@ export interface IpcContext {
     emit: (raw: import('../../shared/types').ChatPayload) => void
     uiAuth: boolean
   }) => Promise<import('../../shared/types').TurnResult>
-  /** 授权卡：作答与按请求收口 */
+  /** 授权卡：作答与按请求收口；候选卡：选择 */
   auth: {
     answer: (authId: string, answer: import('../../shared/types').AuthAnswer) => boolean
+    /** 候选卡作答；值不在候选集里按「没选」处理，返回 false 表示卡已失效 */
+    choose: (choiceId: string, value: string) => boolean
     settleRequest: (requestId: string, answer: import('../../shared/types').AuthAnswer) => void
   }
   /** 定时任务：保存/删除后重排，跑完广播刷新 */

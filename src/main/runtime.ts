@@ -1,12 +1,23 @@
 import os from 'node:os'
+import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
-import type { AuthAnswer, AuthRequest, ChatMessage, ChatPayload, TaskDef, ToolEffect, TurnResult } from '../shared/types'
+import type {
+  AuthAnswer,
+  AuthRequest,
+  ChatMessage,
+  ChatPayload,
+  TaskDef,
+  ToolChoiceRequest,
+  ToolEffect,
+  TurnResult
+} from '../shared/types'
 import { runTurn, TOOL_BUDGET_STEPS, type GateHooks } from './agent/agent'
 import { buildSystemPrompt } from './agent/prompt'
 import { capabilityBrief, createTools } from './agent/tools'
 import type { ToolDef } from './agent/tool-types'
 import { memoryBlock } from './node/memory'
+import { focusProcessWindow, probeLaunch } from './node/running'
 import type { Store } from './node/store'
 
 /**
@@ -33,16 +44,29 @@ export function machineEnv(): {
 }
 
 /**
- * 授权卡的登记簿。
+ * 授权卡与候选卡的登记簿。
  *
- * 两件事必须成对：谁在等卡（pendingAuth），以及哪个请求名下挂着哪些卡
- *（pendingByRequest）。少了后者，用户点「停止」时就只能等 60 秒超时。
+ * 两件事必须成对：谁在等卡（pendingAuth / pendingChoice），以及哪个请求名下
+ * 挂着哪些卡（pendingByRequest）。少了后者，用户点「停止」时就只能等 60 秒超时。
+ *
+ * 候选卡和授权卡共用一张请求名下的登记簿，但答案类型不同：
+ * 授权卡的答案是枚举（once/always/deny），候选卡的答案是用户点中的那个值。
+ * 收口时一律按「没选 / 拒绝」处理——停止就是什么都没选。
  */
 export class AuthBroker {
   private readonly pendingAuth = new Map<string, (answer: AuthAnswer) => void>()
+  private readonly pendingChoice = new Map<string, (value: string | null) => void>()
+  /**
+   * 每张候选卡上真实列出的值。
+   *
+   * 存在的理由：choose() 收到的 value 来自渲染层，属于不可信输入——它会被写回
+   * 工具参数再拿去解析执行。只接受"卡上真有的那些"，才守得住
+   * 「用户点了 A、实际装 B」那条缝（K7 堵的就是这个）。
+   */
+  private readonly offeredByChoice = new Map<string, Set<string>>()
   private readonly pendingByRequest = new Map<string, Set<string>>()
 
-  /** 登记一张卡，返回"用户点了什么"的 Promise */
+  /** 登记一张授权卡，返回"用户点了什么"的 Promise */
   wait(request: AuthRequest, requestId: string, emit: (payload: ChatPayload) => void): Promise<AuthAnswer> {
     return new Promise<AuthAnswer>((resolve) => {
       const ids = this.pendingByRequest.get(requestId) ?? new Set<string>()
@@ -63,6 +87,34 @@ export class AuthBroker {
     })
   }
 
+  /**
+   * 登记一张候选卡，返回"用户点了哪个值"；取消或超时返回 null。
+   *
+   * 超时不算「拒绝」而算「取消」：这里问的是"哪一个"，没人回答时正确的做法是
+   * 什么都不装，而不是替用户挑一个。所以超时只收口，不产生任何副作用。
+   */
+  waitChoice(request: ToolChoiceRequest, requestId: string, emit: (payload: ChatPayload) => void): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
+      const ids = this.pendingByRequest.get(requestId) ?? new Set<string>()
+      this.pendingByRequest.set(requestId, ids)
+      const timer = setTimeout(() => {
+        this.pendingChoice.delete(request.id)
+        this.offeredByChoice.delete(request.id)
+        ids.delete(request.id)
+        emit({ type: 'choiceExpired', choiceId: request.id })
+        resolve(null)
+      }, AUTH_TIMEOUT_MS)
+      ids.add(request.id)
+      this.offeredByChoice.set(request.id, new Set(request.options.map((o) => o.value)))
+      this.pendingChoice.set(request.id, (value) => {
+        clearTimeout(timer)
+        ids.delete(request.id)
+        resolve(value)
+      })
+      emit({ type: 'choice', request })
+    })
+  }
+
   /** 用户点了某张卡：把答案交回等待中的闸门 */
   answer(authId: string, answer: AuthAnswer): boolean {
     const resolve = this.pendingAuth.get(authId)
@@ -73,15 +125,40 @@ export class AuthBroker {
     return true
   }
 
+  /**
+   * 用户点了某个候选。不在候选集里的值一律按「没选」处理。
+   *
+   * 静默忽略和显式拒绝在这里是同一个结果（都不装），所以不必区分错误类型：
+   * 渲染层拿到 false 就够它把卡标成失效了。
+   */
+  choose(choiceId: string, value: string): boolean {
+    const resolve = this.pendingChoice.get(choiceId)
+    if (!resolve) return false
+    this.pendingChoice.delete(choiceId)
+    const offered = this.offeredByChoice.get(choiceId)
+    this.offeredByChoice.delete(choiceId)
+    resolve(offered?.has(value) ? value : null)
+    return true
+  }
+
   /** 把某个请求名下所有未作答的卡按给定答案收口（停止、请求结束时用） */
   settleRequest(requestId: string, answer: AuthAnswer): void {
     const ids = this.pendingByRequest.get(requestId)
     if (!ids) return
-    for (const authId of [...ids]) {
-      const resolve = this.pendingAuth.get(authId)
-      this.pendingAuth.delete(authId)
-      ids.delete(authId)
-      resolve?.(answer)
+    for (const cardId of [...ids]) {
+      const auth = this.pendingAuth.get(cardId)
+      if (auth) {
+        this.pendingAuth.delete(cardId)
+        ids.delete(cardId)
+        auth(answer)
+        continue
+      }
+      // 候选卡：任何收口都按「没选」处理，不留悬念也不替用户选
+      const choice = this.pendingChoice.get(cardId)
+      this.pendingChoice.delete(cardId)
+      this.offeredByChoice.delete(cardId)
+      ids.delete(cardId)
+      choice?.(null)
     }
     this.pendingByRequest.delete(requestId)
   }
@@ -125,6 +202,17 @@ export class TurnRuntime {
     const { store } = this.opts
     const all = createTools({
       openSettings: this.opts.openSettings,
+      // 「打开哔哩哔哩」这类请求：目标只能是 .lnk/.url 或系统应用清单里的一条
+      launchShortcut: (filePath) => launchShortcut(filePath),
+      // 豆包这类不建快捷方式的程序：走 shell:AppsFolder
+      launchAppsFolder: (appId) => launchAppsFolder(appId),
+      // 启动前先看它是不是已经开着：开着就不再启动一份，把那个窗口叫到前面
+      probeLaunch: (lnkPath) => probeLaunch(lnkPath),
+      focusApp: (pid) => focusProcessWindow(pid),
+      // 「打开桌面上的『应用软件』」：目录不是快捷方式，走 node/folder.ts 单独解析
+      openFolder: (dirPath) => openFolder(dirPath),
+      // 「把那个 Word 打开」：会执行的后缀在 node/file.ts 就拒了
+      openFile: (filePath) => openFile(filePath),
       // 卸载卡上的「重装入口」：注册表没登记时，用查证过的官网兜底
       officialSite: async (appName) => {
         const known = (await store.getVerifyMap())[appName]
@@ -164,6 +252,17 @@ export class TurnRuntime {
         // 定时任务无人在场：写操作当场拒绝（审计照常留痕），绝不默默放行
         if (!uiAuth) return Promise.resolve<AuthAnswer>('deny')
         return broker.wait(request, requestId, emit)
+      },
+      /**
+       * 候选卡同样只在有人在看的时候才发。
+       *
+       * 返回 null 而不是抛错：闸门把 null 当「用户取消」，落一条"什么都没改动"的
+       * 审计就收尾。无人在场的定时任务于是走的是同一条失败路径——
+       * 不是"没人能点所以卡住了"，而是"没人能确认所以不做"。
+       */
+      requestChoice: (request) => {
+        if (!uiAuth) return Promise.resolve<string | null>(null)
+        return broker.waitChoice(request, requestId, emit)
       },
       isRemembered: (key) => alwaysAllowed.has(key),
       remember: (key, request) => {
@@ -272,3 +371,50 @@ export class TurnRuntime {
 
 /** 打开系统设置页：渲染层不能直接调 shell，这里包一层给工具用 */
 export const openSettingsPage = (page: string): Promise<void> => shell.openExternal(page)
+
+/**
+ * 启动开始菜单快捷方式：渲染层同样不能直接碰 shell。
+ *
+ * `shell.openPath` 成功返回空字符串、失败返回原因，正好对上工具层要的签名
+ * （我们不去猜它启动的是 exe 还是 UWP 应用，外壳自己知道）。
+ */
+export const launchShortcut = (filePath: string): Promise<string> => shell.openPath(filePath)
+
+/**
+ * 启动系统应用清单里的条目（豆包、商店应用这类不建快捷方式的程序）。
+ *
+ * 走 `explorer.exe shell:AppsFolder\<AppID>`：这是系统自己的激活入口，
+ * 和用户点开始菜单里那一下等价。真机验过两种 AppID ——
+ * `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`（打包应用）和
+ * `Doubao.ChatApp`（普通 AppID）都能起来。
+ *
+ * 不用 `shell.openPath`：它对着 AppID 字符串只会回一句 Failed to open path。
+ * 也不能拿 explorer 的退出码判成败（**它永远返回 1**，哪怕窗口已经开了）。
+ */
+export const launchAppsFolder = (appId: string): Promise<string> =>
+  new Promise((resolve) => {
+    execFile(
+      'explorer.exe',
+      [`shell:AppsFolder\\${appId}`],
+      { windowsHide: true, timeout: 15_000 },
+      // 只看"能不能把 explorer 拉起来"：它正常退出也是 1，所以没有错误信息就当成功
+      () => resolve('')
+    )
+  })
+
+/**
+ * 打开一个目录：和打开程序走同一个外壳接口，区别只在传进去的东西。
+ *
+ * 传目录 → 资源管理器；传文件 → "打开"那个文件（exe 就是执行）。
+ * 所以 node/folder.ts 在解析阶段就要求 isDirectory()，这里收到的只会是目录。
+ */
+export const openFolder = (dirPath: string): Promise<string> => shell.openPath(dirPath)
+
+/**
+ * 打开一个文件：同一个外壳接口，传的是文件而不是目录。
+ *
+ * 「打开」的含义由文件类型决定：文档是拉起对应的查看器，图片是看图，音视频是播放。
+ * 会执行的后缀（exe/bat/ps1/lnk/msi/reg…）在 node/file.ts 的解析阶段就被拒掉，
+ * 所以走到这里的不会是"一步就把程序跑起来"的东西。
+ */
+export const openFile = (filePath: string): Promise<string> => shell.openPath(filePath)

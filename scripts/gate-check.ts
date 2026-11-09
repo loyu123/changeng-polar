@@ -1,6 +1,7 @@
-import { existsSync, promises as fs } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, promises as fs, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { deflateRawSync } from 'node:zlib'
 import { createTools } from '../src/main/agent/tools'
 import { executeThroughGate, rememberKey, type GateHooks } from '../src/main/agent/gate'
 import type { ToolContext, ToolDef } from '../src/main/agent/tool-types'
@@ -8,6 +9,10 @@ import { DEFAULT_CONFIG, Store } from '../src/main/node/store'
 import { prepareSandbox, SANDBOX_ROOT } from '../src/main/node/sandbox'
 import { listInstalledApps } from '../src/main/node/registry'
 import { planUninstall } from '../src/main/node/uninstall'
+import { findOpenWindow, normalizeAppName } from '../src/main/node/running'
+import { isLaunchableShortcut, isLaunchableUrl } from '../src/main/node/launch'
+import { listFolderCandidates, matchFolder, planFolder, resetFolderCache, scanFolderIndex, setFolderIndexRoots } from '../src/main/node/folder'
+import { resetFileIndex, scanFileIndex, setFileIndexRoots } from '../src/main/node/file'
 import type { AuthAnswer, RecordEntry } from '../src/shared/types'
 
 /**
@@ -32,6 +37,7 @@ import type { AuthAnswer, RecordEntry } from '../src/shared/types'
  *  16. 安装：空名字 / 非法路径拒绝；install 档允许「始终允许」（唯一开档工具）
  *  17. allowAlways 命中：记忆里有 key 时免弹卡直接执行（authz=user_always）；无记忆照常弹卡
  *  18. 授权记忆能持久化、重启后还在、且能撤销
+ *  19. 候选卡：选完重新解析再弹授权卡；取消/无选择能力时不安装也不猜
  */
 
 const ctx: ToolContext = {
@@ -342,6 +348,321 @@ async function main(): Promise<void> {
     console.log('SKIP  安装：工具清单里没有 install_app')
   }
 
+  // ---- 16b 打开程序：不弹卡（ui 档），名字对不上就拒绝 ----
+  const launchTool = tools.find((t) => t.name === 'launch_app')
+  if (launchTool) {
+    const missing = await executeThroughGate(
+      launchTool,
+      { name: '绝对不存在的程序 Xyz' },
+      ctx,
+      makeGate('once').gate
+    )
+    check(
+      '打开程序：开始菜单里没有就拒绝，不弹卡',
+      missing.ok === false && missing.blocked === true,
+      `ok=${missing.ok} blocked=${missing.blocked}`
+    )
+    check('打开程序：ui 档，不需要授权卡', launchTool.effect === 'ui', `effect=${launchTool.effect}`)
+
+    /**
+     * 真机上「ICEY」是 `steam://rungameid/553640` 的 `.url`，不是 `.lnk`。
+     * 只认 `.lnk` 的时代，用户说"打开 ICEY"，管家答"没有这个程序"。
+     * 这里钉住的是判定口径（哪些协议算程序），真机扫到的条目不由离线断言负责。
+     */
+    check(
+      '打开程序：启动器协议算程序（steam://）',
+      isLaunchableUrl('steam://rungameid/553640') === true,
+      'steam:// → true'
+    )
+    check(
+      '打开程序：http/https 不算程序（那是网页）',
+      isLaunchableUrl('https://www.bilibili.com/') === false && isLaunchableUrl('http://x.test/') === false,
+      'http(s):// → false'
+    )
+    check(
+      '打开程序：盘符路径不能冒充协议（.url 指向本机 exe 的缺口）',
+      isLaunchableUrl('C:\\Windows\\System32\\notepad.exe') === false,
+      'C:\\...exe → false'
+    )
+    check(
+      '打开程序：Git Bash / Git CMD / Windows Terminal / WSL 这类终端入口不放行',
+      ['Git Bash', 'Git CMD', 'Windows Terminal', 'WSL', '命令提示符'].every((n) => !isLaunchableShortcut(n)),
+      '全部 false'
+    )
+  } else {
+    console.log('SKIP  打开程序：工具清单里没有 launch_app')
+  }
+
+  // ---- 16c 打开文件夹：ui 档、不弹卡，且只开目录 ----
+  const folderTool = tools.find((t) => t.name === 'open_folder')
+  if (folderTool) {
+    check('打开文件夹：ui 档，不需要授权卡', folderTool.effect === 'ui', `effect=${folderTool.effect}`)
+
+    // 网络共享：连上去就是一次 SMB 登录，会把本机凭据交出去，必须挡在 plan 阶段
+    const unc = await executeThroughGate(
+      folderTool,
+      { name: '\\\\192.168.1.10\\share' },
+      ctx,
+      makeGate('once').gate
+    )
+    check(
+      '打开文件夹：网络共享路径拒绝，不弹卡',
+      unc.ok === false && unc.blocked === true && /凭据/.test(unc.summary),
+      `ok=${unc.ok} blocked=${unc.blocked}`
+    )
+
+    // 路径不存在 / 指到 exe：都不该被当成"打开一个文件夹"
+    const notThere = await executeThroughGate(
+      folderTool,
+      { name: 'C:\\绝对不存在的目录\\nope' },
+      ctx,
+      makeGate('once').gate
+    )
+    check(
+      '打开文件夹：本机不存在的目录拒绝，不弹卡',
+      notThere.ok === false && notThere.blocked === true,
+      `ok=${notThere.ok}`
+    )
+
+    const exe = await executeThroughGate(
+      folderTool,
+      { name: 'C:\\Windows\\System32\\notepad.exe' },
+      ctx,
+      makeGate('once').gate
+    )
+    check(
+      '打开文件夹：可执行文件不当文件夹打开',
+      exe.ok === false && exe.blocked === true && /执行/.test(exe.summary),
+      `ok=${exe.ok}`
+    )
+  } else {
+    console.log('SKIP  打开文件夹：工具清单里没有 open_folder')
+  }
+
+  // ---- 16c-2 打开文件夹：不在桌面上的也认得（真机扫一遍） ----
+  {
+    const started = Date.now()
+    const index = scanFolderIndex()
+    const elapsed = Date.now() - started
+    check(
+      '打开文件夹：深索引能扫到盘根往下的目录',
+      index.length > 50,
+      `${index.length} 项 / ${elapsed}ms`
+    )
+    const candidates = listFolderCandidates()
+    // 系统目录的名字有确定含义，不该被深索引里的同名声东搅成歧义
+    const pictures = matchFolder('图片', candidates)
+    check(
+      '打开文件夹：「图片」直接指图片库，不报歧义',
+      pictures.ok === true && /Pictures/i.test(pictures.folder.path),
+      pictures.ok ? pictures.folder.path : pictures.reason
+    )
+    // 从认得的目录往下写一截，也得补成绝对路径
+    const docsChild = planFolder('文档\\不存在的一层-xyz', candidates)
+    check(
+      '打开文件夹：「文档\\子目录」按文档目录补全（不存在时如实说不存在）',
+      docsChild.ok === false && /没有/.test(docsChild.reason),
+      docsChild.ok ? docsChild.folder.path : docsChild.reason
+    )
+  }
+
+  // ---- 16c-3 打开文件夹：同名歧义 → 弹候选卡，用户点哪个就开哪个 ----
+  {
+    /*
+     * 用临时目录伪造一台"盘"，不拿真机的目录做判据：
+     * 换个机器跑（别人盘里没有 KCareOne）断言就会红，红的原因跟要验的事情无关。
+     */
+    const fakeRoot = mkdtempSync(path.join(os.tmpdir(), 'butler-gate-choice-'))
+    try {
+      const names = ['KCareOne-ALL', 'KCareOne-MAIN', 'KCareOne-SQL']
+      for (const name of names) mkdirSync(path.join(fakeRoot, name))
+      setFolderIndexRoots([{ dir: fakeRoot, depth: 3 }])
+      resetFolderCache()
+
+      let opened = ''
+      const folderWithStub = createTools({
+        openFolder: async (p) => {
+          opened = p
+          return ''
+        }
+      }).find((t) => t.name === 'open_folder')
+
+      if (!folderWithStub) {
+        console.log('SKIP  打开文件夹候选卡：工具清单里没有 open_folder')
+      } else {
+        const asked: string[][]= []
+        const picked = path.join(fakeRoot, 'KCareOne-MAIN')
+        const choiceResult = await executeThroughGate(
+          folderWithStub,
+          { name: 'kcareone' },
+          ctx,
+          {
+            ...makeGate('once').gate,
+            requestChoice: async (request) => {
+              asked.push(request.options.map((o) => o.value))
+              return picked
+            }
+          }
+        )
+        check(
+          '打开文件夹：同名多个 → 弹候选卡而不是失败',
+          asked.length === 1 && (asked[0] ?? []).length === 3,
+          `弹卡=${asked.length} 候选=${(asked[0] ?? []).length}`
+        )
+        check(
+          '打开文件夹：卡上每个候选都带完整路径（不然同名分不出谁是谁）',
+          (asked[0] ?? []).every((v) => /^[a-zA-Z]:[\\/]/.test(v) && v.toLowerCase().includes('kcareone')),
+          (asked[0] ?? []).join(' | ')
+        )
+        check(
+          '打开文件夹：用户点哪个就开哪个（K7：卡片目标 = 执行目标）',
+          choiceResult.ok === true && opened === picked,
+          `开了 ${opened}`
+        )
+
+        // 取消 → 一个都不开
+        let cancelledOpened = 0
+        const folderCounting = createTools({
+          openFolder: async () => {
+            cancelledOpened++
+            return ''
+          }
+        }).find((t) => t.name === 'open_folder')!
+        const cancelled = await executeThroughGate(
+          folderCounting,
+          { name: 'kcareone' },
+          ctx,
+          { ...makeGate('once').gate, requestChoice: async () => null }
+        )
+        check(
+          '打开文件夹：取消候选卡 → 一个都不开',
+          cancelled.ok === false && cancelled.blocked === true && cancelledOpened === 0,
+          `ok=${cancelled.ok} 打开次数=${cancelledOpened}`
+        )
+      }
+    } finally {
+      setFolderIndexRoots(null)
+      resetFolderCache()
+      rmSync(fakeRoot, { recursive: true, force: true })
+    }
+  }
+
+  // ---- 16c-4 打开 / 阅读文件：能读的读出来，读不了的如实说 ----
+  {
+    const openFileTool = tools.find((t) => t.name === 'open_file')
+    const readFileTool = tools.find((t) => t.name === 'read_file')
+    if (!openFileTool || !readFileTool) {
+      console.log('SKIP  打开/阅读文件：工具清单里没有 open_file / read_file')
+    } else {
+      check(
+        '打开文件：ui 档；读文件：read 档（都不弹授权卡）',
+        openFileTool.effect === 'ui' && readFileTool.effect === 'read',
+        `open=${openFileTool.effect} read=${readFileTool.effect}`
+      )
+
+      /*
+       * 用临时目录造样本，不拿用户的文档做判据（也不打印任何正文）：
+       * 换个机器跑，别人桌面上没有这份会议纪要，红了也说明不了任何事。
+       */
+      const fakeRoot = mkdtempSync(path.join(os.tmpdir(), 'butler-gate-read-'))
+      try {
+        // 一份真的 .docx：ZIP 里塞 word/document.xml，走自己那个 ZIP 读取器
+        const docxPath = path.join(fakeRoot, '会议纪要.docx')
+        writeFileSync(
+          docxPath,
+          buildDocx(
+            '<w:p><w:r><w:t>结论：先做完闸门，再谈删除。</w:t></w:r></w:p>' +
+              '<w:p><w:r><w:t>下一步：补分段读。</w:t></w:r></w:p>'
+          )
+        )
+        const doc = await executeThroughGate(readFileTool, { path: docxPath }, ctx, makeGate('once').gate)
+        const docData = doc.data as { text?: string; complete?: boolean } | null
+        check(
+          '读文件：.docx 的正文真的抠出来了（不拉起 Office）',
+          doc.ok === true && docData?.text === '结论：先做完闸门，再谈删除。\n下一步：补分段读。',
+          doc.ok ? `读到 ${docData?.text?.length ?? 0} 字` : doc.summary
+        )
+        check(
+          '读文件：读完的要说清是全文（不然模型会含糊其辞）',
+          doc.ok === true && /全文/.test(doc.summary),
+          doc.summary
+        )
+
+        // PDF：抠出来是乱码，不如老实说读不了
+        const pdfPath = path.join(fakeRoot, '合同.pdf')
+        writeFileSync(pdfPath, '%PDF-1.7')
+        const pdf = await executeThroughGate(readFileTool, { path: pdfPath }, ctx, makeGate('once').gate)
+        check(
+          '读文件：PDF 如实说读不了（不吐乱码让模型去总结）',
+          pdf.ok === false && /PDF/.test(pdf.summary),
+          pdf.summary
+        )
+
+        // 双击 exe 是"运行"不是"打开"，这条路只负责摆窗口
+        const exePath = path.join(fakeRoot, 'setup.exe')
+        writeFileSync(exePath, 'MZ')
+        const exeFile = await executeThroughGate(openFileTool, { path: exePath }, ctx, makeGate('once').gate)
+        check(
+          '打开文件：exe 不当文件打开（改走 launch_app）',
+          exeFile.ok === false && /launch_app/.test(exeFile.summary),
+          exeFile.summary
+        )
+
+        // 同名两个文件 → 候选卡；点哪个读哪个（K7：令牌里的目标和执行的目标同源）
+        mkdirSync(path.join(fakeRoot, '甲'))
+        mkdirSync(path.join(fakeRoot, '乙'))
+        const aPath = path.join(fakeRoot, '甲', '周报.txt')
+        writeFileSync(aPath, '甲的内容')
+        writeFileSync(path.join(fakeRoot, '乙', '周报.txt'), '乙的内容')
+        setFileIndexRoots([fakeRoot])
+        resetFileIndex()
+
+        const offered: string[] = []
+        const readPicked = await executeThroughGate(readFileTool, { path: '周报.txt' }, ctx, {
+          ...makeGate('once').gate,
+          requestChoice: async (request) => {
+            offered.push(...request.options.map((o) => o.value))
+            return path.resolve(aPath)
+          }
+        })
+        const pickedData = readPicked.data as { text?: string } | null
+        check(
+          '读文件：同名多个 → 弹候选卡，点哪个读哪个',
+          offered.length === 2 && readPicked.ok === true && pickedData?.text === '甲的内容',
+          `候选=${offered.length} 读到=${pickedData?.text ?? readPicked.summary}`
+        )
+      } finally {
+        setFileIndexRoots(null)
+        resetFileIndex()
+        rmSync(fakeRoot, { recursive: true, force: true })
+      }
+
+      // 真机：按名字找文件的那套索引扫得到用户自己的目录（只报个数，不打印文件名）
+      const scanStarted = Date.now()
+      const realFiles = scanFileIndex()
+      check(
+        '打开文件：按名字找文件能扫到真机上的文件',
+        realFiles.length > 0,
+        `${realFiles.length} 个文件 / ${Date.now() - scanStarted}ms`
+      )
+    }
+  }
+
+  // ---- 16d 进程表探不到时不影响启动：判定走在上一步之后，这里只验纯逻辑 ----
+  {
+    const procs = [
+      { pid: 1, name: 'Weixin', windowTitle: '', windowHandle: 0, exePath: '' },
+      { pid: 2, name: 'Weixin', windowTitle: '微信', windowHandle: 77, exePath: '' }
+    ]
+    const open = findOpenWindow(procs, [normalizeAppName('微信'), normalizeAppName('Weixin')])
+    check('已经开着：认有可见窗口的那个进程', open?.pid === 2, `pid=${open?.pid}`)
+    check(
+      '已经开着：只有后台进程时不算开着（不谎报）',
+      findOpenWindow([procs[0]], [normalizeAppName('Weixin')]) === null,
+      '无窗口 → null'
+    )
+  }
+
   // ---- 17 allowAlways 落库命中：记忆里有 key 时不弹卡直接过（authz=user_always）----
   const alwaysInstall: ToolDef = {
     name: 'synthetic_install',
@@ -397,11 +718,146 @@ async function main(): Promise<void> {
   )
   await fs.rm(memDir, { recursive: true, force: true })
 
+  /**
+   * ---- 19 候选卡：名字有歧义时先问「是哪一个」，选完重新解析、再走授权卡 ----
+   *
+   * 这一段不碰 winget（离线验收要能在没网、没装 winget 的机器上跑），
+   * 用一个合成的 install 工具走同一条闸门代码，钉住三件事：
+   * 选择必须写回参数重新解析、授权卡照旧弹、取消就什么都不做。
+   */
+  const chooser: ToolDef = {
+    name: 'synthetic_chooser',
+    label: '合成安装工具（有歧义）',
+    description: '仅用于验收候选卡分支',
+    effect: 'install',
+    allowAlways: false,
+    parameters: { type: 'object', properties: {} },
+    plan: async (args) => {
+      const id = String(args.name ?? '')
+      if (!id.includes('.')) {
+        return {
+          ok: false,
+          reason: '有两个候选',
+          choice: {
+            title: '你要装哪一个「kimi」？',
+            pickInto: 'name',
+            options: [
+              { value: 'MoonshotAI.Kimi', label: 'Kimi' },
+              { value: 'MoonshotAI.KimiCLI', label: 'Kimi CLI' }
+            ]
+          }
+        }
+      }
+      return {
+        ok: true,
+        target: { title: `安装：${id}`, target: `${id} 1.0.0`, impact: '静默安装' },
+        execute: async () => ({ ok: true, summary: `装了 ${id}` })
+      }
+    },
+    run: async () => ({ ok: true, summary: '不该被调用' })
+  }
+
+  const picked2 = makeGate('once')
+  let offeredOptions: string[] = []
+  const pickResult = await executeThroughGate(chooser, { name: 'kimi' }, ctx, {
+    ...picked2.gate,
+    requestChoice: async (request) => {
+      offeredOptions = request.options.map((o) => o.value)
+      return 'MoonshotAI.KimiCLI'
+    }
+  })
+  check(
+    '候选卡：选完重新解析、再弹授权卡，执行的是选中那个',
+    offeredOptions.length === 2 &&
+      picked2.seen.length === 1 &&
+      picked2.seen[0].includes('MoonshotAI.KimiCLI') &&
+      pickResult.ok === true &&
+      pickResult.summary.includes('MoonshotAI.KimiCLI'),
+    `候选=${offeredOptions.length} 弹卡=${picked2.seen.length} 目标=${picked2.seen[0] ?? '无'}`
+  )
+  check(
+    '候选卡：选择本身也要留痕（能回答「我点了哪一个」）',
+    picked2.records.some((r) => r.title.startsWith('选择：')),
+    `留痕=${picked2.records.map((r) => r.kind).join(',')}`
+  )
+
+  const cancelled = makeGate('once')
+  const cancelResult = await executeThroughGate(chooser, { name: 'kimi' }, ctx, {
+    ...cancelled.gate,
+    requestChoice: async () => null
+  })
+  check(
+    '候选卡：用户取消 → 不弹授权卡、不安装',
+    cancelResult.ok === false && cancelResult.blocked === true && cancelled.seen.length === 0,
+    `ok=${cancelResult.ok} 弹卡=${cancelled.seen.length} 留痕=${cancelled.records[0]?.kind}`
+  )
+
+  const offlineEval = makeGate('once')
+  const noChoiceHooks = await executeThroughGate(chooser, { name: 'kimi' }, ctx, offlineEval.gate)
+  check(
+    '候选卡：没有选择能力的环境（评测/定时任务）→ 拒绝，不猜',
+    noChoiceHooks.ok === false && noChoiceHooks.blocked === true && offlineEval.seen.length === 0,
+    `ok=${noChoiceHooks.ok} 弹卡=${offlineEval.seen.length}`
+  )
+
   // 把演示文件补回来，方便现场验收
   const restored = await prepareSandbox()
   console.log(`\n沙箱已补齐：${restored.map((f) => f.name).join('、')}`)
   console.log(`\n合计 ${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)
+}
+
+/**
+ * 造一份最小可用的 .docx（ZIP + word/document.xml），给"读文件"那条断言当样本。
+ *
+ * CRC 留 0：读取器不校验它（校验得再准也修不好一个坏文件，反而把"能读"变成"读不了"）。
+ * 这里要的不是一个能分发的文档，而是一个结构和真 docx 一样的包。
+ */
+function buildDocx(bodyXml: string): Buffer {
+  const files: Record<string, string> = {
+    '[Content_Types].xml': '<Types/>',
+    'word/document.xml': `<w:document><w:body>${bodyXml}</w:body></w:document>`
+  }
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+
+  for (const [name, content] of Object.entries(files)) {
+    const raw = Buffer.from(content, 'utf8')
+    const data = deflateRawSync(raw)
+    const nameBuf = Buffer.from(name, 'utf8')
+
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(8, 8) // method 8 = deflate
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(raw.length, 22)
+    local.writeUInt16LE(nameBuf.length, 26)
+
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(8, 10)
+    central.writeUInt32LE(data.length, 20)
+    central.writeUInt32LE(raw.length, 24)
+    central.writeUInt16LE(nameBuf.length, 28)
+    central.writeUInt32LE(offset, 42)
+
+    locals.push(local, nameBuf, data)
+    centrals.push(central, nameBuf)
+    offset += local.length + nameBuf.length + data.length
+  }
+
+  const centralBuf = Buffer.concat(centrals)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(Object.keys(files).length, 8)
+  eocd.writeUInt16LE(Object.keys(files).length, 10)
+  eocd.writeUInt32LE(centralBuf.length, 12)
+  eocd.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, centralBuf, eocd])
 }
 
 void main()

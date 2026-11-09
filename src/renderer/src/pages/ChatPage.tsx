@@ -6,6 +6,7 @@ import type {
   ChatSession,
   Evidence,
   ProjectDef,
+  ToolChoiceRequest,
   ToolTrace
 } from '../../../shared/types'
 import { MarkdownText } from '../components/MarkdownText'
@@ -27,6 +28,10 @@ interface Msg {
   /** 等待/已作答的授权卡 */
   auth?: AuthRequest
   authAnswer?: AuthAnswer
+  /** 等待/已作答的候选卡（名字有歧义时先问「是哪一个」） */
+  choice?: ToolChoiceRequest
+  /** 选中的候选值，或 CANCEL / EXPIRED 两个非选项状态 */
+  choiceAnswer?: string
 }
 
 const EFFECT_LABEL: Record<string, { text: string; tone: 'danger' | 'muted' }> = {
@@ -135,6 +140,118 @@ function AuthCard({ request, answer, onAnswer }: { request: AuthRequest; answer?
           </button>
           <span style={{ fontSize: 11, color: '#7A7A7A', marginLeft: 'auto' }}>Esc 拒绝 · Tab 切换</span>
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 候选卡的两个非选项状态。
+ *
+ * 用 \u0000 开头是为了永不与真实候选值相撞（候选值是 winget 包 Id，不含控制字符）。
+ * 主进程只接受卡上真有的值，所以 CANCEL 发过去会被当成「没选」——正是我们要的。
+ */
+const CANCEL = '\u0000cancel'
+const EXPIRED = '\u0000expired'
+
+/**
+ * 候选卡：问的是「是哪一个」，不是「同不同意」，所以和授权卡分开画。
+ *
+ * 为什么不合成一张：候选列表可能八项，而授权卡要说清这次安装的代价
+ *（会弹安装器、要你自己点完）。
+ * 塞进一张卡，用户会在"选一个"和"批准执行"之间搞混——
+ * 而这两件事在闸门里本来就是两步：选完还要重新解析、再弹授权卡。
+ * 卡上一句话点明这一点，用户就不会以为点一下就装了。
+ */
+function ChoiceCard({
+  request,
+  answer,
+  onPick
+}: {
+  request: ToolChoiceRequest
+  answer?: string
+  onPick: (value: string) => void
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null)
+  const primaryRef = useRef<HTMLButtonElement | null>(null)
+  const pickRef = useRef(onPick)
+  pickRef.current = onPick
+
+  useEffect(() => {
+    if (answer) return
+    primaryRef.current?.focus()
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        pickRef.current(CANCEL)
+        return
+      }
+      if (e.key !== 'Tab') return
+      const box = boxRef.current
+      if (!box) return
+      const items = Array.from(box.querySelectorAll<HTMLButtonElement>('button:not([disabled])'))
+      if (items.length === 0) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      const inside = active ? box.contains(active) : false
+      if (e.shiftKey) {
+        if (!inside || active === first) {
+          e.preventDefault()
+          last.focus()
+        }
+      } else if (!inside || active === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [answer])
+
+  const picked = answer && answer !== CANCEL && answer !== EXPIRED ? answer : null
+  const pickedLabel = picked ? (request.options.find((o) => o.value === picked)?.label ?? picked) : null
+
+  return (
+    <div ref={boxRef} role="group" aria-label={`需要选择：${request.title}`} className={`choicecard${answer ? ' decided' : ''}`}>
+      <div className="choicecard-h">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <path d="M2.6 8.4h3.1l1.5 1.7h1.6l1.5-1.7h3.1" />
+          <path d="M8 2.6v5.8M5.6 4.8 8 2.6l2.4 2.2" />
+        </svg>
+        需要你选一个
+        <span className="tag">名字有歧义</span>
+      </div>
+      <div className="choicecard-t">{request.title}</div>
+      {request.hint && <div className="choicecard-hint">{request.hint}</div>}
+      {answer === EXPIRED ? (
+        <div className="authcard-result">候选卡 60 秒未响应，已按取消处理，这一步没有执行</div>
+      ) : answer === CANCEL ? (
+        <div className="authcard-result">你取消了选择，这一步没有执行</div>
+      ) : pickedLabel ? (
+        <div className="authcard-result">你选了「{pickedLabel}」，正在按这个继续</div>
+      ) : (
+        <>
+          <div className="choicecard-opts">
+            {request.options.map((opt, i) => (
+              <button
+                key={opt.value}
+                ref={i === 0 ? primaryRef : undefined}
+                className="choice-opt"
+                onClick={() => onPick(opt.value)}
+              >
+                <span className="choice-opt-name">{opt.label}</span>
+                {opt.detail && <span className="choice-opt-detail">{opt.detail}</span>}
+              </button>
+            ))}
+          </div>
+          <div className="authcard-btns">
+            <button className="btn btn-ghost btn-sm deny" onClick={() => onPick(CANCEL)}>
+              都不是，先不执行
+            </button>
+            <span style={{ fontSize: 11, color: '#7A7A7A', marginLeft: 'auto' }}>Esc 取消 · Tab 切换</span>
+          </div>
+        </>
       )}
     </div>
   )
@@ -459,6 +576,20 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
     inputRef.current?.focus()
   }
 
+  /** 候选卡作答：交给主进程（主进程会拿这个值重新解析目标、再弹授权卡） */
+  const pickChoice = async (request: ToolChoiceRequest, value: string): Promise<void> => {
+    setMessages((prev) =>
+      prev.map((m) => (m.choice?.id === request.id ? { ...m, choiceAnswer: value, status: undefined } : m))
+    )
+    try {
+      // CANCEL 不是卡上的值，主进程会按「没选」处理——不需要另开一个取消接口
+      await window.butler.chat.choose(request.id, value)
+    } catch {
+      /* 主进程已收尾时返回 false，不影响界面标记 */
+    }
+    inputRef.current?.focus()
+  }
+
   /** 停止：中断请求，并把还没作答的授权卡按拒绝收口（主进程侧同步做） */
   const stop = async (): Promise<void> => {
     stoppedRef.current = true
@@ -502,6 +633,10 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
       } else if (event.type === 'authExpired') {
         // 卡 60 秒没响应：主进程已按拒绝收口，界面同步标成超时，不用等 turn 结束
         patch(botId, (m) => (m.auth?.id === event.authId ? { ...m, authAnswer: 'expired', status: undefined } : m))
+      } else if (event.type === 'choice') {
+        patch(botId, (m) => ({ ...m, choice: event.request, choiceAnswer: undefined, status: '等你选一个…' }))
+      } else if (event.type === 'choiceExpired') {
+        patch(botId, (m) => (m.choice?.id === event.choiceId ? { ...m, choiceAnswer: EXPIRED, status: undefined } : m))
       }
     })
 
@@ -514,7 +649,8 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
           text: m.text ? `${m.text}\n\n（已停止）` : '（已停止，这次没有继续）',
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
       } else if (result && 'error' in result) {
         patch(botId, (m) => ({
@@ -522,7 +658,8 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
           error: result.error,
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
       } else if (result) {
         patch(botId, (m) => ({
@@ -534,7 +671,8 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
           status: undefined,
           streaming: false,
           // 请求结束时主进程会把没作答的卡按「拒绝」收口，界面保持一致
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
         // 播报开关开着 = 用户明确要听：只读结论句，不读正文
         if (voiceOn) speak(conclusionOf(result.text))
@@ -546,7 +684,8 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
           text: m.text ? `${m.text}\n\n（已停止）` : '（已停止，这次没有继续）',
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
       } else {
         patch(botId, (m) => ({
@@ -554,7 +693,8 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
           error: err instanceof Error ? err.message : String(err),
           status: undefined,
           streaming: false,
-          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer
+          authAnswer: m.auth && !m.authAnswer ? 'deny' : m.authAnswer,
+          choiceAnswer: m.choice && !m.choiceAnswer ? CANCEL : m.choiceAnswer
         }))
       }
     } finally {
@@ -793,6 +933,10 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
                     <span className="spinner" />
                     {m.status ?? '思考中…'}
                   </div>
+                )}
+
+                {m.choice && (
+                  <ChoiceCard request={m.choice} answer={m.choiceAnswer} onPick={(v) => void pickChoice(m.choice!, v)} />
                 )}
 
                 {m.auth && (
