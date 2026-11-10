@@ -54,7 +54,10 @@ Qwen3.8-Flash      →  System message must be at the beginning （消息顺序�
 ```
 
 试过但都不管用的：关掉全部 10 个 plugin、`include_apply_patch_tool=false`、
-`tools.web_search=false`、换 `model_reasoning_effort`。**这不是配置能绕过的，也不是 codex 的锅。**
+`tools.web_search=false`、换 `model_reasoning_effort`、
+**重装成 npm 稳定版 0.167.0**（原来是桌面版自带的 0.167.0-alpha.3.2）。
+新版同样只认 `responses`，错误一字不差。
+**这不是配置能绕过的，也不是 codex 版本或我们代码的问题。**
 
 `explainGatewayError()` 会把这类报错翻成人话，免得用户以为是 Key 填错或代码坏了。
 

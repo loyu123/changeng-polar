@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import {
@@ -36,8 +36,29 @@ export interface CodexOptions {
   timeoutMs: number
 }
 
-/** 在 `%LOCALAPPDATA%\OpenAI\Codex\bin\*` 下找 codex.exe（哈希目录会随升级改名） */
+/**
+ * 找 codex 可执行文件，**优先 PATH 上的独立版**。
+ *
+ * 这台机器上可能同时存在两个 codex：
+ * 1. `npm i -g @openai/codex` 装的独立版 → 在 PATH 上，是稳定版（0.167.0）
+ * 2. ChatGPT 桌面版自带的 → 在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\`，
+ *    是 alpha 版（0.167.0-alpha.3.2），而且**哈希目录会随桌面版更新改名**
+ *
+ * 优先独立版：稳定版、路径固定、不跟着桌面版一起变。
+ * 都找不到则由调用方明确报"没装"。
+ */
 export function findCodexBin(): string | null {
+  // 先看 PATH：Windows 上要认 .cmd/.exe 两种形式
+  const pathEntries = (process.env.PATH ?? '').split(path.delimiter)
+  for (const dir of pathEntries) {
+    if (!dir) continue
+    for (const name of ['codex.exe', 'codex.cmd', 'codex']) {
+      const candidate = path.join(dir, name)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+
+  // 退回桌面版自带的那个：哈希目录会变，所以每次重新扫
   const root = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin')
   if (!existsSync(root)) return null
   let dirs: string[]
@@ -51,7 +72,7 @@ export function findCodexBin(): string | null {
     const file = path.join(root, d, 'codex.exe')
     if (existsSync(file)) {
       try {
-        candidates.push({ file, mtime: require('node:fs').statSync(file).mtimeMs as number })
+        candidates.push({ file, mtime: statSync(file).mtimeMs })
       } catch {
         /* 读不到时间就跳过 */
       }
@@ -153,8 +174,10 @@ export class CodexBackend implements WorkerBackend {
       cwd: opts.workDir,
       timeoutMs: this.opts.timeoutMs,
       signal: opts.signal,
-      // 路径里可能有空格：不经过 shell，交给 spawn 自己处理参数边界
-      shell: false,
+      // npm 全局装出来的是 `.cmd` shim，在 Windows 上直接 spawn 会报 EINVAL，
+      // 必须过 shell。而 .exe 不过 shell 更安全（路径带空格也不会被拆）。
+      // 提示词走 stdin，参数都是我们自己构造的，过 shell 也不给用户输入留缝。
+      shell: /\.(cmd|bat)$/i.test(bin),
       stdin: opts.prompt
     })
 
@@ -179,7 +202,9 @@ export class CodexBackend implements WorkerBackend {
         toolCalls: parsed.toolCalls,
         usage: parsed.usage,
         exitCode: res.code,
-        failureReason: `codex 退出码 ${res.code}${parsed.hardError ? `：${parsed.hardError}` : ''}${lastLine(res.stderr)}`
+        // 已经有翻译过的硬错，就别再拼 stderr 尾巴：那行是 "Reading prompt from stdin..."
+        // 之类的噪音，跟失败原因无关，混在一起反而把真原因淹掉
+        failureReason: `codex 退出码 ${res.code}${parsed.hardError ? `：${parsed.hardError}` : lastLine(res.stderr)}`
       }
     }
     if (parsed.hardError) {

@@ -5,7 +5,7 @@ import {
   parseCodebuddyOutput,
   resolveCodebuddyInvocation
 } from '../../src/main/orchestrator/backends/codebuddy'
-import { buildCodexArgs, explainGatewayError, parseCodexJsonl } from '../../src/main/orchestrator/backends/codex'
+import { buildCodexArgs, explainGatewayError, findCodexBin, parseCodexJsonl } from '../../src/main/orchestrator/backends/codex'
 import { buildPiArgs } from '../../src/main/orchestrator/backends/pi'
 import { ALL_BACKENDS, BACKEND_INFO, assertWorkerConfig, createBackend } from '../../src/main/orchestrator/worker'
 
@@ -109,6 +109,15 @@ describe('codex 后端', () => {
     expect(r.toolCalls).toHaveLength(1)
     expect(r.toolCalls[0].name).toBe('command_execution')
     expect(r.toolCalls[0].ok).toBe(true)
+  })
+})
+
+describe('codex 可执行文件查找', () => {
+  it('优先 PATH 上的独立版（稳定、路径固定、不跟桌面版更新走）', () => {
+    const bin = findCodexBin()
+    // 这台机器上装了 npm 独立版，应该能找到；找不到就说明 PATH 或安装有问题
+    expect(bin).toBeTruthy()
+    expect(bin?.toLowerCase()).toMatch(/codex(\.exe|\.cmd)?$/)
   })
 })
 
