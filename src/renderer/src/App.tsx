@@ -4,12 +4,10 @@ import SettingsPage, { type SettingsSection } from './pages/SettingsPage'
 import AccountsPage from './pages/AccountsPage'
 import TasksPage from './pages/TasksPage'
 import PluginsPage from './pages/PluginsPage'
-import ProjectsPage from './pages/ProjectsPage'
 import OrchestrationPage from './pages/OrchestrationPage'
-import OverviewPage from './pages/OverviewPage'
 import { GlobalSearch } from './components/GlobalSearch'
 
-export type Route = 'chat' | 'tasks' | 'overview' | 'plugins' | 'accounts' | 'projects' | 'orchestration' | 'settings'
+export type Route = 'chat' | 'tasks' | 'plugins' | 'accounts' | 'orchestration' | 'settings'
 
 interface AppInfo {
   machineName: string
@@ -63,22 +61,6 @@ const ICONS: Record<Route, ReactNode> = {
       <path {...IC} d="M16.7 13.4v6.8M13.4 16.7h6.8" />
     </svg>
   ),
-  projects: (
-    <svg viewBox="0 0 24 24">
-      <path
-        {...IC}
-        d="M3.8 8.1V6.9c0-1 .8-1.8 1.8-1.8h3.2l1.7 2h7.7c1 0 1.8.8 1.8 1.8v8.2c0 1-.8 1.8-1.8 1.8H5.6c-1 0-1.8-.8-1.8-1.8Z"
-      />
-    </svg>
-  ),
-  overview: (
-    <svg viewBox="0 0 24 24">
-      <rect {...IC} x="3.8" y="4.6" width="7.4" height="6.4" rx="1.6" />
-      <rect {...IC} x="12.8" y="4.6" width="7.4" height="6.4" rx="1.6" />
-      <rect {...IC} x="3.8" y="12.6" width="7.4" height="6.4" rx="1.6" />
-      <rect {...IC} x="12.8" y="12.6" width="7.4" height="6.4" rx="1.6" />
-    </svg>
-  ),
   accounts: (
     <svg viewBox="0 0 24 24">
       <circle {...IC} cx="12" cy="8.6" r="3.6" />
@@ -108,8 +90,6 @@ const ICONS: Record<Route, ReactNode> = {
 /** 图标条：所有目的地平铺，不再收进「更多」 */
 const RAIL: Array<{ key: Route; label: string }> = [
   { key: 'chat', label: '对话' },
-  { key: 'overview', label: '总览' },
-  { key: 'projects', label: '项目' },
   { key: 'orchestration', label: '编排' },
   { key: 'tasks', label: '定时任务' },
   { key: 'plugins', label: '能力与插件' },
@@ -136,13 +116,6 @@ export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [prefill, setPrefill] = useState({ text: '', nonce: 0 })
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('model')
-  /** 从总览点任务/项目/简报：带着 id（可选简报 id）跳到项目页 */
-  const [focusProject, setFocusProject] = useState<{
-    id: string
-    nonce: number
-    briefId?: string
-    planId?: string
-  } | null>(null)
   /** 从项目页点「出自对话」：跳回对话页定位那条回答 */
   const [focusChat, setFocusChat] = useState<{
     sessionId: string
@@ -151,7 +124,7 @@ export default function App() {
   } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   /** 标题栏副标题用的真实计数 */
-  const [stats, setStats] = useState({ mail: 0, mailReady: 0, tasksOn: 0, tools: 0, toolsOn: 0, projects: 0 })
+  const [stats, setStats] = useState({ mail: 0, mailReady: 0, tasksOn: 0, tools: 0, toolsOn: 0 })
 
   useEffect(() => {
     void window.butler.info().then(setInfo)
@@ -169,9 +142,6 @@ export default function App() {
     })
     void window.butler.tools.list().then((list) => {
       setStats((prev) => ({ ...prev, tools: list.length, toolsOn: list.filter((t) => t.enabled).length }))
-    })
-    void window.butler.projects.list().then((list) => {
-      setStats((prev) => ({ ...prev, projects: list.length }))
     })
   }
 
@@ -229,8 +199,6 @@ export default function App() {
     if (route === 'tasks') return `定时任务 · ${stats.tasksOn} 个已启用`
     if (route === 'plugins') return `自定义 · ${stats.tools} 个能力 · ${stats.toolsOn} 个已启用`
     if (route === 'accounts') return `${stats.mail} 个账号 · ${stats.mailReady} 个已配置`
-    if (route === 'overview') return `总览 · 项目 ${stats.projects} 个`
-    if (route === 'projects') return `项目 · ${stats.projects} 个`
     return `设置 · ${SECTION_LABEL[settingsSection]}`
   })()
 
@@ -328,7 +296,6 @@ export default function App() {
                 setSettingsSection(section ?? 'model')
                 setRoute('settings')
               }}
-              onOpenProjects={() => setRoute('projects')}
             />
           </div>
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'tasks' ? 'flex' : 'none' }}>
@@ -339,24 +306,6 @@ export default function App() {
           </div>
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'accounts' ? 'flex' : 'none' }}>
             <AccountsPage onManage={(section) => { setSettingsSection(section ?? 'mail'); setRoute('settings') }} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'overview' ? 'flex' : 'none' }}>
-            <OverviewPage
-              onOpenProject={(id, briefId) => {
-                if (id) setFocusProject({ id, nonce: Date.now(), briefId })
-                setRoute('projects')
-              }}
-            />
-          </div>
-          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'projects' ? 'flex' : 'none' }}>
-            <ProjectsPage
-              onAsk={askInChat}
-              focusProject={focusProject}
-              onOpenChat={(sessionId, messageId) => {
-                setFocusChat({ sessionId, messageId, nonce: Date.now() })
-                setRoute('chat')
-              }}
-            />
           </div>
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'orchestration' ? 'flex' : 'none' }}>
             <OrchestrationPage />
@@ -376,10 +325,7 @@ export default function App() {
       <GlobalSearch
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
-        onOpenProject={(projectId, planId) => {
-          setFocusProject({ id: projectId, nonce: Date.now(), planId })
-          setRoute('projects')
-        }}
+        onOpenProject={() => setRoute('orchestration')}
         onOpenChat={(sessionId, messageId) => {
           setFocusChat({ sessionId, messageId, nonce: Date.now() })
           setRoute('chat')
