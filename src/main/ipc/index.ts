@@ -4,6 +4,7 @@ import { registerConfigIpc } from './config'
 import { registerOrbIpc } from './orb'
 import { registerOrchestrationIpc } from './orchestration'
 import { registerDesktopAppsIpc } from './desktop-apps'
+import { registerDebugShotIpc } from './debug-shot'
 import { registerWorkIpc } from './work'
 
 export type { IpcContext } from './app'
@@ -17,4 +18,5 @@ export function registerIpc(ctx: IpcContext): void {
   registerOrbIpc(ctx)
   registerOrchestrationIpc(ctx)
   registerDesktopAppsIpc()
+  registerDebugShotIpc()
 }

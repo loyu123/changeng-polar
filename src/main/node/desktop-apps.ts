@@ -1,9 +1,10 @@
 import { promises as fs } from 'node:fs'
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
+import { IconCache } from './desktop-icons'
 import { execFile } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
-import { app } from 'electron'
+
 
 /**
  * 桌面应用：只列**桌面上实际显示的那些**。
@@ -14,9 +15,9 @@ import { app } from 'electron'
  * 三个必须守住的点：
  * 1. **两个桌面都要看**：用户桌面（`~/Desktop`）+ 公共桌面（`C:\Users\Public\Desktop`），
  *    只扫前者会漏掉装给所有用户的快捷方式。
- * 2. **图标用应用自己的**：`app.getFileIcon()` 拿的是系统给这个 .lnk 解析出的
- *    真实图标（和资源管理器里显示的一致），而不是我们先前的首字母色块。
- *    拿不到就如实不给图标，由界面退化成一个灰底占位——不编一个假图标。
+ * 2. **图标用应用自己的**（见 desktop-icons.ts）。注意：Electron 的
+ *    `app.getFileIcon` 对 `.lnk` 只返回通用白纸图标，不能用。
+ *    拿不到就如实不给图标，由界面退化成灰底占位——不编一个假图标。
  * 3. **随桌面变化**：桌面是用户会随时动的地方（下载完拖一个上去、卸载后删掉）。
  *    所以这里不缓存，并且提供一个 watch 让主进程盯着两个桌面目录。
  */
@@ -96,37 +97,21 @@ export async function listDesktopApps(): Promise<DesktopApp[]> {
   }
 
   const list = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-  return Promise.all(list.map(async (a) => ({ ...a, icon: await iconOf(a.lnkPath) })))
+  // 图标一次批量取（一次 PowerShell 调用），不是每个文件起一次
+  const icons = await iconCache.get(list.map((a) => ({ file: a.lnkPath, mtime: a.mtime })))
+  return list.map((a) => ({ ...a, icon: icons.get(a.lnkPath) }))
 }
 
 /**
- * 取系统给这个快捷方式解析出的真实图标。
+ * 图标缓存：按文件路径 + 修改时间。
  *
- * `app.getFileIcon` 会走到 shell 的图标解析（和资源管理器同一个来源），
- * 所以 .lnk 拿到的是**目标程序的图标**，不是"快捷方式箭头"。
- * 拿不到就返回 undefined —— 界面退化成占位，不编。
+ * 换了图标（程序升级）要能反映出来，所以键里带 mtime。
+ * 提取本身在 desktop-icons.ts 里（用 .NET，不用 app.getFileIcon——
+ * 后者对 .lnk 只给通用白纸图标，实测四个不同应用返回完全相同的字节）。
  */
-const iconCache = new Map<string, string | null>()
+const iconCache = new IconCache()
 
-export async function iconOf(filePath: string): Promise<string | undefined> {
-  const hit = iconCache.get(filePath)
-  if (hit !== undefined) return hit ?? undefined
-  try {
-    const img = await app.getFileIcon(filePath, { size: 'large' })
-    if (img.isEmpty()) {
-      iconCache.set(filePath, null)
-      return undefined
-    }
-    const url = img.toDataURL()
-    iconCache.set(filePath, url)
-    return url
-  } catch {
-    iconCache.set(filePath, null)
-    return undefined
-  }
-}
-
-/** 图标缓存按路径+修改时间失效：程序换了版本图标会变 */
+/** 桌面变了之后清一次，让下次取到的是新图标 */
 export function clearIconCache(): void {
   iconCache.clear()
 }

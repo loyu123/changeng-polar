@@ -49,6 +49,11 @@ const api = {
   },
 
   /** 桌面应用：只列桌面上实际显示的那些（和应用台账的注册表清单是两件事） */
+  debug: {
+    shot: () => ipcRenderer.invoke('debug:shot'),
+    dumpIcon: (dataUrl: string) => ipcRenderer.invoke('debug:dumptopicon', dataUrl)
+  },
+
   desktopApps: {
     list: () => ipcRenderer.invoke('desktop-apps:list'),
     target: (lnkPath: string) => ipcRenderer.invoke('desktop-apps:target', lnkPath) as Promise<string | undefined>,
