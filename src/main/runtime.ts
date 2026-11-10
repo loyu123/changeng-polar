@@ -19,6 +19,7 @@ import { buildSystemPrompt } from './agent/prompt'
 import { capabilityBrief, createTools } from './agent/tools'
 import type { ToolDef } from './agent/tool-types'
 import { memoryBlock } from './node/memory'
+import { SANDBOX_ROOT } from './node/sandbox'
 import { focusProcessWindow, probeLaunch } from './node/running'
 import type { Store } from './node/store'
 
@@ -252,7 +253,14 @@ export class TurnRuntime {
       delegate: {
         rootDir: path.join(app.getPath('userData'), 'orchestrator'),
         worker: worker ?? {}
-      }
+      },
+      /**
+       * 允许上传到 GitHub 的目录：沙箱（长庚自己的试验场）+ 编排产出。
+       *
+       * 就这两个根，不加第三个。上传带 `repo` 权限，等于能往用户所有仓库写东西——
+       * 允许"传任意路径"就是允许模型把桌面上的任何文件推到公开仓库去。
+       */
+      uploadRoots: [SANDBOX_ROOT, path.join(app.getPath('userData'), 'orchestrator')]
     })
     return filterTools(all, { toggles, readOnly })
   }

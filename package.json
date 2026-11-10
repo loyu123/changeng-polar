@@ -21,6 +21,7 @@
     "backends": "tsx scripts/backends-check.ts",
     "backends:work": "tsx scripts/backends-work.ts",
     "mixed": "tsx scripts/mixed-backends.ts",
+    "github": "tsx scripts/github-smoke.ts",
     "mock": "node scripts/mock-llm.cjs",
     "test": "vitest run",
     "test:watch": "vitest",

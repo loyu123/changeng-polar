@@ -33,6 +33,7 @@ import { fetchPage, searchWeb } from '../node/web'
 import { MEMORY_MAX_TEXT, mergeMemory, removeMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
 import { runDelegation, workerConfigFrom } from '../orchestrator/delegate'
+import { assertUploadableFile, ghReady, searchRepos, uploadFile } from '../node/github'
 import { dispatchOptions, parseMode, previewDispatch, runProject, taskArtifacts } from '../orchestrator/project'
 import { validatePlan } from '../orchestrator/plan'
 import type { AcceptanceCheck, OrchestrationTask } from '../orchestrator/types'
@@ -121,6 +122,15 @@ export interface ToolDeps {
     worker: { provider?: string; model?: string; timeoutSec?: number }
     onProgress?: (note: string) => void
   }
+  /**
+   * 允许上传到 GitHub 的目录白名单。
+   *
+   * 只认这几个根：上传带 `repo` 权限，等于能往用户所有仓库写东西。
+   * 允许"传任意路径"就是允许模型把桌面上的任何文件推到公开仓库去——
+   * 这一步不该存在，所以给白名单目录，而不是给一个开关。
+   * 没注入 = 当前环境不支持上传。
+   */
+  uploadRoots?: string[]
   /**
    * 启动前先看一眼：这个快捷方式指向哪个 exe、现在有哪些进程和可见窗口。
    *
@@ -599,6 +609,143 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     },
     run: async (): Promise<ToolResult> => {
       return { ok: false, summary: 'run_project 必须先解析出计划（plan），直接 run 不会被放行' }
+    }
+  }
+
+  /**
+   * GitHub 搜索：只读，但检索词会发出去。
+   *
+   * 为什么不让模型用 web_search 代替：GitHub 搜索结果里有 star、许可证、
+   * 最后推送时间——判断"这个项目还能不能用"全靠这三个字段，网页搜索给不了。
+   */
+  const githubSearchTool: ToolDef = {
+    name: 'github_search',
+    label: '搜索 GitHub 仓库（只读）',
+    description:
+      '在 GitHub 上搜仓库，返回 star 数、语言、许可证、最后推送日期。用户问"有没有现成的开源项目""哪个库最靠谱""这个方案别人做过吗"时用它，**用它而不是 web_search**——star 和最后推送日期是判断项目能不能用的关键，网页搜索拿不到。默认按 star 排序。只读，不发任何本机文件，只发检索词。',
+    effect: 'read',
+    auditKind: 'web',
+    // 检索词会发到本机之外：本轮读过邮件之后，这类调用要先让用户确认
+    sendsDataOut: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '检索词，支持 GitHub 查询语法（如 language:typescript stars:>100）' },
+        max: { type: 'number', description: '返回条数，默认 5，最多 10' },
+        sort: { type: 'string', enum: ['stars', 'updated'], description: '排序：stars（默认）或 updated' }
+      },
+      required: ['query']
+    },
+    describeTarget: (args) => ({
+      title: `搜索 GitHub：${String(args.query ?? '').slice(0, 40)}`,
+      target: String(args.query ?? ''),
+      impact: '只读检索，只把检索词发给 GitHub，不发送任何本机文件'
+    }),
+    run: async (args): Promise<ToolResult> => {
+      const ready = await ghReady()
+      if (!ready.ok) return { ok: false, summary: ready.reason ?? 'gh 不可用' }
+
+      const query = String(args.query ?? '').trim()
+      const outcome = await searchRepos(query, {
+        max: Number(args.max) || 5,
+        sort: args.sort === 'updated' ? 'updated' : 'stars'
+      })
+      if (!outcome.ok) return { ok: false, summary: `GitHub 搜索失败：${outcome.error ?? '未知原因'}` }
+      if (outcome.repos.length === 0) {
+        return { ok: true, summary: `GitHub 上没有匹配「${query}」的仓库`, data: { repos: [] } }
+      }
+      const lines = outcome.repos.map(
+        (r, i) =>
+          `${i + 1}. ${r.full_name} ★${r.stargazers_count} · ${r.language ?? '未知语言'} · ${r.license?.spdx_id ?? '无许可证'} · 最后推送 ${r.pushed_at.slice(0, 10)}\n   ${r.description ?? '（无描述）'}\n   ${r.html_url}`
+      )
+      return {
+        ok: true,
+        summary: `GitHub 上找到 ${outcome.repos.length} 个：\n${lines.join('\n')}`,
+        data: { repos: outcome.repos },
+        evidence: outcome.repos.map((r, i) => ({
+          id: `${i}-${r.full_name}`.slice(0, 20),
+          type: 'web' as const,
+          title: `${r.full_name} ★${r.stargazers_count}`,
+          detail: r.description ?? undefined,
+          url: r.html_url,
+          at: new Date().toISOString()
+        }))
+      }
+    }
+  }
+
+  /**
+   * GitHub 上传：真写，而且删不掉。
+   *
+   * 带 requiresConfirmation：上传用的是用户的 `repo` 权限，等于能往他所有仓库写东西。
+   * 所以必须过卡、永不「始终允许」，而且只允许传沙箱/编排产出里的文件
+   * （见 github.ts 的 assertUploadableFile）——不给"随便传一个路径"的能力。
+   */
+  const githubUploadTool: ToolDef = {
+    name: 'github_upload',
+    label: '上传到 GitHub（需授权）',
+    description:
+      '把一个文件传到 GitHub 仓库（新建或覆盖同一个路径）。用 Contents API，不需要本地 clone，一次一个提交。**上传后删不掉**——只能再传一次覆盖，或者去 GitHub 上手工删。只能上传沙箱目录或编排产出里的文件，不能传任意路径。用户没有明确说要上传前不要调用。',
+    effect: 'write',
+    requiresConfirmation: true,
+    allowAlways: false,
+    auditKind: 'web',
+    sendsDataOut: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: '要上传的本地文件绝对路径，必须在沙箱目录或编排产出目录里' },
+        repo: { type: 'string', description: '目标仓库，形如 owner/name' },
+        remotePath: { type: 'string', description: '仓库内的路径，如 reports/2026-11-10.md' },
+        message: { type: 'string', description: '提交说明' },
+        branch: { type: 'string', description: '目标分支，默认 main' }
+      },
+      required: ['file', 'repo', 'remotePath']
+    },
+    describeTarget: (args) => {
+      const repo = String(args.repo ?? '').trim() || '（未指定仓库）'
+      const remote = String(args.remotePath ?? '').trim() || '（未指定路径）'
+      return {
+        title: `上传到 GitHub：${repo}`,
+        target: `${repo} / ${remote}`,
+        impact:
+          '会把文件内容发到 GitHub 上，**而且是公开可见的**（如果那个仓库是公开的）。' +
+          '上传后删不掉——只能再传一次覆盖，或去 GitHub 手工删。',
+        undoHint: '拒绝就什么都不上传'
+      }
+    },
+    run: async (args): Promise<ToolResult> => {
+      if (!deps.uploadRoots || deps.uploadRoots.length === 0) {
+        return { ok: false, summary: '当前环境不支持上传（没有注入可上传目录）' }
+      }
+      const file = String(args.file ?? '').trim()
+      const check = assertUploadableFile(file, deps.uploadRoots)
+      if (!check.ok) return { ok: false, summary: check.reason ?? '这个文件不允许上传' }
+
+      const repo = String(args.repo ?? '').trim()
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        return { ok: false, summary: `仓库名要写成 owner/name，收到的是「${repo}」` }
+      }
+      const remotePath = String(args.remotePath ?? '').trim().replace(/^\/+/, '')
+      if (!remotePath || remotePath.includes('..')) {
+        return { ok: false, summary: '仓库内路径不合法（不能为空、不能含 ..）' }
+      }
+
+      const result = await uploadFile({
+        file,
+        repo,
+        remotePath,
+        message: String(args.message ?? '').trim() || `上传 ${path.basename(file)}`,
+        branch: String(args.branch ?? '').trim() || undefined
+      })
+      return {
+        ok: result.ok,
+        summary: result.summary,
+        undo: result.undoHint,
+        evidence: result.url
+          ? [{ id: 'gh', type: 'web' as const, title: `上传到 ${repo}`, url: result.url, at: new Date().toISOString() }]
+          : undefined
+      }
     }
   }
 
@@ -1814,6 +1961,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     readFileTool,
     installAppTool,
     uninstallAppTool,
+    githubSearchTool,
+    githubUploadTool,
     delegateTool,
     runProjectTool,
     ...memoryTools
