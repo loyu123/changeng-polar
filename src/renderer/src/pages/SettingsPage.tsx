@@ -12,6 +12,7 @@ import { MEMORY_KIND_LABEL } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
 import RecordsPage from './RecordsPage'
 import AppsPage from './AppsPage'
+import { FieldHelp } from '../components/FieldHelp'
 
 /**
  * 可点的开关。
@@ -334,13 +335,20 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const mailCount = (config.mailAccounts ?? []).length
   const mailCard = (
     <div className="cardbox">
-      <div className="ch">邮箱账号（只读接入）</div>
+      <div className="ch">
+        邮箱账号（只读接入）
+        <FieldHelp label="邮箱怎么填">
+          只需填地址和授权码：常见邮箱按地址识别服务器，企业邮箱会自动探测
+          （腾讯 / 网易 / 阿里企业邮都试一遍，连不上再展开「高级」手填）。
+          <br />
+          排在第一的是默认账号；对话里说「看 XX 邮箱」按地址匹配。
+          <br />
+          <b>QQ 邮箱</b>：网页版「设置 → 账户 → POP3/IMAP/SMTP 服务」开启并生成授权码。
+          <br />
+          只读接入：不标记已读、不删信、不发信。
+        </FieldHelp>
+      </div>
       <div className="form" style={{ padding: '12px 15px 14px' }}>
-        <div className="hint" style={{ marginBottom: 8 }}>
-          只需填地址和授权码：常见邮箱按地址识别服务器，企业邮箱会自动探测（腾讯/网易/阿里企业邮都试一遍，连不上再展开「高级」手填）。
-          排在第一的是默认账号；对话里说「看 XX 邮箱」按地址匹配。QQ 邮箱：网页版「设置 → 账户 →
-          POP3/IMAP/SMTP 服务」开启并生成授权码。只读接入：不标记已读、不删信、不发信。
-        </div>
         {(config.mailAccounts ?? []).map((acc, index) => {
           const st = mailStatus[acc.id]
           const derivedHost = deriveImapHost(acc.address)
@@ -386,22 +394,30 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   />
                 </div>
               </div>
+              {/* 这行是**实时结论**不是说明：填了地址马上告诉你连哪台服务器。
+                  所以留在界面上，但压成一句。 */}
               <div className="hint">
                 {acc.host?.trim() && derivedHost && acc.host.trim().toLowerCase() !== derivedHost.toLowerCase()
-                  ? `将使用 ${acc.host.trim()}（手动指定）`
-                  : `服务器自动探测：优先 ${derivedHost || '（填好地址后推导）'}，连不上会依次尝试常见企业邮服务器（腾讯/网易/阿里）`}
+                  ? `手动指定：${acc.host.trim()}`
+                  : derivedHost
+                    ? `自动探测：优先 ${derivedHost}（连不上再试腾讯/网易/阿里企业邮）`
+                    : '填好地址后自动推导服务器'}
               </div>
               {advanced && (
                 <div className="grid2" style={{ marginTop: 6 }}>
                   <div className="form-row">
-                    <label>IMAP 服务器（高级）</label>
+                    <label>
+                      IMAP 服务器（高级）
+                      <FieldHelp label="IMAP 服务器怎么填">
+                        留空 = 自动探测（含腾讯 / 网易 / 阿里企业邮）；填了就强制用这个服务器。
+                      </FieldHelp>
+                    </label>
                     <input
                       className="input"
                       value={acc.host}
                       placeholder={derivedHost || 'imap.qq.com'}
                       onChange={(e) => updateAccount(acc.id, { host: e.target.value })}
                     />
-                    <div className="hint">留空 = 自动探测（含腾讯/网易/阿里企业邮）；填了就强制用这个服务器。</div>
                   </div>
                 </div>
               )}
@@ -432,17 +448,19 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
           <div className="ch">模型</div>
           <div className="form" style={{ padding: '12px 15px 14px' }}>
             <div className="form-row">
-              <label>模型地址（OpenAI 兼容）</label>
+              <label>
+                模型地址（OpenAI 兼容）
+                <FieldHelp label="模型地址填法">
+                  填 <code>/v1</code> 或完整的 <code>/v1/chat/completions</code> 都可以。
+                  本机 Ollama 可填 <code>http://127.0.0.1:11434/v1</code>。
+                </FieldHelp>
+              </label>
               <input
                 className="input"
                 value={config.baseUrl}
                 placeholder="https://api.openai.com/v1"
                 onChange={(e) => update({ baseUrl: e.target.value })}
               />
-              <div className="hint">
-                填 <code>/v1</code> 或完整的 <code>/v1/chat/completions</code> 都可以；本机 Ollama 可填{' '}
-                <code>http://127.0.0.1:11434/v1</code>
-              </div>
             </div>
             <div className="grid2">
               <div className="form-row">
@@ -491,12 +509,16 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
               </div>
             </div>
 
-            <div className="form-row" style={{ marginTop: 14 }}>
-              <label>判分模型（评测用，可选）</label>
-              <div className="hint" style={{ marginBottom: 8 }}>
-                评测脚本用它给回答打分。<b>必须与上面的模型不同</b>——同一个模型给自己打分，高分只能说明它自我感觉良好。
-                没配时，需要模型判分的用例会退化成正则断言，报告里会标明。
-              </div>
+            <div className="form-row" style={{ marginTop: 18 }}>
+              <label>
+                判分模型（评测用，可选）
+                <FieldHelp label="为什么要单独的判分模型">
+                  评测脚本用它给回答打分。<b>必须与上面的模型不同</b>——同一个模型给自己打分，
+                  高分只能说明它自我感觉良好。
+                  <br />
+                  没配时，需要模型判分的用例会退化成正则断言，报告里会标明。
+                </FieldHelp>
+              </label>
               {config.judge ? (
                 <>
                   <div className="grid2">
@@ -556,27 +578,42 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
               )}
             </div>
 
-            <div className="form-row" style={{ marginTop: 14 }}>
-              <label>工作体（派活给谁）</label>
-              <div className="hint" style={{ marginBottom: 8 }}>
-                长庚可以把活派给外部智能体去做。各家能不能用，取决于装没装、登没登录：
-                <br />
-                <b>pi</b> 常驻 RPC，走局域网网关，不花钱，<b>必须填 provider 和 model</b>；
-                <br />
-                <b>codex</b> 是 OpenAI 的命令行入口（ChatGPT 桌面版没有 CLI），沙箱只到 workspace-write；
-                <br />
-                <b>codebuddy</b> 是 WorkBuddy 内置 CLI，<b>要先在那个 CLI 里登录一次</b>；
-                <br />
-                <b>claude</b> 是 Claude Code，<b>按订阅计费</b>（一次极短问答约 $0.07），默认不选。
-              </div>
+            <div className="form-row" style={{ marginTop: 18 }}>
+              <label>
+                工作体（派活给谁）
+                <FieldHelp label="各后端的差异">
+                  能不能用，取决于装没装、登没登录：
+                  <dl style={{ marginTop: 6 }}>
+                    <dt>pi</dt>
+                    <dd>
+                      常驻 RPC，走局域网网关，不花钱。<b>必须填 provider 和 model</b>。
+                    </dd>
+                    <dt>codex</dt>
+                    <dd>OpenAI 的命令行入口（ChatGPT 桌面版没有 CLI）。沙箱只到 workspace-write。</dd>
+                    <dt>codebuddy</dt>
+                    <dd>
+                      WorkBuddy 内置 CLI，<b>要先在那个 CLI 里登录一次</b>。
+                    </dd>
+                    <dt>claude</dt>
+                    <dd>
+                      Claude Code，<b>按订阅计费</b>（一次极短问答约 $0.07），默认不选。
+                    </dd>
+                  </dl>
+                </FieldHelp>
+              </label>
               <div className="grid2">
                 <div>
-                  <div className="hint" style={{ marginBottom: 4 }}>后端</div>
                   <select
                     className="input"
+                    aria-label="工作体后端"
                     value={config.worker?.backend ?? 'pi'}
                     onChange={(e) =>
-                      update({ worker: { ...config.worker, backend: e.target.value as NonNullable<ButlerConfig['worker']>['backend'] } })
+                      update({
+                        worker: {
+                          ...config.worker,
+                          backend: e.target.value as NonNullable<ButlerConfig['worker']>['backend']
+                        }
+                      })
                     }
                   >
                     <option value="pi">pi（默认，免费）</option>
@@ -586,31 +623,29 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   </select>
                 </div>
                 <div>
-                  <div className="hint" style={{ marginBottom: 4 }}>模型</div>
                   <input
                     className="input"
-                    placeholder={(config.worker?.backend ?? 'pi') === 'pi' ? '必填，如 deepseek-v4-flash' : '留空用该后端自己的配置'}
+                    aria-label="工作体模型"
+                    placeholder={
+                      (config.worker?.backend ?? 'pi') === 'pi'
+                        ? '模型，如 deepseek-v4-flash'
+                        : '模型（留空用该后端默认）'
+                    }
                     value={config.worker?.model ?? ''}
                     onChange={(e) => update({ worker: { ...config.worker, model: e.target.value } })}
                   />
                 </div>
               </div>
               {(config.worker?.backend ?? 'pi') === 'pi' && (
-                <div style={{ marginTop: 8 }}>
-                  <div className="hint" style={{ marginBottom: 4 }}>
-                    provider（pi 必填；pi 里的名字是 <code>eepseek</code>，少一个 d）
-                  </div>
-                  <input
-                    className="input"
-                    placeholder="eepseek"
-                    value={config.worker?.provider ?? ''}
-                    onChange={(e) => update({ worker: { ...config.worker, provider: e.target.value } })}
-                  />
-                </div>
+                <input
+                  className="input"
+                  aria-label="工作体 provider"
+                  placeholder="provider（pi 必填）：eepseek，注意少一个 d"
+                  style={{ marginTop: 8 }}
+                  value={config.worker?.provider ?? ''}
+                  onChange={(e) => update({ worker: { ...config.worker, provider: e.target.value } })}
+                />
               )}
-              <div className="hint" style={{ marginTop: 8 }}>
-                换 Key、换模型都只改这一处，代码不用动。pi 自己的 API Key 在它自己的 auth 里，长庚不碰。
-              </div>
             </div>
           </div>
         </div>
@@ -624,7 +659,15 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
           <div className="ch">检索来源</div>
           <div className="form" style={{ padding: '12px 15px 14px' }}>
             <div className="form-row">
-              <label>来源</label>
+              <label>
+                来源
+                <FieldHelp label="各来源的差别">
+                  带 Key 的来源失败时会<b>自动回落到免费源</b>。
+                  <br />
+                  选「关闭联网」后，长庚对任何外部问题都必须回答“查不到”——
+                  这是 H2 的自检方式。
+                </FieldHelp>
+              </label>
               <select
                 className="input"
                 value={config.searchProvider}
@@ -637,9 +680,6 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <option value="bing">Bing 网页抓取（免费，噪声大）</option>
                 <option value="none">关闭联网（用来验证“查不到”降级）</option>
               </select>
-              <div className="hint">
-                带 Key 的来源失败时会自动回落到免费源；关闭联网后，长庚对任何外部问题都必须回答“查不到”，这是 H2 的自检方式。
-              </div>
             </div>
             {(config.searchProvider === 'tavily' ||
               config.searchProvider === 'serper' ||
@@ -665,7 +705,6 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   }
                   onChange={(e) => update({ searchKey: e.target.value })}
                 />
-                <div className="hint">Key 只存在本机 config.json；保存后点「测试检索」验证。</div>
               </div>
             )}
           </div>
@@ -793,10 +832,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>只读模式</b>
-                <span>
-                  打开后，安装、卸载、删除、写入记忆这类会改动机器的工具<b>不会出现在工具清单里</b>——
+                <FieldHelp label="只读模式">
+                打开后，安装、卸载、删除、写入记忆这类会改动机器的工具<b>不会出现在工具清单里</b>——
                   模型连申请的机会都没有，定时任务也一样。关掉即恢复，仍然逐次弹授权卡。
-                </span>
+                </FieldHelp>
               </div>
               <button
                 role="switch"
@@ -828,11 +867,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>写操作逐次确认</b>
-                <span>
-                  {readOnly
+                <FieldHelp label="写操作逐次确认">
+                {readOnly
                     ? '当前是只读模式：所有会改动机器的工具都没有注册，不存在「确认后执行」这一步。'
                     : '装软件、卸载、删沙箱文件之前，都要先弹授权卡。'}
-                </span>
+                </FieldHelp>
               </div>
               <span
                 className={`sw${readOnly ? '' : ' on'} fixed`}
@@ -844,11 +883,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>装软件时弹出它自己的安装界面</b>
-                <span>
-                  装软件一律走软件自己的安装向导：<b>安装位置、桌面快捷方式、开机自启都在那里由你选</b>，
+                <FieldHelp label="装软件时弹出它自己的安装界面">
+                装软件一律走软件自己的安装向导：<b>安装位置、桌面快捷方式、开机自启都在那里由你选</b>，
                   长庚不替你勾，也不做静默安装——那样等于替你接受了所有默认选项。<br />
                   这一轮对话会等你在向导里点完；点「取消」就等于什么都没装。
-                </span>
+                </FieldHelp>
               </div>
               <span className="sw on fixed" title="固定行为：始终拉起软件自己的安装器，不做静默安装">
                 <i />
@@ -897,12 +936,17 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             </ul>
           </details>
           <div className="cardbox">
-            <div className="ch">记忆（跨会话）</div>
-            <div className="form" style={{ padding: '12px 15px 14px' }}>
-              <div className="hint" style={{ marginBottom: 10 }}>
+            <div className="ch">
+              记忆（跨会话）
+                <FieldHelp label="记忆是什么">
                 长庚记下的、下次对话还能想起来的事（偏好、正在做的项目、约定的规则）。
+                <br />
                 它会出现在每次对话的系统提示里，但<b>只是线索</b>——涉及本机事实仍然要现查。
-              </div>
+                <br />
+                写入和删除都会弹授权卡：它改的是“长庚以后怎么看你”。
+                </FieldHelp>
+            </div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
               {memories.length === 0 ? (
                 <div style={{ color: '#8E8E86', fontSize: 12 }}>还没有记下任何东西。对话里说「记住…」即可。</div>
               ) : (
@@ -941,11 +985,15 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
           </div>
 
           <div className="cardbox">
-            <div className="ch">授权记忆（「始终允许」）</div>
+            <div className="ch">
+              授权记忆（「始终允许」）
+                <FieldHelp label="什么会留在这里">
+                只有明确点过「始终允许」的工具才会留在这里（当前仅<b>安装</b>，按包名 + 版本记忆）。
+                <br />
+                撤销立即生效。记忆、委派、上传这类工具永远不进这里——它们每次都要你确认。
+                </FieldHelp>
+            </div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>
-              <div className="hint" style={{ marginBottom: 10 }}>
-                只有明确点过「始终允许」的工具才会留在这里（当前仅<b>安装</b>，按包名 + 版本记忆）。撤销立即生效。
-              </div>
               {memory.length === 0 ? (
                 <div style={{ color: '#8E8E86', fontSize: 12 }}>还没有任何「始终允许」。授权卡上点「始终允许」才会出现在这里。</div>
               ) : (
@@ -996,10 +1044,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>关闭窗口时收进托盘</b>
-                <span>
-                  关窗只是把窗口收起，进程继续跑，定时任务照常执行。从托盘图标点回来，或右键「退出长庚」才真正结束。
+                <FieldHelp label="关闭窗口时收进托盘">
+                关窗只是把窗口收起，进程继续跑，定时任务照常执行。从托盘图标点回来，或右键「退出长庚」才真正结束。
                   关掉这一项，关窗就退出，定时任务也会一起停。
-                </span>
+                </FieldHelp>
               </div>
               <Switch
                 on={desktop?.prefs.closeToTray ?? true}
@@ -1011,7 +1059,9 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>定时任务完成时通知</b>
-                <span>任务跑完或失败时弹一条系统通知，点它能回到窗口。对话里的回答不弹——那时你就在窗口前。</span>
+                <FieldHelp label="定时任务完成时通知">
+                任务跑完或失败时弹一条系统通知，点它能回到窗口。对话里的回答不弹——那时你就在窗口前。
+                </FieldHelp>
               </div>
               <Switch
                 on={desktop?.prefs.notifyOnTask ?? true}
@@ -1095,9 +1145,9 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>待命动效</b>
-                <span>
-                  关掉后球保持静止。呼吸只动缩放与透明度，走合成层，不触发重绘；思考与等确认时的动画不受这项影响。
-                </span>
+                <FieldHelp label="待命动效">
+                关掉后球保持静止。呼吸只动缩放与透明度，走合成层，不触发重绘；思考与等确认时的动画不受这项影响。
+                </FieldHelp>
               </div>
               <Switch
                 on={orb?.prefs.idleAnimation ?? true}
@@ -1109,11 +1159,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>呼出快捷键</b>
-                <span>
-                  {orb && !orb.hotkeyOk
+                <FieldHelp label="呼出快捷键">
+                {orb && !orb.hotkeyOk
                     ? '当前没能注册上——多半被别的程序占用了，换一个组合试试。'
                     : '任何时候把对话面板叫到前台。留空 = 不注册全局快捷键。'}
-                </span>
+                </FieldHelp>
               </div>
               <input
                 className="input"
@@ -1150,10 +1200,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>桌面会话</b>
-                <span>
-                  与主窗口分开存（orb-sessions.json），保留最近 20 条。面板里删掉的不影响主窗口；
+                <FieldHelp label="桌面会话">
+                与主窗口分开存（orb-sessions.json），保留最近 20 条。面板里删掉的不影响主窗口；
                   想长期留着，用面板标题栏的「移到主窗口」搬过去。
-                </span>
+                </FieldHelp>
               </div>
               <button
                 className="btn btn-ghost btn-sm"

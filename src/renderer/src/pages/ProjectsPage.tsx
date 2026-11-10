@@ -812,7 +812,7 @@ export default function ProjectsPage({ onAsk, focusProject, onOpenChat }: Props)
                 {plans.length === 0 && (
                   <div className="row">
                     <div className="rl">
-                      <span>还没有方案。点上面「生成方案」，长庚会按目标/背景/约束给 2–3 条路径、风险和第一步。</span>
+                      <span>还没有方案。点「生成方案」，会给出 2–3 条路径和第一步。</span>
                     </div>
                   </div>
                 )}
@@ -994,7 +994,7 @@ export default function ProjectsPage({ onAsk, focusProject, onOpenChat }: Props)
                         {splitting?.planId === plan.id && (
                           <div className="plan-split">
                             <div className="hint" style={{ marginBottom: 6 }}>
-                              每行一条任务；确认后写入「派发任务」，不会自动执行。
+                              每行一条；确认后写入，不会自动执行。
                             </div>
                             {(plan.options ?? []).length > 0 && (
                               <div className="form-actions" style={{ marginBottom: 8, justifyContent: 'flex-start' }}>
@@ -1162,7 +1162,7 @@ export default function ProjectsPage({ onAsk, focusProject, onOpenChat }: Props)
                 {briefs.length === 0 && (
                   <div className="row">
                     <div className="rl">
-                      <span>还没有简报。点「生成简报」出一份带判断的进度报告，不需要每天打开也能回看当时到哪了。</span>
+                      <span>还没有简报。点「生成简报」出一份带判断的进度报告。</span>
                     </div>
                   </div>
                 )}

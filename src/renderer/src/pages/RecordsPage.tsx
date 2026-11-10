@@ -164,7 +164,7 @@ export default function RecordsPage({ active }: { active: boolean }) {
         ))}
         <div style={{ flex: 1 }} />
         <div className="hint" style={{ fontSize: 11, color: '#A5A59D', padding: '8px 6px 0' }}>
-          全部留痕：销毁类动作没有你点通过就不执行，拒绝的那次文件不会动
+          全部留痕 · 拒绝的不会执行
         </div>
       </aside>
 

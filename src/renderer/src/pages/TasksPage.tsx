@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { TaskDef } from '../../../shared/types'
+import { FieldHelp } from '../components/FieldHelp'
 
-const EFFECT_HINT = '到点后作为一条用户消息交给长庚跑一轮。只适合只读动作：需要授权的操作会被当场拒绝并留痕（无人在场，fail-closed）。'
 
 /** 常用模板：只放当前工具真能跑通的只读动作 */
 const TEMPLATES: Array<{ when: string; title: string; time: string; prompt: string; icon: string }> = [
@@ -202,7 +202,15 @@ export default function TasksPage() {
                 />
               </div>
               <div className="form-row">
-                <label>到点后发给长庚的指令</label>
+                <label>
+                  到点后发给长庚的指令
+                  <FieldHelp label="定时任务的限制">
+                    到点后作为一条<b>用户消息</b>交给长庚跑一轮。
+                    <br />
+                    只适合只读动作：需要授权的操作会被当场拒绝并留痕
+                    （无人在场，fail-closed）。运行前记得开着应用。
+                  </FieldHelp>
+                </label>
                 <textarea
                   className="input"
                   style={{ height: 88, padding: '8px 10px', resize: 'vertical' }}
@@ -260,9 +268,6 @@ export default function TasksPage() {
                     />
                   )}
                 </div>
-              </div>
-              <div className="hint" style={{ marginBottom: 4 }}>
-                {EFFECT_HINT}
               </div>
               <div className="form-actions">
                 <button className="btn btn-primary" disabled={busy || !editing.prompt?.trim()} onClick={() => void save()}>
@@ -391,7 +396,7 @@ export default function TasksPage() {
                 </svg>
                 <div>
                   <b>定时任务无人在场，写操作一律拒绝</b>
-                  <span>{EFFECT_HINT}运行前记得开着应用。</span>
+                  <span>需要授权的操作会被当场拒绝并留痕。运行前记得开着应用。</span>
                 </div>
               </div>
             </>

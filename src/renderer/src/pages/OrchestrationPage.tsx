@@ -230,7 +230,7 @@ export default function OrchestrationPage(): React.JSX.Element {
 
               {recheck && (
                 <div className="sub" style={{ marginTop: 8 }}>
-                  已按磁盘现状重新核对一遍，下面的结果**没有改任务状态**——它只是把事实再查一遍。
+                  已按磁盘现状核对一遍；<b>没有改任务状态</b>，只是把事实再查一遍。
                 </div>
               )}
 

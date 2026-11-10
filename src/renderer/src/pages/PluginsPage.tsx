@@ -131,9 +131,9 @@ export default function PluginsPage() {
                 </svg>
                 <div style={{ fontSize: 13.5, fontWeight: 600, color: '#4E4E47', marginTop: 10 }}>还没有接入任何 MCP 服务器</div>
                 <div style={{ fontSize: 12, color: '#8E8E86', marginTop: 5, lineHeight: 1.7 }}>
-                  外部插件的连接与鉴权机制还在开发中（暂缓）。
+                  MCP 接入还在开发中，这里不做假开关。
                   <br />
-                  在它就绪之前，这里不做假开关；左侧「能力」开关是插件机制的第一步——切换立即生效、全程留痕。
+                  左边的「能力」开关是第一步，切换立即生效。
                 </div>
               </div>
             </>

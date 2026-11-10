@@ -3513,3 +3513,102 @@ details.techfold[open] > summary {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ---- 字段旁的「?」提示 ----
+ * 设置页原来每个字段下面挂一段说明，一屏能堆几百字。现在收进这里。
+ * 浮层用 fixed + portal 渲染到 body（见 FieldHelp.tsx）：字段装在
+ * .cardbox(overflow:hidden) 里、外层还有 .form(overflow-y:auto)，
+ * 绝对定位会被裁掉，实测只露一截。 */
+.fh-btn {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin-left: 5px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #fcfcfb;
+  color: var(--ink4);
+  font-size: 10px;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  transition:
+    border-color 0.12s,
+    color 0.12s,
+    background 0.12s;
+}
+.fh-btn:hover,
+.fh-btn.on {
+  border-color: var(--ring);
+  color: var(--sel-ink);
+  background: var(--sel);
+}
+/* 浮层：白底细边框，和 choicecard 一个调性 */
+.fh-pop {
+  position: fixed;
+  z-index: 9999;
+  width: 300px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(28 28 26 / 12%);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--ink2);
+  line-height: 1.65;
+  text-align: left;
+  overflow-y: auto;
+}
+.fh-pop b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.fh-pop code {
+  font-size: 11px;
+  color: var(--ink2);
+  background: var(--line2);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+/* 浮层里的定义列表：一行一个后端，紧凑但读得开 */
+.fh-pop dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 10px;
+}
+.fh-pop dt {
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.fh-pop dd {
+  margin: 0;
+}
+  margin: 0;
+}
+
+/* ---- 设置页留白 ----
+ * 原来每行 margin 14px、两组字段贴在一起，一屏塞太多；
+ * 拆成"一块说一件事"的节奏：行内 18px、块间 26px。
+ * 只动纵向节奏，横向和配色一律不变。 */
+.form .form-row {
+  margin-bottom: 18px;
+}
+.form .grid2 {
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.form .grid2 .form-row {
+  margin-bottom: 0;
+}
+/* 分区块之间：靠上一条细分隔线给个呼吸，而不是又加一段说明文字 */
+.form .form-row + .form-row[style*='margin-top'] {
+  padding-top: 22px;
+  border-top: 1px solid var(--line2);
+}

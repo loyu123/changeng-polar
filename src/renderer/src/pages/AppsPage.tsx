@@ -214,7 +214,7 @@ export default function AppsPage({ active, onAsk }: Props) {
               {loading ? '正在读取注册表…' : '点左侧任一程序查看详情'}
             </div>
             <div style={{ fontSize: 12, color: '#8E8E86', marginTop: 5, lineHeight: 1.6 }}>
-              说明来自官网查证或你的手写备注，都没有就如实标未登记；也可以让长庚批量查证。
+              说明来自官网查证或你的备注，没有就标未登记。
             </div>
             {!loading && (
               <div style={{ marginTop: 14 }}>
