@@ -58,9 +58,14 @@ describe('searchRepos 的前置校验', () => {
 })
 
 describe('ghReady', () => {
+  /**
+   * 这条会真的调 `gh`，而 `gh auth status` 在本机偶尔要 5 秒以上
+   * （它会顺带探一下网络）。所以给足超时——不然会因为网络慢而假红，
+   * 那种红比不测更浪费人。
+   */
   it('返回一个明确结论（不抛错），不可用时给出人话原因', async () => {
     const r = await ghReady()
     expect(typeof r.ok).toBe('boolean')
     if (!r.ok) expect(r.reason).toMatch(/gh auth login|登录/)
-  })
+  }, 30_000)
 })

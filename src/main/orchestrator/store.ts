@@ -45,7 +45,15 @@ export class ProjectStore {
       name,
       createdAt: now,
       updatedAt: now,
-      status: 'planning',
+      /**
+       * 建出来就是 running，不是 planning。
+       *
+       * 这个项目一旦落盘就意味着"已经决定要派了"——真正的 planning 阶段在
+       * 对话里（拆解、选串行并行）就已经过去了。写成 planning 会让界面出现
+       * "状态 planning、进度 4/4 完成"这种自相矛盾的显示（真机见过）。
+       * 之后由 runner 的 deriveProjectStatus 逐批推成 running / done / failed。
+       */
+      status: 'running',
       rootDir: this.rootDir,
       tasks: tasks.map((t) => ({ ...t, status: t.status ?? 'pending', attempts: t.attempts ?? 0 }))
     }

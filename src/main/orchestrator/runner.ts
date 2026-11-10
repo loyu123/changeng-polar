@@ -16,6 +16,30 @@ import {
 export const MAX_CONCURRENCY = 8
 
 /**
+ * 从任务状态推断项目整体状态。
+ *
+ * 为什么不在跑的时候逐次更新：项目状态是"读出来的结论"，不是"记下来的过程"。
+ * 每批跑完重新推一遍，就不会出现"任务全完了但项目还写着 planning"。
+ *
+ * 判定顺序有讲究：
+ * 1. 还有没跑完的（pending / running / blocked）→ 仍在 running，哪怕有一部分失败了
+ * 2. 全部跑完且有一个失败 / 未知 → failed（unknown 也算失败：它可能做了一半）
+ * 3. 全部 done → done
+ */
+export function deriveProjectStatus(project: OrchestrationProject): OrchestrationProject['status'] {
+  const tasks = project.tasks
+  if (tasks.length === 0) return 'planning'
+
+  const unfinished = tasks.filter(
+    (t) => t.status === 'pending' || t.status === 'running' || t.status === 'blocked'
+  )
+  if (unfinished.length > 0) return 'running'
+
+  const bad = tasks.filter((t) => t.status === 'failed' || t.status === 'unknown')
+  return bad.length > 0 ? 'failed' : 'done'
+}
+
+/**
  * 串行推进（P1）。
  *
  * 形态是"长庚每次被唤醒推进一格"，不是"一口气跑完整个项目"——
@@ -86,6 +110,8 @@ export class ProjectRunner {
   ): Promise<OrchestrationProject> {
     const limit = Math.max(1, Math.min(Math.floor(concurrency) || 1, MAX_CONCURRENCY))
     let current = await this.fresh(project)
+    // 一开始就标 running：界面上"正在跑"和"还没开始"是两件事
+    current = await this.setProjectStatus(current, 'running')
 
     for (;;) {
       if (signal?.aborted) break
@@ -95,9 +121,26 @@ export class ProjectRunner {
       current = await this.fresh(current)
     }
 
+    // 跑完按任务状态推断项目状态。
+    //
+    // 之前这里什么都不做，于是 project.status 永远停在创建时的 'planning'——
+    // 界面上会出现"状态 planning、进度 4/4 完成"这种自相矛盾的样子（真机见过）。
+    current = await this.setProjectStatus(current, deriveProjectStatus(current))
+
     const p = projectProgress(current)
     this.opts.onEvent?.({ kind: 'project-done', total: p.total, done: p.done })
     return current
+  }
+
+  /** 只改项目整体状态，任务状态不动 */
+  private async setProjectStatus(
+    project: OrchestrationProject,
+    status: OrchestrationProject['status']
+  ): Promise<OrchestrationProject> {
+    if (project.status === status) return project
+    const next = { ...project, status }
+    await this.opts.store.save(next)
+    return next
   }
 
   /**
