@@ -11,8 +11,6 @@ import type { DesktopState } from '../../../shared/desktop'
 import { MEMORY_KIND_LABEL } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
 import RecordsPage from './RecordsPage'
-import AppsPage from './AppsPage'
-import DesktopAppsPage from './DesktopAppsPage'
 import { FieldHelp } from '../components/FieldHelp'
 
 /**
@@ -65,8 +63,6 @@ export type SettingsSection =
   | 'pluginsCap'
   | 'security'
   | 'records'
-  | 'apps'
-  | 'installed'
   | 'general'
   | 'orb'
   | 'shortcuts'
@@ -1324,18 +1320,6 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
       raw: true,
       body: <RecordsPage active />
     },
-    apps: {
-      title: '应用台账',
-      lead: '只看桌面上摆着的应用；随桌面自动更新。全部已安装程序在「已安装程序」里。',
-      raw: true,
-      body: <DesktopAppsPage onAsk={(text) => onAsk?.(text)} onOpenInstalled={() => setSection('installed')} />
-    },
-    installed: {
-      title: '已安装程序',
-      lead: '注册表只读采集；说明来自官网查证或手写备注，都没有就如实标未登记。',
-      raw: true,
-      body: <AppsPage active onAsk={(text) => onAsk?.(text)} />
-    },
     about: {
       title: '关于',
       lead: '这台机器的信息与未竟事项。',
@@ -1419,16 +1403,6 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
           </button>
         )}
         {navQuery.trim() === '' && <div className="sgrp">本机</div>}
-        {('应用台账'.includes(navQuery.trim()) || navQuery.trim() === '') && (
-          <button className={`sitem${section === 'apps' ? ' sel' : ''}`} onClick={() => setSection('apps')}>
-            应用台账
-          </button>
-        )}
-        {('已安装程序'.includes(navQuery.trim()) || navQuery.trim() === '') && (
-          <button className={`sitem${section === 'installed' ? ' sel' : ''}`} onClick={() => setSection('installed')}>
-            已安装程序
-          </button>
-        )}
         {('操作记录'.includes(navQuery.trim()) || navQuery.trim() === '') && (
           <button className={`sitem${section === 'records' ? ' sel' : ''}`} onClick={() => setSection('records')}>
             操作记录

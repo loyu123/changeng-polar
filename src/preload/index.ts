@@ -48,34 +48,6 @@ const api = {
       }>
   },
 
-  /** 桌面应用：只列桌面上实际显示的那些（和应用台账的注册表清单是两件事） */
-  desktopApps: {
-    list: () => ipcRenderer.invoke('desktop-apps:list'),
-    target: (lnkPath: string) => ipcRenderer.invoke('desktop-apps:target', lnkPath) as Promise<string | undefined>,
-    /** 开始盯桌面变化，有变动推 desktop-apps:changed */
-    watch: () => ipcRenderer.invoke('desktop-apps:watch') as Promise<boolean>,
-    unwatch: () => ipcRenderer.invoke('desktop-apps:unwatch') as Promise<boolean>,
-    onChanged: (handler: () => void) => {
-      const listener = (): void => handler()
-      ipcRenderer.on('desktop-apps:changed', listener)
-      return () => ipcRenderer.removeListener('desktop-apps:changed', listener)
-    }
-  },
-
-  apps: {
-    list: () =>
-      ipcRenderer.invoke('apps:list') as Promise<{
-        apps: AppInfo[]
-        verifyMap: Record<string, VerifyResult>
-        durationMs: number
-      }>,
-    verify: (appName: string, publisher: string, officialUrl?: string) =>
-      ipcRenderer.invoke('apps:verify', { appName, publisher, officialUrl }) as Promise<VerifyResult>,
-    /** 功能说明的手写备注：覆盖查证生成的句子；空文本 = 删除 */
-    notes: () => ipcRenderer.invoke('notes:list') as Promise<Record<string, AppNote>>,
-    saveNote: (appName: string, text: string) =>
-      ipcRenderer.invoke('notes:save', { appName, text }) as Promise<AppNote | null>
-  },
 
   /** 设置页的检索自检：只发一次检索请求，不进模型 */
   search: {
@@ -87,6 +59,15 @@ const api = {
         latencyMs: number
         error?: string
         sample: Array<{ title: string; url: string }>
+      }>
+  },
+
+  /** 只有计数用途（总览页）。台账页已移除。 */
+  apps: {
+    list: () =>
+      ipcRenderer.invoke('apps:list') as Promise<{
+        apps: AppInfo[]
+        durationMs: number
       }>
   },
 

@@ -82,9 +82,10 @@ export function registerChatIpc(ctx: IpcContext): void {
   })
 
   // ---- 应用台账 ----
+  // 总览页的"已装应用"计数要用它（台账页已移除，但这项统计还有用）
   ipcMain.handle('apps:list', async () => {
-    const [{ apps, durationMs }, verifyMap] = await Promise.all([listInstalledApps(), ctx.store.getVerifyMap()])
-    return { apps, verifyMap, durationMs }
+    const { apps, durationMs } = await listInstalledApps()
+    return { apps, durationMs }
   })
   ipcMain.handle('apps:verify', async (_e, payload: { appName: string; publisher: string; officialUrl?: string }) => {
     const config = await ctx.store.getConfig()

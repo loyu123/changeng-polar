@@ -124,8 +124,6 @@ const SECTION_LABEL: Record<SettingsSection, string> = {
   pluginsCap: '插件与能力',
   security: '权限与安全',
   records: '操作记录',
-  apps: '应用台账',
-  installed: '已安装程序',
   general: '常规',
   orb: '桌面助手',
   shortcuts: '快捷键',
