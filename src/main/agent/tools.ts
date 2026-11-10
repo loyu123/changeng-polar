@@ -1831,6 +1831,19 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       description:
         '把一件"以后还用得上"的事记下来，下次对话还能想起来。适合：用户让你记住的偏好和习惯、正在做的项目与进度、约定的规则。不适合：一次性的问答内容、从工具读到的会变的事实（装了什么、有什么文件）、你自己的推测。同一件事重复保存只会刷新时间，不会重复记录。',
       effect: 'write',
+      /**
+       * 记忆必须让你看见再写。
+       *
+       * 标签一直写着「需确认」，但底子是 write 档——而 write 档是**自动放行**的
+       * （只备份、不弹卡）。2026-11-10 真机实测抓到的就是这个：日志里
+       * `save_memory ... authz=auto`，一次卡都没弹。
+       *
+       * 记忆和别的写入不一样：它改变的是"长庚以后怎么看你"。
+       * 一句记错的偏好会一直生效，而且下次对话你看不到它是什么时候被写进去的。
+       */
+      requiresConfirmation: true,
+      // 不设「始终允许」：每次都要看得见，否则"以后都自动记住"就没边了
+      allowAlways: false,
       parameters: {
         type: 'object',
         properties: {
@@ -1845,7 +1858,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       describeTarget: (args) => ({
         title: '记住一件事',
         target: String(args.text ?? '').slice(0, 80),
-        impact: '只在本地记一条笔记，不改动系统；可在设置里删除',
+        impact: '只在本地记一条笔记，不改动系统，可在「设置 → 记忆」里删除。但这条会被带进以后的每次对话——写错了会一直生效',
         undoHint: '设置 → 记忆'
       }),
       // write 档会先备份：这里存的是整个记忆列表的快照，撤销时据此还原
@@ -1887,6 +1900,12 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       description:
         '删掉一条之前记下的内容。用户说"忘记这个""记错了""删掉那条记忆"时用它。参数可以是记忆的 id，也可以直接给原文（会按内容匹配）。删之前建议先 list_memory 核对是哪一条。',
       effect: 'write',
+      /**
+       * 删除记忆同样要过卡。理由和 save_memory 一样：它改的是"长庚记得的你"。
+       * 虽然删错了还能重加，但用户得先知道发生了这件事。
+       */
+      requiresConfirmation: true,
+      allowAlways: false,
       parameters: {
         type: 'object',
         properties: {
@@ -1897,7 +1916,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       describeTarget: (args) => ({
         title: '忘掉一条记忆',
         target: String(args.ref ?? '').slice(0, 80),
-        impact: '从本地记忆里删掉这条；其他数据不受影响',
+        impact: '从本地记忆里删掉这条，其他数据不受影响；删掉之后长庚就不再记得它了',
         undoHint: '设置 → 记忆（删除前有备份，可重新添加）'
       }),
       backup: async () => {
