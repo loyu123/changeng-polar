@@ -44,10 +44,10 @@ export interface RunnerOptions {
   /**
    * 真正起工作体的那层，默认走 `runWorker`。
    *
-   * 留这个接缝是为了能单测调度（并发上限、同目录冲突、失败不传染）——
-   * 那些测试不该花额度、也不该依赖本机装没装 pi。
+   * **签名里带 config**：这样测试才能断言"这一件到底派给了哪家、
+   * 用了哪几个能力词"。不带的话，按任务分配后端这件事就测不出来。
    */
-  runWorkerImpl?: (opts: WorkerRunOptions) => Promise<WorkerRunResult>
+  runWorkerImpl?: (opts: WorkerRunOptions & { config: WorkerConfig }) => Promise<WorkerRunResult>
 }
 
 export type RunnerEvent =
@@ -149,6 +149,16 @@ export class ProjectRunner {
       return { ...task, status: 'failed' }
     }
 
+    // 任务可以单独指定后端：同一个项目里按活的性质分配（整理资料给 codebuddy，
+    // 跑代码给 pi）。没指定就用默认后端。
+    const backend = task.worker?.backend ?? workerConfig.backend ?? 'pi'
+    // 工具名在这里就翻成该后端认的名字：任务写的是能力词，各家叫法不同
+    const effective: WorkerConfig = {
+      ...workerConfig,
+      backend,
+      tools: task.worker?.tools ?? workerConfig.tools
+    }
+
     const workDir = taskWorkDir(project.rootDir, task)
     const startedAt = new Date().toISOString()
     this.opts.onEvent?.({ kind: 'task-start', taskId: task.id })
@@ -164,7 +174,7 @@ export class ProjectRunner {
     const upstreamFiles = await this.handOffUpstream(project, task, workDir)
     const prompt = await this.composePrompt(project, task, upstreamFiles)
     const result = await (this.opts.runWorkerImpl ?? runWorker)({
-      config: { ...workerConfig, tools: task.worker?.tools ?? workerConfig.tools },
+      config: effective,
       prompt,
       workDir,
       signal,

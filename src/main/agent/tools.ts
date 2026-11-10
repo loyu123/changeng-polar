@@ -37,6 +37,22 @@ import { dispatchOptions, parseMode, previewDispatch, runProject, taskArtifacts 
 import { validatePlan } from '../orchestrator/plan'
 import type { AcceptanceCheck, OrchestrationTask } from '../orchestrator/types'
 
+/**
+ * 从模型给的单个任务里读出 worker 声明。
+ *
+ * 认不出的后端名直接丢掉（走默认），**不猜**——猜错会派给一家不适合的，
+ * 而且用户以为是自己指定的那家。能力词交给 capabilities 层归一。
+ */
+function buildWorkerSpec(t: Record<string, unknown>): OrchestrationTask['worker'] {
+  const backend = String(t.backend ?? '').trim().toLowerCase()
+  const known = ['pi', 'codex', 'codebuddy', 'claude']
+  const spec: NonNullable<OrchestrationTask['worker']> = {}
+  if (known.includes(backend)) spec.backend = backend as NonNullable<OrchestrationTask['worker']>['backend']
+  if (Array.isArray(t.tools)) spec.tools = t.tools.map(String).filter(Boolean)
+  if (typeof t.model === 'string' && t.model.trim()) spec.model = t.model.trim()
+  return Object.keys(spec).length > 0 ? spec : undefined
+}
+
 /** 把模型给的任务列表转成结构化计划。认不出的直接丢掉，不猜 */
 function parseProjectTasks(raw: unknown): OrchestrationTask[] {
   if (!Array.isArray(raw)) return []
@@ -55,7 +71,8 @@ function parseProjectTasks(raw: unknown): OrchestrationTask[] {
       dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String).filter(Boolean) : [],
       status: 'pending',
       acceptance: parseAcceptance(Array.isArray(t.acceptance) ? t.acceptance : []),
-      worker: Array.isArray(t.tools) ? { tools: t.tools.map(String) } : undefined,
+      // 任务的 worker 声明：后端与能力词都不是必填，缺了就走默认后端
+      worker: buildWorkerSpec(t),
       attempts: 0
     })
   }
@@ -465,6 +482,12 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
               title: { type: 'string' },
               prompt: { type: 'string' },
               dependsOn: { type: 'array', items: { type: 'string' } },
+              backend: {
+                type: 'string',
+                enum: ['pi', 'codex', 'codebuddy', 'claude'],
+                description: '这一件交给哪家做。留空用设置里的默认后端。按活的性质分配：整理资料可以给 codebuddy，跑代码给 pi'
+              },
+              model: { type: 'string', description: '这一件用哪个模型，留空用该后端自己的配置' },
               acceptance: {
                 type: 'array',
                 items: {
@@ -478,7 +501,11 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
                   required: ['kind', 'path']
                 }
               },
-              tools: { type: 'array', items: { type: 'string' } }
+              tools: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '允许干哪几类事，用能力词写：read / write / edit / bash。不要写各家自己的工具名（claude 的 Read、pi 的 read）——系统会自动翻译'
+              }
             },
             required: ['id', 'title', 'prompt']
           }

@@ -20,6 +20,7 @@
     "project": "tsx scripts/project-smoke.ts",
     "backends": "tsx scripts/backends-check.ts",
     "backends:work": "tsx scripts/backends-work.ts",
+    "mixed": "tsx scripts/mixed-backends.ts",
     "mock": "node scripts/mock-llm.cjs",
     "test": "vitest run",
     "test:watch": "vitest",

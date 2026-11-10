@@ -2,6 +2,7 @@ import { CodebuddyBackend } from './backends/codebuddy'
 import { ClaudeBackend } from './backends/claude'
 import { CodexBackend } from './backends/codex'
 import { PiBackend } from './backends/pi'
+import { nativeTools, normalizeCapability } from './capabilities'
 import {
   WorkerConfigError,
   type WorkerBackend,
@@ -34,7 +35,10 @@ export interface WorkerConfig {
   provider?: string
   /** 模型名。各家都认；留空 = 用该后端自己的默认 */
   model?: string
-  /** 允许工作体用的工具白名单 */
+  /**
+   * 允许工作体干哪几类事，用**长庚的能力词**写：read / write / edit / bash。
+   * 不是某一家后端的工具名——各家叫法不同，createBackend 会翻译。
+   */
   tools: string[]
   timeoutMs?: number
   /** 向后兼容：老字段名 */
@@ -69,37 +73,47 @@ function timeoutOf(config: WorkerConfig): number {
   return config.timeoutMs ?? DEFAULT_TIMEOUT_MS
 }
 
-/** 按配置造一个后端实例。同一个后端可以被反复调用（每次 run 起一次进程） */
+/**
+ * 按配置造一个后端实例。同一个后端可以被反复调用（每次 run 起一次进程）。
+ *
+ * **`config.tools` 里写的是长庚的能力词**（read / write / edit / bash），
+ * 不是某一家后端的工具名。这里统一翻成各家认的名字——否则同一份任务换个后端，
+ * 就会"工具全被禁用"而且不报错，表现为"模型说什么都做不了"，最难查。
+ */
 export function createBackend(config: WorkerConfig): WorkerBackend {
   const kind = config.backend ?? 'pi'
+  const tools = nativeTools(kind, config.tools)
   switch (kind) {
     case 'pi':
       return new PiBackend({
         binPath: config.binPath ?? config.piBin,
         provider: config.provider ?? '',
         model: config.model ?? '',
-        tools: config.tools,
+        tools,
         timeoutMs: timeoutOf(config)
       })
     case 'codex':
       return new CodexBackend({
         binPath: config.binPath,
         model: config.model,
-        // 写权限由 tools 白名单推出来：给了 write 才开 workspace-write
-        write: config.tools.some((t) => /^(write|edit|bash)$/i.test(t)),
+        // 写权限由能力词推出来：要了 write / edit / bash 才开 workspace-write
+        write: config.tools.some((t) => {
+          const c = normalizeCapability(t)
+          return c === 'write' || c === 'edit' || c === 'bash'
+        }),
         timeoutMs: timeoutOf(config)
       })
     case 'codebuddy':
       return new CodebuddyBackend({
         binPath: config.binPath,
-        tools: config.tools,
+        tools,
         timeoutMs: timeoutOf(config)
       })
     case 'claude':
       return new ClaudeBackend({
         binPath: config.binPath,
         model: config.model,
-        tools: config.tools,
+        tools,
         timeoutMs: timeoutOf(config)
       })
     default:

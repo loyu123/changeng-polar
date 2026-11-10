@@ -33,11 +33,23 @@ export type AcceptanceCheck =
   | { kind: 'contains'; path: string; text: string; note?: string }
   | { kind: 'not-contains'; path: string; text: string; note?: string }
 
-/** 派发给哪个模型。留空表示"用配置里的默认工作体"，不在代码里写死任何模型名 */
+/**
+ * 派发给哪个工作体。
+ *
+ * 留空表示"用配置里的默认后端"，不在代码里写死任何模型名或后端名。
+ * 任务可以单独指定 backend：这样同一个项目里可以按活的性质分配——
+ * 比如整理资料的给 codebuddy，跑代码的给 pi。
+ */
 export interface WorkerSpec {
+  /** 这一件给哪家做。留空 = 用配置的默认后端 */
+  backend?: 'pi' | 'codex' | 'codebuddy' | 'claude'
   provider?: string
   model?: string
-  /** 允许工作体用的工具白名单（read / write / edit / bash …） */
+  /**
+   * 允许工作体干哪几类事，用**长庚的能力词**：read / write / edit / bash。
+   * 不是各家自己的工具名（claude 的 Read、pi 的 read）——那一层映射在 capabilities.ts，
+   * 因为同一个任务换后端时不该跟着改。
+   */
   tools?: string[]
 }
 

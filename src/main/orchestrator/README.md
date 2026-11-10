@@ -97,6 +97,42 @@ Qwen3.8-Flash      →  System message must be at the beginning （消息顺序�
    把它当失败会把正常跑完的任务判成失败。只有 message 含 `failed`/`authentication`
    之类才算硬错。
 
+## 按任务分配后端
+
+一个项目里可以按活的性质分配：整理资料的给 codebuddy、跑代码的给 pi。
+任务上写 `worker.backend` 即可，不写就走设置里的默认后端。
+
+```ts
+{ id: 'notes', prompt: '…', worker: { backend: 'codebuddy', tools: ['read','write'] } }
+{ id: 'report', prompt: '…' }   // 不写 → 默认后端
+```
+
+### 工具名要过一层映射，否则会静默失灵
+
+四家的工具名叫法完全不同（pi 用 `read`，claude/codebuddy 用 `Read`，codex 靠沙箱档位），
+而任务应该**与后端无关**。不映射的话，同一份计划换个后端就会"工具全被禁用"，
+而且**不报错**——表现为"模型说什么都做不了"，这种静默失败最难查。
+
+所以任务里写的是**长庚的能力词**：`read` / `write` / `edit` / `bash`。
+`capabilities.ts` 负责翻译：
+
+| 能力词 | pi | claude / codebuddy | codex |
+|---|---|---|---|
+| read | `read` | `Read` | 由沙箱档位决定 |
+| write | `write` | `Write` | `workspace-write` |
+| edit | `edit` | `Edit` | `workspace-write` |
+| bash | `bash` | `Bash` | `workspace-write` |
+
+认不出的能力词**直接丢掉，不猜**——猜错等于给一个不存在的工具名，比不传更糟。
+
+真机验证（`npx tsx scripts/mixed-backends.ts`）：
+
+```
+notes-n1 → codebuddy   ✔
+notes-n2 → codebuddy   ✔
+report   → pi（默认）  ✔      3/3 完成
+```
+
 ## 四个入口
 
 ```bash
