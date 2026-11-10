@@ -32,6 +32,58 @@ import {
 import { fetchPage, searchWeb } from '../node/web'
 import { MEMORY_MAX_TEXT, mergeMemory, removeMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
+import { runDelegation, workerConfigFrom } from '../orchestrator/delegate'
+import { dispatchOptions, parseMode, previewDispatch, runProject, taskArtifacts } from '../orchestrator/project'
+import { validatePlan } from '../orchestrator/plan'
+import type { AcceptanceCheck, OrchestrationTask } from '../orchestrator/types'
+
+/** 把模型给的任务列表转成结构化计划。认不出的直接丢掉，不猜 */
+function parseProjectTasks(raw: unknown): OrchestrationTask[] {
+  if (!Array.isArray(raw)) return []
+  const out: OrchestrationTask[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const t = item as Record<string, unknown>
+    const id = String(t.id ?? '').trim()
+    const title = String(t.title ?? '').trim()
+    const prompt = String(t.prompt ?? '').trim()
+    if (!id || !title || !prompt) continue
+    out.push({
+      id,
+      title,
+      prompt,
+      dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String).filter(Boolean) : [],
+      status: 'pending',
+      acceptance: parseAcceptance(Array.isArray(t.acceptance) ? t.acceptance : []),
+      worker: Array.isArray(t.tools) ? { tools: t.tools.map(String) } : undefined,
+      attempts: 0
+    })
+  }
+  return out
+}
+
+/**
+ * 把模型给的验收项转成结构化检查。参数来自模型，属于不可信输入：
+ * 认不出的 kind 直接丢掉，而不是猜一个——猜错会变成"检查了个寂寞却显示通过"。
+ */
+function parseAcceptance(raw: unknown[]): AcceptanceCheck[] {
+  const out: AcceptanceCheck[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const c = item as Record<string, unknown>
+    const path = String(c.path ?? '').trim()
+    if (!path) continue
+    const kind = String(c.kind ?? '')
+    if (kind === 'file-exists') out.push({ kind, path })
+    else if (kind === 'min-bytes' && typeof c.bytes === 'number' && c.bytes > 0)
+      out.push({ kind, path, bytes: Math.floor(c.bytes) })
+    else if (kind === 'contains' && String(c.text ?? '').length > 0)
+      out.push({ kind, path, text: String(c.text) })
+    else if (kind === 'not-contains' && String(c.text ?? '').length > 0)
+      out.push({ kind, path, text: String(c.text) })
+  }
+  return out
+}
 
 export interface ToolDeps {
   /** 打开系统设置页（由主进程注入，评测脚本里为空实现） */
@@ -43,6 +95,15 @@ export interface ToolDeps {
    * 而"打开程序"这件事用不着它。
    */
   launchShortcut?: (filePath: string) => Promise<string>
+  /**
+   * 委派给外部智能体（编排层）。rootDir 由主进程注入 userData 下的目录；
+   * 没注入 = 当前环境不支持委派（评测/闸门自检），工具会如实拒绝。
+   */
+  delegate?: {
+    rootDir: string
+    worker: { provider?: string; model?: string; timeoutSec?: number }
+    onProgress?: (note: string) => void
+  }
   /**
    * 启动前先看一眼：这个快捷方式指向哪个 exe、现在有哪些进程和可见窗口。
    *
@@ -271,6 +332,249 @@ const SETTINGS_PAGES: Record<string, string> = {
 }
 
 export function createTools(deps: ToolDeps = {}): ToolDef[] {
+  const delegateTool: ToolDef = {
+    name: 'delegate_to_agent',
+    label: '委派给外部智能体（需授权）',
+    description:
+      '把一个**耗时长、需要反复读写文件**的活交给外部的 pi 工作体去做：它有自己的模型、自己的工具循环，做完把产出和验收结果交回来。适合"读一批材料写一份报告""照这个要求改一份文档"这类长活；**不适合一次性的问答、也不适合改用户正在用的项目**——每次委派都落在一个全新的独立目录里，不会碰你手上的仓库。用户没有明确同意前不要调用。',
+    effect: 'write',
+    // 交给无人值守的外部智能体：目录里有什么它都能读，命令也能执行。
+    // 所以必须过卡，且永不「始终允许」——见 gate.ts 里 requiresConfirmation 分支
+    requiresConfirmation: true,
+    allowAlways: false,
+    // 提示词和文件内容都会发到本机之外（除非工作体接的是内网网关，这一点由配置决定）
+    sendsDataOut: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '这次委派的一句话标题，卡片上会显示' },
+        prompt: {
+          type: 'string',
+          description: '交给工作体的完整提示词：要做什么、读哪些文件、写成什么文件。写清楚交付物'
+        },
+        expect: {
+          type: 'array',
+          description: '验收清单：工作体说做完了不算，这些检查过了才算。留空表示只取回答',
+          items: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', enum: ['file-exists', 'min-bytes', 'contains', 'not-contains'] },
+              path: { type: 'string', description: '相对工作目录的路径' },
+              bytes: { type: 'number' },
+              text: { type: 'string' }
+            },
+            required: ['kind', 'path']
+          }
+        },
+        tools: {
+          type: 'array',
+          description: '工作体可用的工具白名单，默认只给 read 和 write。不给 bash 它就跑不了命令',
+          items: { type: 'string' }
+        }
+      },
+      required: ['prompt']
+    },
+    describeTarget: (args) => {
+      const title = String(args.title ?? '').trim() || '委派任务'
+      const expect = Array.isArray(args.expect) ? args.expect.length : 0
+      return {
+        title: `委派给外部智能体：${title}`,
+        target: title,
+        impact:
+          `会把提示词和它读到的文件内容交给本机之外的工作体；它会在这个新目录里写文件、可能执行命令，` +
+          `过程中不会回来问你。默认只给 read/write 两个工具。${expect > 0 ? `交付要过 ${expect} 项检查。` : '不设验收，只取回答。'}`,
+        undoHint: '拒绝就什么都不派出去'
+      }
+    },
+    run: async (args, ctx): Promise<ToolResult> => {
+      if (!deps.delegate) {
+        return { ok: false, summary: '当前环境不支持委派（没有注入工作目录）' }
+      }
+      const worker = workerConfigFrom(deps.delegate.worker, Array.isArray(args.tools) ? args.tools.map(String) : undefined)
+      if (!worker) {
+        return {
+          ok: false,
+          summary:
+            '工作体没有配置：要先在设置里填 provider 和 model（例如 eepseek / deepseek-v4-flash）。' +
+            '不填就会走 pi 的默认模型，那条路会 401，所以这里不猜默认值。'
+        }
+      }
+      const expect = Array.isArray(args.expect) ? parseAcceptance(args.expect) : undefined
+      const result = await runDelegation(
+        {
+          title: String(args.title ?? '').trim() || undefined,
+          prompt: String(args.prompt ?? ''),
+          expect,
+          tools: Array.isArray(args.tools) ? args.tools.map(String) : undefined
+        },
+        worker,
+        { rootDir: deps.delegate.rootDir, signal: ctx.signal, onProgress: deps.delegate.onProgress }
+      )
+      return {
+        ok: result.ok,
+        summary: `${result.summary}${result.artifactPaths.length > 0 ? `。产出：${result.artifactPaths.join(' | ')}` : ''}`,
+        data: result,
+        evidence: [
+          {
+            id: randomUUID().slice(0, 8),
+            type: 'local',
+            title: `委派：${String(args.title ?? '').trim() || '委派任务'}`,
+            detail: `${result.taskStatus} · 目录 ${result.projectRoot} · 回答 ${result.outputChars} 字节${
+              result.failureReason ? ` · ${result.failureReason}` : ''
+            }`,
+            at: new Date().toISOString()
+          }
+        ]
+      }
+    }
+  }
+
+  /**
+   * 多任务项目派发：候选卡在这一步让用户选「串行还是并行几路」。
+   *
+   * 为什么不用工具参数让模型自己决定并行度：并行 = 多倍并发打到同一个模型网关，
+   * 那是用户的钱和时间。模型看不到这些代价，用户看得到——所以做成卡上的一次点击。
+   */
+  const runProjectTool: ToolDef = {
+    name: 'run_project',
+    label: '派发项目（需授权）',
+    description:
+      '把**一组有先后依赖的任务**整体交给外部工作体跑：长庚按依赖分好批，能并行的并行、有依赖的排队，全部跑完再逐个验收。' +
+      '适合"读这几份材料、各自提炼、再合成一份报告"这类多步活。**一次只派一个任务的简单委派请用 delegate_to_agent**。' +
+      '派发前会弹一张候选卡让你选串行还是并行几路（并行更快，但同时在跑的进程数也翻倍），再用授权卡确认。' +
+      '每个任务都落在独立目录里，不碰你手上的仓库。用户没有明确同意前不要调用。',
+    effect: 'write',
+    requiresConfirmation: true,
+    allowAlways: false,
+    sendsDataOut: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '项目名，一句话' },
+        mode: {
+          type: 'string',
+          description: '派发方式，由候选卡写回（serial / parallel:3）。调用时留空，等用户选'
+        },
+        tasks: {
+          type: 'array',
+          description: '任务列表。每个任务要有 id、title、prompt；dependsOn 写依赖的任务 id；acceptance 写可执行的验收',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              prompt: { type: 'string' },
+              dependsOn: { type: 'array', items: { type: 'string' } },
+              acceptance: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    kind: { type: 'string', enum: ['file-exists', 'min-bytes', 'contains', 'not-contains'] },
+                    path: { type: 'string' },
+                    bytes: { type: 'number' },
+                    text: { type: 'string' }
+                  },
+                  required: ['kind', 'path']
+                }
+              },
+              tools: { type: 'array', items: { type: 'string' } }
+            },
+            required: ['id', 'title', 'prompt']
+          }
+        }
+      },
+      required: ['name', 'tasks']
+    },
+    plan: async (args): Promise<ToolPlan> => {
+      if (!deps.delegate) return { ok: false, reason: '当前环境不支持派发（没有注入工作目录）' }
+      const tasks = parseProjectTasks(args.tasks)
+      if (tasks.length === 0) return { ok: false, reason: '没有给出可行的任务（每个任务都要有 id、标题、提示词）' }
+
+      const validation = validatePlan(tasks)
+      if (!validation.ok) {
+        return { ok: false, reason: `计划不合法：${validation.errors.map((e) => e.message).join('；')}` }
+      }
+
+      const preview = previewDispatch(tasks)
+      const options = dispatchOptions(preview)
+      const mode = String(args.mode ?? '').trim()
+
+      // 还没选、且真的有多档可选 → 弹候选卡。只有串行一种时不必问。
+      if (!mode && options.length > 1) {
+        return {
+          ok: false,
+          reason: `计划有 ${preview.total} 个任务、最宽一层 ${preview.maxWidth} 个，等用户在候选卡上选派发方式`,
+          choice: {
+            title: '这次怎么派？',
+            hint:
+              `共 ${preview.total} 个任务，按依赖分成 ${preview.layerWidths.length} 批（每批 ${preview.layerWidths.join(' / ')} 个）。` +
+              '并行更快，但同一时刻有多个工作体在跑，也就有多个进程在读你的材料。',
+            pickInto: 'mode',
+            options
+          }
+        }
+      }
+
+      const concurrency = Math.min(parseMode(mode), Math.max(1, preview.maxWidth))
+      return {
+        ok: true,
+        target: {
+          title: `派发项目：${String(args.name ?? '').trim() || '未命名项目'}`,
+          target: `${preview.total} 个任务 · ${concurrency === 1 ? '串行' : `并行 ${concurrency} 路`}`,
+          impact:
+            `会把各任务的提示词和它读到的文件内容交给本机之外的工作体；每个任务在各自的目录里写文件、可能执行命令，` +
+            `过程中不会回来问你。任务全部完成后按预先写好的检查逐条验收，不通过就如实报不通过。`,
+          undoHint: '拒绝就什么都不派出去'
+        },
+        execute: async () => {
+          const worker = workerConfigFrom(deps.delegate!.worker)
+          if (!worker) {
+            return {
+              ok: false,
+              summary:
+                '工作体没有配置：先在设置里填 provider 和 model（例如 eepseek / deepseek-v4-flash）。' +
+                '不填就会走 pi 的默认模型，那条路会 401，所以这里不猜默认值。'
+            }
+          }
+          const result = await runProject(
+            { name: String(args.name ?? '').trim() || '未命名项目', tasks, mode },
+            {
+              rootDir: deps.delegate!.rootDir,
+              worker,
+              mode,
+              onProgress: deps.delegate!.onProgress
+            }
+          )
+          const artifacts: string[] = []
+          for (const t of result.project.tasks) {
+            artifacts.push(...(await taskArtifacts(result.projectRoot, t)))
+          }
+          const lines = result.taskStates
+            .map((t) => `${t.status === 'done' ? '✓' : '✗'} ${t.title}（${t.status}）${t.reason ? `：${t.reason}` : ''}`)
+            .join('\n')
+          return {
+            ok: result.ok,
+            summary: `${result.summary}\n${lines}\n目录：${result.projectRoot}`,
+            data: { ...result, artifacts },
+            evidence: [
+              {
+                id: randomUUID().slice(0, 8),
+                type: 'local',
+                title: `派发项目：${String(args.name ?? '').trim() || '未命名项目'}`,
+                detail: `${result.concurrency === 1 ? '串行' : `并行 ${result.concurrency} 路`} · ${result.taskStates.length} 个任务 · 目录 ${result.projectRoot}`,
+                at: new Date().toISOString()
+              }
+            ]
+          }
+        }
+      }
+    },
+    run: async (): Promise<ToolResult> => {
+      return { ok: false, summary: 'run_project 必须先解析出计划（plan），直接 run 不会被放行' }
+    }
+  }
+
   const listApps: ToolDef = {
     name: 'list_installed_apps',
     label: '读取已安装程序清单',
@@ -1483,6 +1787,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     readFileTool,
     installAppTool,
     uninstallAppTool,
+    delegateTool,
+    runProjectTool,
     ...memoryTools
   ]
 }

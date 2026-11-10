@@ -1,0 +1,260 @@
+import { existsSync, readdirSync } from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import {
+  SAFE_TOKEN,
+  WorkerConfigError,
+  spawnCollect,
+  type WorkerBackend,
+  type WorkerRunOptions,
+  type WorkerRunResult,
+  type WorkerToolCall
+} from './types'
+
+/**
+ * codex 后端：`codex exec`，一次性跑完退出。
+ *
+ * 这是 OpenAI 那一边**唯一**可自动化的入口。ChatGPT 桌面版是纯 GUI，程序喂不进去；
+ * 能喂的是 codex CLI，而它已经装在这台机器上。
+ *
+ * 三个要点：
+ * 1. **可执行文件的路径会变。** 它装在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe`，
+ *    一升级哈希目录就换名。所以不能写死路径，每次去 bin 下找最新的那个。
+ * 2. **沙箱档位要压到最低档够用。** read-only 够读，workspace-write 够写；
+ *    永远不传 `danger-full-access`，更不传 `--dangerously-bypass-approvals-and-sandbox`。
+ * 3. **`item.type === 'error'` 不等于失败。** codex 把"配置里有不认识的字段"这种
+ *    警告也发成 error 项；把它当失败会把正常跑完的任务判成失败。
+ */
+
+export interface CodexOptions {
+  /** 显式指定可执行文件；空则自动去 AppData 下找 */
+  binPath?: string
+  /** 模型名。留空 = 用 codex 自己 config.toml 里的 */
+  model?: string
+  /** 允许写文件吗。true → workspace-write，false → read-only */
+  write: boolean
+  timeoutMs: number
+}
+
+/** 在 `%LOCALAPPDATA%\OpenAI\Codex\bin\*` 下找 codex.exe（哈希目录会随升级改名） */
+export function findCodexBin(): string | null {
+  const root = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin')
+  if (!existsSync(root)) return null
+  let dirs: string[]
+  try {
+    dirs = readdirSync(root)
+  } catch {
+    return null
+  }
+  const candidates: { file: string; mtime: number }[] = []
+  for (const d of dirs) {
+    const file = path.join(root, d, 'codex.exe')
+    if (existsSync(file)) {
+      try {
+        candidates.push({ file, mtime: require('node:fs').statSync(file).mtimeMs as number })
+      } catch {
+        /* 读不到时间就跳过 */
+      }
+    }
+  }
+  if (candidates.length === 0) return null
+  candidates.sort((a, b) => b.mtime - a.mtime)
+  return candidates[0].file
+}
+
+/**
+ * 构造参数。**提示词不在参数里**——它走 stdin（见 spawnCollect 的说明）：
+ * 带空格和中文的提示词在 Windows 过 shell 时会被 cmd.exe 拆碎。
+ */
+export function buildCodexArgs(o: CodexOptions): string[] {
+  if (o.model && !SAFE_TOKEN.test(o.model)) throw new WorkerConfigError(`model 含非法字符：${o.model}`)
+  const args = [
+    'exec',
+    // 编排目录不是 git 仓库，不跳过就会被 codex 拒绝
+    '--skip-git-repo-check',
+    // 沙箱只在这两档里选；危险档一律不碰
+    '-s', o.write ? 'workspace-write' : 'read-only',
+    '--ephemeral',
+    '--json',
+    '--color', 'never'
+  ]
+  if (o.model) args.push('-m', o.model)
+  return args
+}
+
+export class CodexBackend implements WorkerBackend {
+  readonly kind = 'codex' as const
+  constructor(private readonly opts: CodexOptions) {}
+
+  private bin(): string | null {
+    return this.opts.binPath?.trim() || findCodexBin()
+  }
+
+  async ready(): Promise<{ ok: boolean; reason?: string }> {
+    const bin = this.bin()
+    if (!bin) {
+      return {
+        ok: false,
+        reason:
+          '找不到 codex.exe（应在 %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<哈希>\\codex.exe）。' +
+          '没装就先装 Codex CLI；装在别处就在配置里填 binPath。'
+      }
+    }
+    return { ok: true }
+  }
+
+  async run(opts: WorkerRunOptions): Promise<WorkerRunResult> {
+    const bin = this.bin()
+    if (!bin) {
+      const r = await this.ready()
+      return { ok: false, text: '', toolCalls: [], exitCode: null, failureReason: r.reason }
+    }
+    let args: string[]
+    try {
+      args = buildCodexArgs(this.opts)
+    } catch (e) {
+      return { ok: false, text: '', toolCalls: [], exitCode: null, failureReason: String(e instanceof Error ? e.message : e) }
+    }
+
+    const res = await spawnCollect(bin, args, {
+      cwd: opts.workDir,
+      timeoutMs: this.opts.timeoutMs,
+      signal: opts.signal,
+      // 路径里可能有空格：不经过 shell，交给 spawn 自己处理参数边界
+      shell: false,
+      stdin: opts.prompt
+    })
+
+    if (res.timedOut) {
+      return {
+        ok: false,
+        text: '',
+        toolCalls: [],
+        exitCode: null,
+        failureReason: `超时 ${Math.round(this.opts.timeoutMs / 1000)} 秒未结束，已终止`
+      }
+    }
+    if (res.aborted) {
+      return { ok: false, text: '', toolCalls: [], exitCode: null, failureReason: '已取消（用户停止或应用退出）' }
+    }
+
+    const parsed = parseCodexJsonl(res.stdout)
+    if (res.code !== 0 && !parsed.text) {
+      return {
+        ok: false,
+        text: parsed.text,
+        toolCalls: parsed.toolCalls,
+        usage: parsed.usage,
+        exitCode: res.code,
+        failureReason: `codex 退出码 ${res.code}${parsed.hardError ? `：${parsed.hardError}` : ''}${lastLine(res.stderr)}`
+      }
+    }
+    if (parsed.hardError) {
+      return {
+        ok: false,
+        text: parsed.text,
+        toolCalls: parsed.toolCalls,
+        usage: parsed.usage,
+        exitCode: res.code,
+        failureReason: parsed.hardError
+      }
+    }
+    if (!parsed.text.trim()) {
+      return {
+        ok: false,
+        text: parsed.text,
+        toolCalls: parsed.toolCalls,
+        usage: parsed.usage,
+        exitCode: res.code,
+        failureReason: `codex 没有给出回答${lastLine(res.stderr)}`
+      }
+    }
+    return { ok: true, text: parsed.text, toolCalls: parsed.toolCalls, usage: parsed.usage, exitCode: res.code }
+  }
+}
+
+export interface CodexParse {
+  text: string
+  toolCalls: WorkerToolCall[]
+  usage?: Record<string, unknown>
+  /** 真正的错误（不是配置警告） */
+  hardError?: string
+}
+
+/**
+ * 解析 codex 的 JSONL 事件流。
+ *
+ * 认这几种：
+ * - `item.completed` + `item.type === 'agent_message'` → 最终回答（多条取最后一条）
+ * - `item.completed`/`item.started` + `command_execution` → 一次命令执行
+ * - `turn.completed` → 用量
+ * - `item.type === 'error'` → **默认当警告**。codex 会把配置里不认识的字段也发成
+ *   error 项；只有 message 明显是执行失败（含 "failed"/"error executing"）才算硬错。
+ */
+export function parseCodexJsonl(stdout: string): CodexParse {
+  const toolCalls: WorkerToolCall[] = []
+  let text = ''
+  let usage: Record<string, unknown> | undefined
+  let hardError: string | undefined
+
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim()
+    if (!line.startsWith('{')) continue
+    let rec: Record<string, unknown>
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const type = rec.type as string | undefined
+    if (type === 'item.completed' || type === 'item.started') {
+      const item = rec.item as Record<string, unknown> | undefined
+      const itemType = item?.type as string | undefined
+      if (itemType === 'agent_message') {
+        const said = String(item?.text ?? '').trim()
+        if (said) text = said
+        continue
+      }
+      if (itemType === 'command_execution') {
+        const cmd = String(item?.command ?? '')
+        const call: WorkerToolCall = { name: 'command_execution', args: cmd }
+        if (type === 'item.completed') {
+          call.ok = String(item?.status ?? 'completed') === 'completed'
+          toolCalls.push(call)
+        }
+        continue
+      }
+      if (itemType === 'file_change') {
+        toolCalls.push({ name: 'file_change', args: item?.path ?? item?.changes })
+        continue
+      }
+      if (itemType === 'error') {
+        const msg = String(item?.message ?? '').trim()
+        // 配置警告不是失败：真的执行失败时 codex 会给带 failed 的措辞
+        if (/failed|error executing|not found|unauthori[sz]ed|authentication/i.test(msg)) {
+          hardError = msg.slice(0, 300)
+        }
+        continue
+      }
+      if (itemType === 'reasoning' || itemType === 'todo_list' || itemType === 'web_search') continue
+      continue
+    }
+    if (type === 'turn.completed' && rec.usage) {
+      usage = rec.usage as Record<string, unknown>
+      continue
+    }
+    if (type === 'error' && typeof rec.message === 'string') {
+      const msg = rec.message
+      if (/failed|error executing|authentication/i.test(msg)) hardError = msg.slice(0, 300)
+    }
+  }
+
+  return { text, toolCalls, usage, hardError }
+}
+
+function lastLine(s: string): string {
+  const t = s.trim()
+  if (!t) return ''
+  const lines = t.split('\n')
+  return `：${lines[lines.length - 1].slice(0, 200)}`
+}

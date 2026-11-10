@@ -311,17 +311,23 @@ export async function executeThroughGate(
   }
 
   // ---- 写：先备份，备份不成就不写 ----
-  if (def.effect === 'write') {
+  // 唯一例外是 requiresConfirmation 的工具（委派给外部智能体）：它必须过卡，
+  // 不能因为"effect 是 write"就自动放行。放过这一条等于没人同意过就把活派出去了。
+  if (def.effect === 'write' && def.requiresConfirmation !== true) {
     return backupThenRun('auto')
   }
 
   // ---- 销毁 / 安装：必须过卡（改动机器且不可静默）----
+  // 用 def.effect 构造卡，所以 write 档的强制卡会如实显示成"写入"档，
+  // 不会伪装成删除或安装。
   const key = rememberKey(def.name, target.target)
   let answer: AuthAnswer
   let authz: AuthzDecision
 
-  // 「始终允许」只对明确允许记忆的工具生效：销毁类即使被写进记忆也必须每次弹卡
-  if (def.allowAlways === true && hooks.isRemembered(key)) {
+  // 「始终允许」只对明确允许记忆的工具生效：销毁类即使被写进记忆也必须每次弹卡。
+  // requiresConfirmation 的工具同样永不允许"始终允许"。
+  const memorizable = def.allowAlways === true && def.requiresConfirmation !== true
+  if (memorizable && hooks.isRemembered(key)) {
     answer = 'always'
     authz = 'user_always'
   } else {
@@ -336,7 +342,7 @@ export async function executeThroughGate(
       reinstallHint: target.reinstallHint,
       paramsPreview: JSON.stringify(args ?? {}).slice(0, 300),
       requestedAt: new Date().toISOString(),
-      allowAlways: def.allowAlways === true
+      allowAlways: memorizable
     }
     answer = normalizeAnswer(await hooks.requestAuth(request))
     if (answer === 'deny') {
@@ -344,7 +350,7 @@ export async function executeThroughGate(
     } else if (answer === 'expired') {
       // 60 秒没响应：等同拒绝，但审计里单独标出来，和用户主动拒绝区分
       authz = 'expired'
-    } else if (answer === 'always' && def.allowAlways === true) {
+    } else if (answer === 'always' && memorizable) {
       hooks.remember(key, request)
       authz = 'user_always'
     } else {

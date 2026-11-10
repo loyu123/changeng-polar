@@ -84,6 +84,30 @@ export interface ButlerConfig extends ModelConfig {
   desktop?: DesktopPrefs
   /** 桌面悬浮助手（球与面板），缺省按 DEFAULT_ORB_PREFS */
   orb?: OrbPrefs
+  /**
+   * 委派工作体（pi）用哪个模型。
+   *
+   * 为什么单独一份、且没有默认值：pi 自己的默认模型解析到 anthropic，
+   * 没配 Key 直接 401。所以宁可什么都不配、让委派工具明确报"没配置"，
+   * 也不要偷偷拿一个默认值去跑。换 Key / 换模型只改这里。
+   */
+  worker?: {
+    /**
+     * 用哪个工作体后端：
+     * - `pi`（默认）常驻 RPC，走局域网网关，不花钱
+     * - `codex` OpenAI 的命令行入口（ChatGPT 桌面版没有 CLI）
+     * - `codebuddy` WorkBuddy 内置 CLI，需要先登录
+     * - `claude` Claude Code，按订阅计费，默认不选
+     */
+    backend?: 'pi' | 'codex' | 'codebuddy' | 'claude'
+    /** pi 必填；其他后端可留空，用它们自己的配置 */
+    provider?: string
+    model?: string
+    /** 显式指定可执行文件/脚本路径；留空用各后端自己的查找逻辑 */
+    binPath?: string
+    /** 单次委派超时（秒），缺省 300 */
+    timeoutSec?: number
+  }
 }
 
 /**

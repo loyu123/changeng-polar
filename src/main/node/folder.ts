@@ -130,6 +130,7 @@ export function validateFolderPath(target: string): FolderReject | { ok: true; p
 
 let indexCache: { at: number; items: FolderCandidate[] } | null = null
 let indexRootsOverride: IndexRoot[] | null = null
+let desktopRootsOverride: string[] | null = null
 
 /** 测试用：把缓存丢掉，让下一次查询重扫 */
 export function resetFolderCache(): void {
@@ -144,6 +145,18 @@ export function resetFolderCache(): void {
  */
 export function setFolderIndexRoots(roots: IndexRoot[] | null): void {
   indexRootsOverride = roots
+  indexCache = null
+}
+
+/**
+ * 测试用：把「桌面」限定成指定目录（传 null 恢复真实桌面）。
+ *
+ * 为什么需要这个口子：单元测试跑在开发者的真机桌面上。开发者桌面上今天多了一个
+ * 叫 KCareOne演示视频 的目录，同名前缀的用例就从 3 个候选变成 4 个、红了一片——
+ * 测试跟着机器上有什么而变，那它证明不了任何东西。
+ */
+export function setFolderDesktopRoots(roots: string[] | null): void {
+  desktopRootsOverride = roots
   indexCache = null
 }
 
@@ -260,9 +273,11 @@ function quickCandidates(): FolderCandidate[] {
   }
 
   // 桌面上的文件夹：用户说的「应用软件」就是桌面上那个目录
-  const desktopRoots = [process.env.PUBLIC ? path.join(process.env.PUBLIC, 'Desktop') : '', path.join(home, 'Desktop')].filter(
-    Boolean
-  )
+  const desktopRoots =
+    desktopRootsOverride ??
+    [process.env.PUBLIC ? path.join(process.env.PUBLIC, 'Desktop') : '', path.join(home, 'Desktop')].filter(
+      Boolean
+    )
   for (const root of desktopRoots) {
     let entries: Dirent[]
     try {

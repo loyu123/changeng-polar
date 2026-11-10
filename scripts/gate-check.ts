@@ -11,7 +11,7 @@ import { listInstalledApps } from '../src/main/node/registry'
 import { planUninstall } from '../src/main/node/uninstall'
 import { findOpenWindow, normalizeAppName } from '../src/main/node/running'
 import { isLaunchableShortcut, isLaunchableUrl } from '../src/main/node/launch'
-import { listFolderCandidates, matchFolder, planFolder, resetFolderCache, scanFolderIndex, setFolderIndexRoots } from '../src/main/node/folder'
+import { listFolderCandidates, matchFolder, planFolder, resetFolderCache, scanFolderIndex, setFolderDesktopRoots, setFolderIndexRoots } from '../src/main/node/folder'
 import { resetFileIndex, scanFileIndex, setFileIndexRoots } from '../src/main/node/file'
 import type { AuthAnswer, RecordEntry } from '../src/shared/types'
 
@@ -477,6 +477,8 @@ async function main(): Promise<void> {
       const names = ['KCareOne-ALL', 'KCareOne-MAIN', 'KCareOne-SQL']
       for (const name of names) mkdirSync(path.join(fakeRoot, name))
       setFolderIndexRoots([{ dir: fakeRoot, depth: 3 }])
+      // 桌面也换成空的：真桌面上多一个同名目录，候选数就会变成 4，这条断言也就失去意义
+      setFolderDesktopRoots([])
       resetFolderCache()
 
       let opened = ''
@@ -542,6 +544,7 @@ async function main(): Promise<void> {
       }
     } finally {
       setFolderIndexRoots(null)
+      setFolderDesktopRoots(null)
       resetFolderCache()
       rmSync(fakeRoot, { recursive: true, force: true })
     }

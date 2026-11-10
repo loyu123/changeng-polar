@@ -14,6 +14,12 @@
     "verify-probe": "tsx scripts/verify-probe.ts",
     "a4-baseline": "tsx scripts/a4-baseline.ts",
     "gate": "tsx scripts/gate-check.ts",
+    "orchestrate": "tsx scripts/orchestrator-demo.ts",
+    "orchestrate:parallel": "tsx scripts/orchestrator-parallel.ts",
+    "delegate": "tsx scripts/delegate-smoke.ts",
+    "project": "tsx scripts/project-smoke.ts",
+    "backends": "tsx scripts/backends-check.ts",
+    "backends:work": "tsx scripts/backends-work.ts",
     "mock": "node scripts/mock-llm.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -57,8 +63,18 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "changgeng-polar-${version}-${arch}.${ext}"
     },
@@ -74,4 +90,3 @@
     }
   }
 }
-
