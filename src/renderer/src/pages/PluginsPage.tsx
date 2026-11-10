@@ -158,7 +158,7 @@ export default function PluginsPage() {
               {!loading && filtered.length === 0 && <div className="empty">没有匹配的能力</div>}
 
               {!loading && (
-                <div className="grid2">
+                <div className="capgrid">
                   {filtered.map((tool) => {
                     const perm = permOf(tool.effect)
                     return (

@@ -168,44 +168,25 @@ export default function AppsPage({ active, onAsk }: Props) {
       </aside>
 
       <main className="content">
-        <div className="stats" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-          <div className="card stat">
-            <div className="stat-k">
-              <span className="sq" style={{ background: '#C9C9C9' }} />
-              已安装
-            </div>
-            <div className="stat-v">{apps.length}</div>
-            <div className="stat-s">含系统组件 {apps.filter((a) => a.systemComponent === 1).length} 个</div>
-          </div>
-          <div className="card stat">
-            <div className="stat-k">
-              <span className="sq" style={{ background: '#2E9E4F' }} />
-              已查证
-            </div>
-            <div className="stat-v">
-              {verifiedCount}
-              <small> / {apps.length ? Math.round((verifiedCount / apps.length) * 100) : 0}%</small>
-            </div>
-            <div className="stat-s">说明来自官网或官方文档</div>
-          </div>
-          <div className="card stat">
-            <div className="stat-k">
-              <span className="sq" style={{ background: '#B4B4B4' }} />
-              未查证
-            </div>
-            <div className="stat-v">{apps.length - verifiedCount}</div>
-            <div className="stat-s">其中 {unverifiedChecked} 个已尝试但无官方出处</div>
-          </div>
-          <div className="card stat">
-            <div className="stat-k">
-              <span className="sq" style={{ background: '#0067C0' }} />
-              MCP
-            </div>
-            <div className="stat-v" style={{ color: '#8A8A8A' }}>
-              暂缓
-            </div>
-            <div className="stat-s">未连接任何 server；入口保留作为接口</div>
-          </div>
+        {/* 指标条：原来 4 张大卡（24px 大数字 + 两行小字）占掉整个上半屏，
+            把真正要看的东西（程序清单）挤到下面。收成一行。 */}
+        <div className="ledger-bar">
+          <span className="lb-k">已安装</span>
+          <span className="lb-v">{apps.length}</span>
+          <span className="lb-s">含系统组件 {apps.filter((a) => a.systemComponent === 1).length}</span>
+          <span className="lb-sep" />
+          <span className="lb-k">已查证</span>
+          <span className="lb-v">
+            {verifiedCount}
+            <small>/{apps.length ? Math.round((verifiedCount / apps.length) * 100) : 0}%</small>
+          </span>
+          <span className="lb-s">官网或官方文档</span>
+          <span className="lb-sep" />
+          <span className="lb-k">未查证</span>
+          <span className="lb-v">{apps.length - verifiedCount}</span>
+          <span className="lb-s">{unverifiedChecked} 个查过但无出处</span>
+          <span className="lb-sp" />
+          <span className="lb-chip">MCP 暂缓</span>
         </div>
 
         {!selectedApp ? (

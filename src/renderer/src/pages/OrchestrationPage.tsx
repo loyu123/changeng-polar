@@ -169,7 +169,7 @@ export default function OrchestrationPage(): React.JSX.Element {
       </aside>
 
       <main className="content" style={{ padding: 0 }}>
-        <div className="acc-wrap">
+        <div className="cap-wrap">
           {error && (
             <div className="card" style={{ maxWidth: 760 }}>
               <b>读不到编排记录</b>
@@ -182,9 +182,9 @@ export default function OrchestrationPage(): React.JSX.Element {
               <b>选一个项目看进度</b>
             </div>
           ) : (
-            <div className="card" style={{ maxWidth: 860 }}>
+            <div className="card orch-card">
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-                <h3 style={{ margin: 0 }}>{current.name}</h3>
+                <h3 className="orch-title">{current.name}</h3>
                 <span className={`tag ${statusOf(current.status).cls}`}>{current.status}</span>
                 <span className="sub" style={{ marginLeft: 'auto' }}>
                   派发 {current.runCount} 次 · 最后 {timeText(current.lastRunAt)}
@@ -243,13 +243,13 @@ export default function OrchestrationPage(): React.JSX.Element {
                 const rc = recheckOf(t.id)
                 const expanded = openTask === t.id
                 return (
-                  <div key={t.id} className="card" style={{ marginTop: 8, padding: '10px 12px' }}>
+                  <div key={t.id} className="card orch-task">
                     <div
                       style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flexWrap: 'wrap' }}
                       onClick={() => setOpenTask(expanded ? null : t.id)}
                     >
                       <span className={`tag ${s.cls}`}>{s.text}</span>
-                      <b style={{ fontSize: 13 }}>{t.title}</b>
+                      <b className="orch-task-t">{t.title}</b>
                       <span className="sub">{t.id}</span>
                       {t.dependsOn.length > 0 && <span className="sub">依赖 {t.dependsOn.join('、')}</span>}
                       {t.attempts > 1 && <span className="sub warn">已重跑 {t.attempts} 次</span>}
@@ -271,7 +271,7 @@ export default function OrchestrationPage(): React.JSX.Element {
                           {t.acceptance.length === 0 ? (
                             <div className="sub">没有验收项：只能按状态判断，等于它说做完就算完</div>
                           ) : (
-                            <ul style={{ margin: '4px 0 0 18px', fontSize: 13 }}>
+                            <ul className="orch-list">
                               {t.acceptance.map((a, i) => (
                                 <li key={i}>{a}</li>
                               ))}
@@ -284,7 +284,7 @@ export default function OrchestrationPage(): React.JSX.Element {
                           {t.artifacts.length === 0 ? (
                             <div className="sub">没有产出文件</div>
                           ) : (
-                            <ul style={{ margin: '4px 0 0 18px', fontSize: 13 }}>
+                            <ul className="orch-list">
                               {t.artifacts.map((p) => (
                                 <li key={p}>
                                   <a
@@ -306,7 +306,7 @@ export default function OrchestrationPage(): React.JSX.Element {
                         {rc && (
                           <div>
                             <div className="sub">刚刚核对的结果</div>
-                            <div style={{ fontSize: 13 }}>{rc.detail}</div>
+                            <div className="orch-detail">{rc.detail}</div>
                           </div>
                         )}
 
