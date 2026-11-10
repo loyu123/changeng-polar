@@ -42,6 +42,28 @@ WORKER_BACKEND=codex npm run project     # 同一份计划，换 codex 跑
 
 配置在设置页「模型 → 工作体」，或 `ButlerConfig.worker`（config.json）。
 
+### codex 为什么现在用不了：网关的 Responses 转换有问题（2026-11-10 实测）
+
+codex 这个版本 `wire_api` **只认 `responses`**（写 `chat` 直接报 unknown variant），
+而 `192.168.8.174:18300` 那个网关是 LiteLLM，它把 Responses 请求转成 chat completions
+再发上游，这一步会出错。同一个网关、同一个 codex，两个模型两种错法：
+
+```
+deepseek-v4-flash  →  Tool names must be unique            （工具定义被重复发了一遍）
+Qwen3.8-Flash      →  System message must be at the beginning （消息顺序被转错）
+```
+
+试过但都不管用的：关掉全部 10 个 plugin、`include_apply_patch_tool=false`、
+`tools.web_search=false`、换 `model_reasoning_effort`。**这不是配置能绕过的，也不是 codex 的锅。**
+
+`explainGatewayError()` 会把这类报错翻成人话，免得用户以为是 Key 填错或代码坏了。
+
+要真正用上 codex，只有三条路：
+1. 升级/换掉那个网关的 Responses 实现
+2. 把 codex 指向一个原生支持 Responses 协议的服务（**注意：DeepSeek 官方 API 只有
+   chat completions，直连也不行**）
+3. 不用 codex——pi / codebuddy / claude 三条都已经能用
+
 ### codebuddy 有两个，登录态不共用（2026-11-10 实测）
 
 | 是什么 | 位置 | 状态 |

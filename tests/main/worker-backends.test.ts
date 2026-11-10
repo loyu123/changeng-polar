@@ -5,7 +5,7 @@ import {
   parseCodebuddyOutput,
   resolveCodebuddyInvocation
 } from '../../src/main/orchestrator/backends/codebuddy'
-import { buildCodexArgs, parseCodexJsonl } from '../../src/main/orchestrator/backends/codex'
+import { buildCodexArgs, explainGatewayError, parseCodexJsonl } from '../../src/main/orchestrator/backends/codex'
 import { buildPiArgs } from '../../src/main/orchestrator/backends/pi'
 import { ALL_BACKENDS, BACKEND_INFO, assertWorkerConfig, createBackend } from '../../src/main/orchestrator/worker'
 
@@ -72,6 +72,32 @@ describe('codex 后端', () => {
       item: { type: 'error', message: 'authentication failed: invalid api key' }
     })
     expect(parseCodexJsonl(stdout).hardError).toMatch(/authentication/i)
+  })
+
+  it('网关的 Responses 转换错误被翻译成人话，而不是甩几千字原文', () => {
+    const raw =
+      'litellm.BadRequestError: DeepseekException - {"error":{"message":"Tool names must be unique. (request_id: x)"}}'
+    const msg = explainGatewayError(raw)
+    expect(msg).toMatch(/工具定义重复/)
+    expect(msg).toMatch(/LiteLLM/)
+  })
+
+  it('系统消息顺序被网关转错也能识别', () => {
+    expect(explainGatewayError('litellm.BadRequestError: System message must be at the beginning')).toMatch(
+      /消息顺序/
+    )
+  })
+
+  it('非网关错误不冒充成网关问题', () => {
+    expect(explainGatewayError('some unrelated failure')).toBeUndefined()
+  })
+
+  it('turn.failed 里的网关错误也要被翻译', () => {
+    const stdout = JSON.stringify({
+      type: 'turn.failed',
+      error: { message: 'litellm.BadRequestError: Tool names must be unique' }
+    })
+    expect(parseCodexJsonl(stdout).hardError).toMatch(/工具定义重复/)
   })
 
   it('命令执行会被数成工具调用', () => {

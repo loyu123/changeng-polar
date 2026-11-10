@@ -82,6 +82,39 @@ export function buildCodexArgs(o: CodexOptions): string[] {
   return args
 }
 
+/**
+ * 把网关层的报错翻译成人话。
+ *
+ * codex 只支持 Responses 协议（实测：`wire_api` 只认 `responses`，写 chat 直接报
+ * unknown variant）。而很多网关（LiteLLM 就是）的 Responses 实现是把请求转成
+ * chat completions 再发出去，这一步会出各种错——实测两个模型两种错法：
+ * - deepseek-v4-flash → `Tool names must be unique`（工具定义被重复了一遍）
+ * - Qwen3.8-Flash     → `Unexpected reasoning effort high`、`System message must be at the beginning`
+ *
+ * 这些都不是配置能绕过的，也不是 codex 的锅。所以直接把人话说清楚，
+ * 别让用户以为是 key 填错了、或者我们的代码坏了。
+ */
+export function explainGatewayError(raw: string): string | undefined {
+  if (!/litellm/i.test(raw)) return undefined
+  if (/Tool names must be unique/i.test(raw)) {
+    return (
+      '网关的 Responses 接口把工具定义重复发给了上游模型，被模型拒收（Tool names must be unique）。' +
+      '这是 LiteLLM 那层把 Responses 转成 chat completions 时的转换问题，改 codex 参数绕不过去。' +
+      '要么升级/换掉那个网关，要么把 codex 指向一个原生支持 Responses 协议的服务。'
+    )
+  }
+  if (/System message must be at the beginning/i.test(raw)) {
+    return (
+      '网关把消息顺序转错了（System message must be at the beginning），' +
+      '同样是 LiteLLM 的 Responses 转换问题。'
+    )
+  }
+  if (/Unexpected reasoning effort/i.test(raw)) {
+    return '网关不支持 codex 发过去的推理档位（Unexpected reasoning effort），属于 Responses 转换层的问题。'
+  }
+  return `网关返回了错误（LiteLLM 层）：${raw.slice(0, 200)}`
+}
+
 export class CodexBackend implements WorkerBackend {
   readonly kind = 'codex' as const
   constructor(private readonly opts: CodexOptions) {}
@@ -245,7 +278,17 @@ export function parseCodexJsonl(stdout: string): CodexParse {
     }
     if (type === 'error' && typeof rec.message === 'string') {
       const msg = rec.message
-      if (/failed|error executing|authentication/i.test(msg)) hardError = msg.slice(0, 300)
+      // 网关层的错优先翻译成人话：这类错的原文几千字，直接抛给用户没意义
+      const explained = explainGatewayError(msg)
+      if (explained) hardError = explained
+      else if (/failed|error executing|authentication/i.test(msg)) hardError = msg.slice(0, 300)
+    }
+    if (type === 'turn.failed') {
+      const err = rec.error as { message?: string } | undefined
+      const msg = err?.message ?? ''
+      const explained = explainGatewayError(msg)
+      if (explained) hardError = explained
+      else if (msg) hardError = msg.slice(0, 300)
     }
   }
 
