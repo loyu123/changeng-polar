@@ -5,10 +5,11 @@ import AccountsPage from './pages/AccountsPage'
 import TasksPage from './pages/TasksPage'
 import PluginsPage from './pages/PluginsPage'
 import ProjectsPage from './pages/ProjectsPage'
+import OrchestrationPage from './pages/OrchestrationPage'
 import OverviewPage from './pages/OverviewPage'
 import { GlobalSearch } from './components/GlobalSearch'
 
-export type Route = 'chat' | 'tasks' | 'overview' | 'plugins' | 'accounts' | 'projects' | 'settings'
+export type Route = 'chat' | 'tasks' | 'overview' | 'plugins' | 'accounts' | 'projects' | 'orchestration' | 'settings'
 
 interface AppInfo {
   machineName: string
@@ -84,6 +85,15 @@ const ICONS: Record<Route, ReactNode> = {
       <path {...IC} d="M4.8 19.4c.6-3.4 3.6-5.4 7.2-5.4s6.6 2 7.2 5.4" />
     </svg>
   ),
+  orchestration: (
+    <svg viewBox="0 0 24 24">
+      {/* 一根主干分三支：长庚做总线派活 */}
+      <circle {...IC} cx="5.6" cy="12" r="2.1" />
+      <circle {...IC} cx="18.4" cy="6.4" r="2.1" />
+      <circle {...IC} cx="18.4" cy="17.6" r="2.1" />
+      <path {...IC} d="M7.7 12h2.6c1.1 0 1.6-.6 1.6-1.6V8.4c0-1.1.6-1.6 1.6-1.6h2.8M7.7 12h2.6c1.1 0 1.6.6 1.6 1.6v2c0 1.1.6 1.6 1.6 1.6h2.8" />
+    </svg>
+  ),
   settings: (
     <svg viewBox="0 0 24 24">
       <path
@@ -100,6 +110,7 @@ const RAIL: Array<{ key: Route; label: string }> = [
   { key: 'chat', label: '对话' },
   { key: 'overview', label: '总览' },
   { key: 'projects', label: '项目' },
+  { key: 'orchestration', label: '编排' },
   { key: 'tasks', label: '定时任务' },
   { key: 'plugins', label: '能力与插件' },
   { key: 'accounts', label: '账号管理' }
@@ -347,6 +358,9 @@ export default function App() {
                 setRoute('chat')
               }}
             />
+          </div>
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'orchestration' ? 'flex' : 'none' }}>
+            <OrchestrationPage />
           </div>
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: route === 'settings' ? 'flex' : 'none' }}>
             <SettingsPage

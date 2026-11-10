@@ -1,10 +1,12 @@
 import os from 'node:os'
+import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { shell } from 'electron'
+import { app, shell } from 'electron'
 import type {
   AuthAnswer,
   AuthRequest,
+  ButlerConfig,
   ChatMessage,
   ChatPayload,
   TaskDef,
@@ -198,7 +200,7 @@ export class TurnRuntime {
    * 模型连申请的机会都没有。能力段由注册表生成，所以提示词里那句
    * 「当前版本没有能改动机器的工具」也会自动成立，不需要另写一份。
    */
-  private toolsFor(toggles: Record<string, boolean>, readOnly: boolean): ToolDef[] {
+  private toolsFor(toggles: Record<string, boolean>, readOnly: boolean, worker: ButlerConfig['worker'] = {}): ToolDef[] {
     const { store } = this.opts
     const all = createTools({
       openSettings: this.opts.openSettings,
@@ -240,6 +242,16 @@ export class TurnRuntime {
           if (!out[entry.installedName]) out[entry.installedName] = entry.ts
         }
         return out
+      },
+      /**
+       * 委派的工作目录：放在 userData 下，不落在任何代码仓库里。
+       *
+       * 用户正在用 Claude Code 改这个仓库；委派出去的任务如果动同一个目录，
+       * 会和他手上的活互相覆盖。所以每次委派都是独立目录（见 orchestrator/delegate.ts）。
+       */
+      delegate: {
+        rootDir: path.join(app.getPath('userData'), 'orchestrator'),
+        worker: worker ?? {}
       }
     })
     return filterTools(all, { toggles, readOnly })
@@ -307,7 +319,7 @@ export class TurnRuntime {
     const { requestId, messages, controller, emit, uiAuth } = params
     const config = await this.opts.store.getConfig()
     // 能力开关（插件页）+ 只读模式（权限与安全）：两者都决定本轮有哪些工具
-    const tools = this.toolsFor(config.toolToggles ?? {}, config.readOnly === true)
+    const tools = this.toolsFor(config.toolToggles ?? {}, config.readOnly === true, config.worker)
 
     // 跨会话记忆：每轮都读一次，用户刚删掉的东西不该还出现在提示词里
     let memory = ''

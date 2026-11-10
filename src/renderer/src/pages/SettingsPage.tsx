@@ -555,6 +555,63 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 </button>
               )}
             </div>
+
+            <div className="form-row" style={{ marginTop: 14 }}>
+              <label>工作体（派活给谁）</label>
+              <div className="hint" style={{ marginBottom: 8 }}>
+                长庚可以把活派给外部智能体去做。各家能不能用，取决于装没装、登没登录：
+                <br />
+                <b>pi</b> 常驻 RPC，走局域网网关，不花钱，<b>必须填 provider 和 model</b>；
+                <br />
+                <b>codex</b> 是 OpenAI 的命令行入口（ChatGPT 桌面版没有 CLI），沙箱只到 workspace-write；
+                <br />
+                <b>codebuddy</b> 是 WorkBuddy 内置 CLI，<b>要先在那个 CLI 里登录一次</b>；
+                <br />
+                <b>claude</b> 是 Claude Code，<b>按订阅计费</b>（一次极短问答约 $0.07），默认不选。
+              </div>
+              <div className="grid2">
+                <div>
+                  <div className="hint" style={{ marginBottom: 4 }}>后端</div>
+                  <select
+                    className="input"
+                    value={config.worker?.backend ?? 'pi'}
+                    onChange={(e) =>
+                      update({ worker: { ...config.worker, backend: e.target.value as NonNullable<ButlerConfig['worker']>['backend'] } })
+                    }
+                  >
+                    <option value="pi">pi（默认，免费）</option>
+                    <option value="codex">codex</option>
+                    <option value="codebuddy">codebuddy（需登录）</option>
+                    <option value="claude">claude（按订阅计费）</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="hint" style={{ marginBottom: 4 }}>模型</div>
+                  <input
+                    className="input"
+                    placeholder={(config.worker?.backend ?? 'pi') === 'pi' ? '必填，如 deepseek-v4-flash' : '留空用该后端自己的配置'}
+                    value={config.worker?.model ?? ''}
+                    onChange={(e) => update({ worker: { ...config.worker, model: e.target.value } })}
+                  />
+                </div>
+              </div>
+              {(config.worker?.backend ?? 'pi') === 'pi' && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="hint" style={{ marginBottom: 4 }}>
+                    provider（pi 必填；pi 里的名字是 <code>eepseek</code>，少一个 d）
+                  </div>
+                  <input
+                    className="input"
+                    placeholder="eepseek"
+                    value={config.worker?.provider ?? ''}
+                    onChange={(e) => update({ worker: { ...config.worker, provider: e.target.value } })}
+                  />
+                </div>
+              )}
+              <div className="hint" style={{ marginTop: 8 }}>
+                换 Key、换模型都只改这一处，代码不用动。pi 自己的 API Key 在它自己的 auth 里，长庚不碰。
+              </div>
+            </div>
           </div>
         </div>
       )

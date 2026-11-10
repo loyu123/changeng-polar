@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createTools } from '../../src/main/agent/tools'
 import { executeThroughGate } from '../../src/main/agent/gate'
-import { setFolderIndexRoots, resetFolderCache } from '../../src/main/node/folder'
+import { setFolderIndexRoots, setFolderDesktopRoots, resetFolderCache } from '../../src/main/node/folder'
 import type { ToolContext } from '../../src/main/agent/tool-types'
 
 /**
@@ -23,6 +23,8 @@ function fakeDrive(names: string[]): string {
   sandboxes.push(root)
   for (const name of names) mkdirSync(path.join(root, name), { recursive: true })
   setFolderIndexRoots([{ dir: root, depth: 3 }])
+  // 把「桌面」也换成假的：真桌面今天多一个同名目录，用例就会莫名其妙多出一个候选
+  setFolderDesktopRoots([])
   resetFolderCache()
   return root
 }
@@ -30,6 +32,7 @@ function fakeDrive(names: string[]): string {
 afterEach(() => {
   for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true })
   setFolderIndexRoots(null)
+  setFolderDesktopRoots(null)
   resetFolderCache()
   vi.restoreAllMocks()
 })

@@ -192,6 +192,20 @@ const api = {
       }>
   },
 
+  /**
+   * 编排项目（派给外部工作体跑的那些）。
+   *
+   * 只读：这一页回答"现在到哪了、过没过"，不提供改状态的入口。
+   * 想改就回对话里重新派一次——那样每次改动都有授权卡和审计记录。
+   */
+  orchestration: {
+    list: () => ipcRenderer.invoke('orchestration:list'),
+    /** 重新核对全部验收（不改状态，只把磁盘上的事实再查一遍） */
+    recheck: (dirKey: string) => ipcRenderer.invoke('orchestration:recheck', dirKey),
+    /** 在资源管理器里定位产出文件 */
+    reveal: (filePath: string) => ipcRenderer.invoke('orchestration:reveal', filePath) as Promise<boolean>
+  },
+
   /** 会话：存 userData/sessions.json，可长期回看（之前只在 localStorage 留 20 条） */
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list') as Promise<ChatSession[]>,
