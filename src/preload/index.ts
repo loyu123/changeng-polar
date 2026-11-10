@@ -48,6 +48,20 @@ const api = {
       }>
   },
 
+  /** 桌面应用：只列桌面上实际显示的那些（和应用台账的注册表清单是两件事） */
+  desktopApps: {
+    list: () => ipcRenderer.invoke('desktop-apps:list'),
+    target: (lnkPath: string) => ipcRenderer.invoke('desktop-apps:target', lnkPath) as Promise<string | undefined>,
+    /** 开始盯桌面变化，有变动推 desktop-apps:changed */
+    watch: () => ipcRenderer.invoke('desktop-apps:watch') as Promise<boolean>,
+    unwatch: () => ipcRenderer.invoke('desktop-apps:unwatch') as Promise<boolean>,
+    onChanged: (handler: () => void) => {
+      const listener = (): void => handler()
+      ipcRenderer.on('desktop-apps:changed', listener)
+      return () => ipcRenderer.removeListener('desktop-apps:changed', listener)
+    }
+  },
+
   apps: {
     list: () =>
       ipcRenderer.invoke('apps:list') as Promise<{

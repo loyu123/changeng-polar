@@ -38,6 +38,8 @@ export default function PluginsPage() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('caps')
   const [query, setQuery] = useState('')
+  /** 左栏那一片能力清单默认收起：21 条文本铺满侧栏，挤得看不出重点 */
+  const [listOpen, setListOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -94,22 +96,33 @@ export default function PluginsPage() {
           <span className="tm">{tools.length}</span>
         </button>
 
-        <div className="seclabel">
+        <button
+          className="seclabel seclabel-btn"
+          onClick={() => setListOpen((v) => !v)}
+          title={listOpen ? '收起清单' : '展开清单'}
+          aria-expanded={listOpen}
+        >
+          <span className={`fold${listOpen ? ' open' : ''}`} aria-hidden>
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+              <path d="M4 2.5 8 6l-4 3.5" />
+            </svg>
+          </span>
           已安装<span className="cnt">{tools.length}</span>
-        </div>
-        {tools.map((tool) => (
-          <button
-            key={tool.name}
-            className="item"
-            onClick={() => {
-              setTab('caps')
-              setQuery(tool.label)
-            }}
-          >
-            <span className="t">{tool.label}</span>
-            <span className="tm">{tool.enabled ? '已启用' : '未启用'}</span>
-          </button>
-        ))}
+        </button>
+        {listOpen &&
+          tools.map((tool) => (
+            <button
+              key={tool.name}
+              className="item"
+              onClick={() => {
+                setTab('caps')
+                setQuery(tool.label)
+              }}
+            >
+              <span className="t">{tool.label}</span>
+              <span className="tm">{tool.enabled ? '已启用' : '未启用'}</span>
+            </button>
+          ))}
       </aside>
 
       <main className="content" style={{ padding: 0 }}>
