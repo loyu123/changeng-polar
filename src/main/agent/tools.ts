@@ -554,11 +554,16 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       }
 
       const concurrency = Math.min(parseMode(mode), Math.max(1, preview.maxWidth))
+      // target 里必须带上候选卡的原始选择值（K7）：闸门会检查"卡片上写的目标"
+      // 里含不含用户点的那个 value。写成纯人话（"3 个任务 · 串行"）就不含 `serial`，
+      // 于是每次选串行都被判成"解析结果与选择不一致"而拒绝——真机踩过。
+      const modeLabel = concurrency === 1 ? '串行' : `并行 ${concurrency} 路`
+      const rawMode = mode.trim() || (concurrency === 1 ? 'serial' : `parallel:${concurrency}`)
       return {
         ok: true,
         target: {
           title: `派发项目：${String(args.name ?? '').trim() || '未命名项目'}`,
-          target: `${preview.total} 个任务 · ${concurrency === 1 ? '串行' : `并行 ${concurrency} 路`}`,
+          target: `${preview.total} 个任务 · ${modeLabel}（${rawMode}）`,
           impact:
             `会把各任务的提示词和它读到的文件内容交给本机之外的工作体；每个任务在各自的目录里写文件、可能执行命令，` +
             `过程中不会回来问你。任务全部完成后按预先写好的检查逐条验收，不通过就如实报不通过。`,
