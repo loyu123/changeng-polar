@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { buildClaudeArgs, parseClaudeOutput } from '../../src/main/orchestrator/backends/claude'
-import { buildCodebuddyArgs, parseCodebuddyOutput } from '../../src/main/orchestrator/backends/codebuddy'
+import {
+  buildCodebuddyArgs,
+  parseCodebuddyOutput,
+  resolveCodebuddyInvocation
+} from '../../src/main/orchestrator/backends/codebuddy'
 import { buildCodexArgs, parseCodexJsonl } from '../../src/main/orchestrator/backends/codex'
 import { buildPiArgs } from '../../src/main/orchestrator/backends/pi'
 import { ALL_BACKENDS, BACKEND_INFO, assertWorkerConfig, createBackend } from '../../src/main/orchestrator/worker'
@@ -117,8 +121,20 @@ describe('claude 后端', () => {
 
 describe('codebuddy 后端', () => {
   it('提示词不进参数，且工具清单用逗号连成一个参数', () => {
-    const args = buildCodebuddyArgs({ tools: ['Read', 'Write'], timeoutMs: 1 })
-    expect(args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Write'])
+    const args = buildCodebuddyArgs({ tools: ['Read'], timeoutMs: 1 })
+    expect(args.slice(0, 5)).toEqual(['-p', '--output-format', 'json', '--tools', 'Read'])
+  })
+
+  it('给了写工具才加 acceptEdits（非交互下不写这个，Write 会被权限拦住）', () => {
+    expect(buildCodebuddyArgs({ tools: ['Read'], timeoutMs: 1 })).not.toContain('--permission-mode')
+    const withWrite = buildCodebuddyArgs({ tools: ['Read', 'Write'], timeoutMs: 1 })
+    expect(withWrite).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits']))
+  })
+
+  it('用 acceptEdits 而不是 bypassPermissions：只放行文件编辑，不放行危险命令', () => {
+    const args = buildCodebuddyArgs({ tools: ['Read', 'Write'], timeoutMs: 1 }).join(' ')
+    expect(args).not.toContain('bypassPermissions')
+    expect(args).not.toContain('dangerously-skip-permissions')
   })
 
   it('工具清单为空时用哨兵名，不用空串（空串会被 shell 吃掉）', () => {
@@ -126,6 +142,17 @@ describe('codebuddy 后端', () => {
     const idx = args.indexOf('--tools')
     expect(args[idx + 1]).toBe('__polar_no_tools__')
     expect(args[idx + 1]).not.toBe('')
+  })
+
+  it('默认走独立版 codebuddy 命令；binPath 指向 .mjs 时才过 node', () => {
+    expect(resolveCodebuddyInvocation({ tools: [], timeoutMs: 1 })).toEqual({
+      bin: 'codebuddy',
+      args: expect.any(Array),
+      bundled: false
+    })
+    expect(
+      resolveCodebuddyInvocation({ binPath: 'D:/WorkBuddy/cli/dist/codebuddy-lite-wb.mjs', tools: [], timeoutMs: 1 })
+    ).toEqual({ bin: 'node', args: expect.any(Array), bundled: true })
   })
 
   it('能解析数组形状（实测就是数组，之前只认对象就漏了）', () => {

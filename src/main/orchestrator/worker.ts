@@ -55,7 +55,7 @@ export const BACKEND_INFO: Record<WorkerBackendKind, { label: string; note: stri
   },
   codebuddy: {
     label: 'codebuddy',
-    note: 'WorkBuddy 内置的 CLI。需要先登录一次才能非交互使用。'
+    note: '独立版 codebuddy 命令（需先登录）。机器上另有一个 WorkBuddy 内置的 .mjs，登录态不共用。'
   },
   claude: {
     label: 'claude',
@@ -91,7 +91,7 @@ export function createBackend(config: WorkerConfig): WorkerBackend {
       })
     case 'codebuddy':
       return new CodebuddyBackend({
-        scriptPath: config.binPath,
+        binPath: config.binPath,
         tools: config.tools,
         timeoutMs: timeoutOf(config)
       })

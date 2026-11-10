@@ -21,7 +21,7 @@
 |---|---|---|---|
 | **pi** | `pi --mode rpc` | ✅ 回话 1.1s / 干活 4.1s | **必须填 provider + model**（默认会落到 anthropic，401）；provider 名是 `eepseek`，少一个 d |
 | **codex** | `codex exec` | ✅ 回话 2.4s / 干活 12.5s | 可执行文件在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\`，升级会改目录名，**不能写死路径** |
-| **codebuddy** | `WorkBuddy/.../codebuddy-lite-wb.mjs` | ⚠️ 未登录 | 要先在那个 CLI 里 `/login` 一次；未登录时它返回**退出码 0 + 空结果**，必须显式识别 |
+| **codebuddy** | 独立版 `codebuddy` 命令 | ✅ 回话 5.5s / 干活 12.1s / 编排 4/4 | 这台机器上有**两个** codebuddy，登录态不共用（见下）；写文件要 `--permission-mode acceptEdits` |
 | **claude** | `claude -p` | ✅ 回话 3.7s / 干活 5.1s | **按订阅计费**（一次极短问答 $0.009~0.08）；默认不选 |
 
 **ChatGPT 桌面版接不了**：它是纯 GUI，没有命令行入口，程序喂不进提示词。
@@ -41,6 +41,21 @@ WORKER_BACKEND=codex npm run project     # 同一份计划，换 codex 跑
 ```
 
 配置在设置页「模型 → 工作体」，或 `ButlerConfig.worker`（config.json）。
+
+### codebuddy 有两个，登录态不共用（2026-11-10 实测）
+
+| 是什么 | 位置 | 状态 |
+|---|---|---|
+| 独立 npm 包 `codebuddy` v2.182+ | PATH 上 | ✅ **用它**，登录态独立可用 |
+| WorkBuddy 内置 CLI | `D:\WorkBuddy\...\codebuddy-lite-wb.mjs` | ❌ 即使独立版已登录，它仍报 `Authentication required` |
+
+后端默认走独立版；`binPath` 指向 `.mjs` 时才切到内置版（那样会过 `node` 跑）。
+
+另外**非交互模式下写文件会被权限拦住**：实测它确实调了 `Write`，然后回一句
+"Write 工具被拒绝…请用 -y 或 --permission-mode bypassPermissions"。
+这里用 `acceptEdits`——**只自动放行文件编辑，不放行危险命令**，比
+`bypassPermissions` 窄得多，更不碰 `--dangerously-skip-permissions`。
+只给了 write 工具时才加这个档，纯只读任务不加。
 
 ### 四个踩过的坑（改后端代码前必看）
 

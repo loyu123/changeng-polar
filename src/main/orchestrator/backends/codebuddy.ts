@@ -4,52 +4,92 @@ import os from 'node:os'
 import { spawnCollect, type WorkerBackend, type WorkerRunOptions, type WorkerRunResult, type WorkerToolCall } from './types'
 
 /**
- * codebuddy 后端：WorkBuddy 内置的那套 CLI（`codebuddy-lite-wb.mjs`）。
+ * codebuddy 后端。
  *
- * 形态是"起 node 跑一个 .mjs 脚本 → 提示词进 → 文本出 → 退出"，一次性。
+ * **这台机器上有两个不同的 codebuddy，登录态不共用**（2026-11-10 实测）：
+ * 1. 独立的 npm 全局包 `codebuddy`（v2.182+）——能非交互跑，**默认用这个**
+ * 2. WorkBuddy 内置的 `codebuddy-lite-wb.mjs`——同一个包装的另一套，
+ *    在独立版已登录的情况下它仍然报 `Authentication required`
  *
- * 一个实测坑：**没登录时会返回成功退出码加一行提示**——
- * `Authentication required. Please use /login command to sign in to your account`。
- * 退出码是 0，所以光看退出码会当成"跑完了但没说话"。这里显式识别这句话并判失败。
+ * 所以默认优先级是：`codebuddy` 命令 → 内置 `.mjs` 兜底。
+ * 两个都不是就能明确报"没装"，而不是猜。
  *
- * 永不传 `-y/--dangerously-skip-permissions`；限权走 `--tools` 白名单。
+ * 另外两个实测坑：
+ * - **`--tools` 是变参**，会吞掉后面的位置参数，所以提示词走 stdin。
+ * - **未登录时返回退出码 0 + 空 result**，光看退出码会当成"跑完了没说话"。
  */
 
 export interface CodebuddyOptions {
-  /** 默认去找 WorkBuddy 里那个内置 CLI */
-  scriptPath?: string
-  /** 允许用的工具，逗号分隔；空数组 = 全部禁用 */
+  /** 显式指定可执行文件或脚本；空则按 codebuddy → 内置 mjs 的顺序找 */
+  binPath?: string
+  /** 允许用的工具，逗号分隔；空数组 = 一个都不给 */
   tools: string[]
   timeoutMs: number
 }
 
-const DEFAULT_CANDIDATES = [
+/** 内置 CLI 的常见位置（独立版命令不在这里，靠 PATH 找） */
+const BUNDLED_CANDIDATES = [
   'D:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\dist\\codebuddy-lite-wb.mjs',
-  path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'dist', 'codebuddy-lite-wb.mjs')
+  path.join(
+    os.homedir(),
+    'AppData',
+    'Local',
+    'Programs',
+    'WorkBuddy',
+    'resources',
+    'app.asar.unpacked',
+    'cli',
+    'dist',
+    'codebuddy-lite-wb.mjs'
+  )
 ]
 
-export function findCodebuddyScript(): string | null {
-  for (const p of DEFAULT_CANDIDATES) {
+export function findBundledCodebuddy(): string | null {
+  for (const p of BUNDLED_CANDIDATES) {
     if (existsSync(p)) return p
   }
   return null
 }
 
+/** 一个要执行的命令：独立版直接调，内置版要过 node */
+export interface CodebuddyInvocation {
+  bin: string
+  args: string[]
+  /** 是不是内置 .mjs（决定要不要过 node、要不要过 shell） */
+  bundled: boolean
+}
+
+export function resolveCodebuddyInvocation(o: CodebuddyOptions): CodebuddyInvocation | null {
+  const explicit = o.binPath?.trim()
+  if (explicit) {
+    const bundled = explicit.toLowerCase().endsWith('.mjs')
+    return { bin: bundled ? 'node' : explicit, args: buildCodebuddyArgs(o), bundled }
+  }
+  // 独立版优先：它在 PATH 上，登录态独立可用
+  return { bin: 'codebuddy', args: buildCodebuddyArgs(o), bundled: false }
+}
+
 /**
  * 构造参数。
  *
- * 两个实测坑：
- * 1. **`--tools` 是变参**，后面紧跟的位置参数会被它吞掉。原本写成
- *    `-p --output-format json --tools '' "提示词"`，提示词被当成工具名吃了，
+ * 三个实测坑：
+ * 1. **`--tools` 是变参**，后面紧跟的位置参数会被它吞掉。
+ *    原本写成 `-p --output-format json --tools '' "提示词"`，提示词被当成工具名吃了，
  *    codebuddy 在"没有提示词"的状态下跑完，返回一个 `result: ""` 的成功结果——
- *    看起来像"跑完了但没说话"。所以提示词必须紧跟 `-p`，选项全部放后面。
- * 2. **空参数在 shell 下会消失**（Windows 上面要过 shell）。`--tools ""` 里的空字符串
- *    传不到对方，只剩一个孤零零的 `--tools`。工具清单为空时改用一个不存在的工具名，
- *    效果同样是"一个工具都不给"，而且不会被 shell 吃掉。
+ *    看起来像"跑完了但没说话"。所以提示词走 stdin。
+ * 2. **空参数在 shell 下会消失**（Windows 上要过 shell）。`--tools ""` 里的空字符串
+ *    传不到对方，只剩一个孤零零的 `--tools`。工具清单为空时改用一个不存在的工具名。
+ * 3. **非交互模式下写文件会被权限拦住。** 实测它确实调了 Write，然后回一句
+ *    "Write 工具被拒绝…请用 -y 或 --permission-mode bypassPermissions"。
+ *    这里用 `acceptEdits`：**只自动放行文件编辑，不放行危险命令**，
+ *    比 `bypassPermissions` 窄得多，更不碰 `--dangerously-skip-permissions`。
+ *    只给了 write 工具时才加这个档；纯只读任务不加，多一分限制都不放松。
  */
 export function buildCodebuddyArgs(o: CodebuddyOptions): string[] {
   const tools = o.tools.length > 0 ? o.tools.join(',') : NO_TOOLS_SENTINEL
-  return ['-p', '--output-format', 'json', '--tools', tools]
+  const args = ['-p', '--output-format', 'json', '--tools', tools]
+  if (o.tools.some((t) => /^(write|edit)$/i.test(t))) args.push('--permission-mode', 'acceptEdits')
+  return args
 }
 
 /** 一个永远不会存在的工具名：等价于"不给任何工具"，且不会被 shell 吞掉 */
@@ -62,31 +102,28 @@ export class CodebuddyBackend implements WorkerBackend {
   readonly kind = 'codebuddy' as const
   constructor(private readonly opts: CodebuddyOptions) {}
 
-  private script(): string | null {
-    return this.opts.scriptPath?.trim() || findCodebuddyScript()
-  }
-
   async ready(): Promise<{ ok: boolean; reason?: string }> {
-    if (!this.script()) {
+    const inv = resolveCodebuddyInvocation(this.opts)
+    if (!inv) {
       return {
         ok: false,
         reason:
-          '找不到 codebuddy-lite-wb.mjs。它随 WorkBuddy 安装，默认在 ' +
-          'D:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\dist\\。装在别处就在配置里填 scriptPath。'
+          '找不到 codebuddy。需要一个能非交互跑的命令：' +
+          '`npm i -g codebuddy` 装独立版（需先登录），或在配置里填 binPath 指向 WorkBuddy 内置的 .mjs。'
       }
     }
     return { ok: true }
   }
 
   async run(opts: WorkerRunOptions): Promise<WorkerRunResult> {
-    const script = this.script()
-    if (!script) {
+    const inv = resolveCodebuddyInvocation(this.opts)
+    if (!inv) {
       const r = await this.ready()
       return { ok: false, text: '', toolCalls: [], exitCode: null, failureReason: r.reason }
     }
 
-    // 用 node 跑脚本；node 走 PATH
-    const res = await spawnCollect('node', [script, ...buildCodebuddyArgs(this.opts)], {
+    const args = inv.bundled ? [this.opts.binPath!.trim(), ...inv.args] : inv.args
+    const res = await spawnCollect(inv.bin, args, {
       cwd: opts.workDir,
       timeoutMs: this.opts.timeoutMs,
       signal: opts.signal,
@@ -102,8 +139,9 @@ export class CodebuddyBackend implements WorkerBackend {
         toolCalls: [],
         exitCode: res.code,
         failureReason:
-          'codebuddy 没有登录：这个 CLI 需要先登录一次才能非交互使用。' +
-          '在终端里跑一次 `node "' + script + '" ` 进交互界面，用 /login 登录后再派发。'
+          `codebuddy 没有登录（用的是 ${inv.bundled ? 'WorkBuddy 内置 CLI' : '独立版 codebuddy'}）。` +
+          '注意这台机器上有两个 codebuddy，登录态不共用：独立版在终端跑一次 `codebuddy` 然后 /login；' +
+          '内置版则要 `node <那个 .mjs>` 再 /login。'
       }
     }
     if (res.timedOut) {
