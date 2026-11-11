@@ -177,7 +177,7 @@ src/
       budget.ts            请求前的上下文预算：system 不裁、成对保留 tool_calls、单条截断
       llm.ts               OpenAI 兼容客户端（流式 / 非流式 / SSE 兼容）
       prompt.ts            系统提示词：H1–H4 的行为化表述；能力段由注册表生成
-      tools.ts             17 个工具（见下「边界」一节的完整清单与约束）
+      tools.ts             23 个工具（见下「边界」一节的完整清单与约束）
       tool-types.ts        工具定义、ToolPlan、ToolResult 的类型
     ipc/                   IPC 按领域拆：app / chat / config / work / orb
     node/

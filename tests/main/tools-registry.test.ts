@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { TOOL_BUDGET_STEPS } from '../../src/main/agent/agent'
 import { buildSystemPrompt } from '../../src/main/agent/prompt'
@@ -99,6 +101,53 @@ describe('工具定义完整性', () => {
       expect(result.ok, tool.name).toBe(false)
     }
   })
+})
+
+describe('README 的边界说明与注册表一致', () => {
+  const root = path.resolve(__dirname, '../..')
+  const tools = createTools()
+  const readme = (file: string): string =>
+    readFileSync(path.join(root, file), 'utf8').replace(/\r\n?/g, '\n')
+
+  /**
+   * 为什么值得一条测试：README 是这套东西对外的全部承诺，而它里面**写着数字**。
+   * 真实发生过：README 的项目结构里写「tools.ts 17 个工具」、边界一节写 23 个，
+   * 设置页的「技术说明」写「主进程注册 10 个工具」外加一句「写入真实文件没有任何
+   * 通路」——而那时 `write_document` 早就在往真实文档目录写了。讲边界的段落写错
+   * 比不写更糟：读者会照着它去信任或去怀疑，两者都是错的。
+   *
+   * 设置页那段现在是**算出来的**（从 `tools:list` 取，见 SettingsPage 的 toolsStat），
+   * 结构上不会再腐。README 是静态文本，只能靠这条测试拦住。
+   */
+  for (const file of ['README.md', 'README.zh.md']) {
+    it(`${file}：每处「N 个工具 / N tools」都等于注册表的真实数量`, () => {
+      const text = readme(file)
+      const claims = [...text.matchAll(/(\d+)\s*(?:个工具|tools)/g)].map((m) => Number(m[1]))
+      expect(claims.length, '一处都没找到，说明正则或文案变了，别让这条静悄悄地失效').toBeGreaterThan(0)
+      for (const n of claims) expect(n, `${file} 写了 ${n} 个工具`).toBe(tools.length)
+    })
+
+    it(`${file}：分档表里每一档的工具名单与注册表一致`, () => {
+      const text = readme(file)
+      const byEffect = new Map<string, Set<string>>()
+      for (const tool of tools) {
+        const set = byEffect.get(tool.effect) ?? new Set<string>()
+        set.add(tool.name)
+        byEffect.set(tool.effect, set)
+      }
+
+      const rows = [...text.matchAll(/^\|\s*`(read|ui|write|install|destroy)`[^|]*\|([^|]*)\|/gm)]
+      expect(rows.length, `${file} 里没找到分档表`).toBe(5)
+
+      for (const row of rows) {
+        const effect = row[1]
+        const listed = new Set([...row[2].matchAll(/`([a-z][a-z_]+)`/g)].map((m) => m[1]))
+        const actual = byEffect.get(effect) ?? new Set<string>()
+        // 用排序后的数组比：集合相等时失败信息里能直接看出多了谁少了谁
+        expect([...listed].sort(), `${file} 的 ${effect} 档`).toEqual([...actual].sort())
+      }
+    })
+  }
 })
 
 /**

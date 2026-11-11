@@ -154,7 +154,7 @@ src/
       budget.ts            pre-request context budget: system uncut, tool_calls kept in pairs, per-item truncation
       llm.ts               OpenAI-compatible client (streaming / non-streaming / SSE compatible)
       prompt.ts            system prompt: behavioral phrasing of H1–H4; the capability section is generated from the registry
-      tools.ts             17 tools (full list and per-tool constraints under "Boundaries")
+      tools.ts             23 tools (full list and per-tool constraints under "Boundaries")
       tool-types.ts        tool definition, ToolPlan, ToolResult types
     ipc/                   IPC split by domain: app / chat / config / work / orb
     node/

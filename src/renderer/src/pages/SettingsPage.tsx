@@ -106,8 +106,20 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const [storageStats, setStorageStats] = useState<{ dir: string; files: Array<{ file: string; bytes: number }> } | null>(null)
   /** 操作记录条数（权限与安全里的「查看记录 N」） */
   const [recordCount, setRecordCount] = useState(0)
-  /** 能力概况（设置 › 插件与能力） */
-  const [toolsStat, setToolsStat] = useState<{ total: number; on: number; names: string[] }>({ total: 0, on: 0, names: [] })
+  /**
+   * 能力概况（设置 › 插件与能力）。
+   *
+   * byEffect 是「权限与安全 › 技术说明」里那几个数字的来源。**不写死**：
+   * 之前那段文案写着「主进程注册 10 个工具」，实际已经 23 个，还写着
+   * 「写入真实文件没有任何通路」——而 write_document 正是在往真实文档目录写。
+   * 讲边界的那段话写错了，比不写更糟，所以数字一律从这份清单算出来。
+   */
+  const [toolsStat, setToolsStat] = useState<{
+    total: number
+    on: number
+    names: string[]
+    byEffect: Record<string, number>
+  }>({ total: 0, on: 0, names: [], byEffect: {} })
   /** 密钥是否加密落盘：保存后的提示文案要跟事实一致 */
   const [secretsEncrypted, setSecretsEncrypted] = useState(false)
   /** 只读模式：立即生效，不走「保存」按钮（它不属于可保存分区） */
@@ -130,7 +142,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
       setToolsStat({
         total: list.length,
         on: list.filter((t) => t.enabled).length,
-        names: list.filter((t) => t.enabled).map((t) => t.label)
+        names: list.filter((t) => t.enabled).map((t) => t.label),
+        byEffect: list.reduce<Record<string, number>>((acc, t) => {
+          acc[t.effect] = (acc[t.effect] ?? 0) + 1
+          return acc
+        }, {})
       })
     )
     void window.butler.desktop.state().then(setDesktop)
@@ -856,7 +872,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
               <div className="rl">
                 <b>只读模式</b>
                 <FieldHelp label="只读模式">
-                打开后，安装、卸载、删除、写入记忆这类会改动机器的工具<b>不会出现在工具清单里</b>——
+                打开后，安装、卸载、删除、写文件、写记忆这类会改动机器的工具<b>不会出现在工具清单里</b>——
                   模型连申请的机会都没有，定时任务也一样。关掉即恢复，仍然逐次弹授权卡。
                 </FieldHelp>
               </div>
@@ -877,9 +893,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <b>
                   完整访问<em className="tag-gold">未实现</em>
                 </b>
-                <span>允许读写任意文件、执行命令。这一版没有这条通路，开关不假装能打开。</span>
+                <span>
+                  执行任意命令、写任意路径。这一版没有这条通路——写只能进产出目录，删只能在沙箱。
+                </span>
               </div>
-              <span className="sw fixed" title="未实现：本版没有读写任意文件的工具">
+              <span className="sw fixed" title="未实现：没有执行任意命令、写任意路径的工具">
                 <i />
               </span>
             </div>
@@ -919,9 +937,14 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="row">
               <div className="rl">
                 <b>可写范围</b>
-                <span>只有演示沙箱里的文件能删；真实文件没有任何写入通路。</span>
+                <FieldHelp label="可写范围到底有多大">
+                  两条，都不由模型定：<br />
+                  · <b>删</b>：只有演示沙箱（<code>%TEMP%\butler-sandbox</code>）里的文件，走回收站可还原<br />
+                  · <b>写</b>：只有 <code>write_document</code> 往「文档\长庚产出」新建文件——落点写死在代码里，
+                  同名不覆盖，也<b>不能改或删已有文件</b>
+                </FieldHelp>
               </div>
-              <span className="cval">{readOnly ? '无（只读模式）' : '仅演示沙箱'}</span>
+              <span className="cval">{readOnly ? '无（只读模式）' : '沙箱删除 + 产出目录新建'}</span>
             </div>
           </div>
 
@@ -951,8 +974,26 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
           <details className="techfold">
             <summary>技术说明（代码层边界）</summary>
             <ul style={{ paddingLeft: 16, fontSize: 12, color: '#5A5A54', lineHeight: 1.8, paddingBottom: 12 }}>
-              <li>主进程注册 10 个工具：6 个只读/纯 UI（含邮箱只读）、2 个仅作用于演示沙箱、2 个真实系统操作（安装/卸载，均需授权卡）</li>
-              <li>删除/写入真实文件没有任何通路；安装/卸载是仅有的真实系统写入，每次都要授权</li>
+              {toolsStat.total > 0 ? (
+                <li>
+                  主进程按效果分档注册 {toolsStat.total} 个工具：只读 {toolsStat.byEffect.read ?? 0}、纯界面{' '}
+                  {toolsStat.byEffect.ui ?? 0}、写 {toolsStat.byEffect.write ?? 0}、安装{' '}
+                  {toolsStat.byEffect.install ?? 0}、销毁 {toolsStat.byEffect.destroy ?? 0}。
+                  数字取自当前注册的清单，不写死。
+                </li>
+              ) : (
+                <li>正在读取工具清单…</li>
+              )}
+              <li>
+                只读 / 纯界面自动放行并留痕；写类里声明了备份的先备份再执行，备份失败就不执行；安装与销毁每次都弹卡，
+                「始终允许」只对安装开放。
+              </li>
+              <li>
+                <b>能写进真实文件夹的只有一条路</b>：<code>write_document</code> 只能落在「文档\长庚产出」，
+                落点由代码写死、模型指定不了；只写文本类后缀，同名文件不覆盖（换个名字）。
+                能读的是你在对话里点名的任意路径文件（只读）；执行任意命令、写任意路径仍然没有通路。
+              </li>
+              <li>删除只作用于演示沙箱 <code>%TEMP%\butler-sandbox</code>，走系统回收站可还原；沙箱之外的删除没有任何通路。</li>
               <li>卸载只启动程序自己的卸载程序，不静默、不删安装目录</li>
               <li>邮箱以 IMAP 只读打开：不标记已读、不删信、不发信</li>
               <li>渲染层只能通过白名单通道调用，无 node 能力</li>
