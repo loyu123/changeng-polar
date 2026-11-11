@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { AppInfo, AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit } from '../../shared/types'
 import { diffStartupNames, listInstalledApps, listStartupItems, type StartupDiff } from '../node/registry'
@@ -30,10 +31,10 @@ import {
   type FileRead
 } from '../node/file'
 import { fetchPage, searchWeb } from '../node/web'
-import { MEMORY_MAX_TEXT, mergeMemory, removeMemory } from '../node/memory'
+import { MEMORY_MAX_TEXT, mergeMemory, removeMemory, sameMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
 import { runDelegation, workerConfigFrom } from '../orchestrator/delegate'
-import { assertUploadableFile, ghReady, searchRepos, uploadFile } from '../node/github'
+import { assertUploadableFile, ghReady, searchRepos, uploadFile, verifyRemoteFile } from '../node/github'
 import { dispatchOptions, parseMode, previewDispatch, runProject, taskArtifacts } from '../orchestrator/project'
 import { validatePlan } from '../orchestrator/plan'
 import type { AcceptanceCheck, OrchestrationTask } from '../orchestrator/types'
@@ -436,6 +437,16 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       return {
         ok: result.ok,
         summary: `${result.summary}${result.artifactPaths.length > 0 ? `。产出：${result.artifactPaths.join(' | ')}` : ''}`,
+        /**
+         * 事实来自验收，不是工作体自己那句"做完了"：会跑的检查通过了才算过。
+         * 验收清单为空时（只取回答）没有可核对的东西，那就按结果如实说。
+         */
+        verify: {
+          state: result.ok ? 'confirmed' : 'mismatch',
+          fact: result.ok
+            ? `验收过了：${result.taskStatus} · 产出 ${result.artifactPaths.length} 个文件 · 回答 ${result.outputChars} 字节`
+            : `验收没过：${result.taskStatus}${result.failureReason ? ` · ${result.failureReason}` : ''}`
+        },
         data: result,
         evidence: [
           {
@@ -591,9 +602,18 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           const lines = result.taskStates
             .map((t) => `${t.status === 'done' ? '✓' : '✗'} ${t.title}（${t.status}）${t.reason ? `：${t.reason}` : ''}`)
             .join('\n')
+          const done = result.taskStates.filter((t) => t.status === 'done').length
+          const failed = result.taskStates.filter((t) => t.status !== 'done').map((t) => t.title)
           return {
             ok: result.ok,
             summary: `${result.summary}\n${lines}\n目录：${result.projectRoot}`,
+            // 事实是逐条验收的计数，不是"跑完了"这件事本身
+            verify: {
+              state: result.ok ? 'confirmed' : 'mismatch',
+              fact: `${done}/${result.taskStates.length} 个任务的验收通过${
+                failed.length > 0 ? `；没过的：${failed.join('、')}` : ''
+              }`
+            },
             data: { ...result, artifacts },
             evidence: [
               {
@@ -746,6 +766,34 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         evidence: result.url
           ? [{ id: 'gh', type: 'web' as const, title: `上传到 ${repo}`, url: result.url, at: new Date().toISOString() }]
           : undefined
+      }
+    },
+    /**
+     * 事后核对：回读远端那个路径，比对 git blob sha。
+     *
+     * 这一条尤其不能省：上传是**删不掉**的写。gh 报成功、实际上没上去
+     * （分支名写错、仓库只读、企业策略拦了）都实际发生过，而用户看到的
+     * 是一句"已上传"，转身去找文件找不到。
+     */
+    verify: async (args) => {
+      const repo = String(args.repo ?? '').trim()
+      const remotePath = String(args.remotePath ?? '').trim().replace(/^\/+/, '')
+      const file = String(args.file ?? '').trim()
+      const branch = String(args.branch ?? '').trim() || undefined
+      const checked = await verifyRemoteFile({ repo, remotePath, branch, file })
+      if (!checked.ok) {
+        // 回读失败不等于没传上去（网络、限流都会这样），所以不当成 mismatch
+        return { state: 'unavailable', fact: `回读远端失败，无法确认：${checked.reason ?? '原因未知'}` }
+      }
+      if (checked.sha && checked.localSha && checked.sha === checked.localSha) {
+        return {
+          state: 'confirmed',
+          fact: `回读了 ${repo}/${remotePath}：远端那份的 sha 与本地文件算出的一致（${checked.size ?? 0} 字节）`
+        }
+      }
+      return {
+        state: 'mismatch',
+        fact: `回读了 ${repo}/${remotePath}：远端 sha ${checked.sha ?? '（空）'} 与本地算出的 ${checked.localSha ?? '（空）'} 不一致，那一份不是这次要传的文件`
       }
     }
   }
@@ -1038,6 +1086,22 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         target: String(args.path ?? ''),
         impact: '从演示沙箱移到系统回收站；可以从回收站还原，但不会留在原处',
         undoHint: '回收站还原'
+      }
+    },
+    /**
+     * 事后核对：自己再去 stat 一次那个路径。
+     *
+     * 回收站的 PowerShell 脚本会回报"成功"，可它回报的是它自己那一步的结果；
+     * 文件到底还在不在，只能由另一次读取来回答。**还在原处**就按 mismatch 报
+     * （脚本说删了、文件说没有），不替它圆。
+     */
+    verify: async (args) => {
+      const target = String(args.path ?? '').trim()
+      try {
+        await fs.lstat(target)
+        return { state: 'mismatch', fact: `重新查了一次：「${path.basename(target)}」还在原处` }
+      } catch {
+        return { state: 'confirmed', fact: `重新查了一次：原路径上已经没有「${path.basename(target)}」` }
       }
     },
     run: async (args): Promise<ToolResult> => {
@@ -1674,6 +1738,14 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
             summary: `${headline}。${verified.note}`,
             undo: '安装不可撤回（卸载可再找管家）',
             sourceUrl: outcome.sourceUrl,
+            /**
+             * 核对结果直接填上，不让闸门再跑一遍：装完核对需要装之前抓的自启项基准线，
+             * 事后补不了。填的是同一次核对（三条事实）的结论，格式与其它工具统一。
+             */
+            verify: {
+              state: verified.confirmed ? 'confirmed' : 'mismatch',
+              fact: verified.note
+            },
             // 只登记核实到的显示名：没核实到就不往台账上写"管家装的"
             installedName: verified.confirmed ? verified.displayName : undefined,
             data: {
@@ -1781,6 +1853,15 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
             summary: `已启动「${entry.name}」自己的卸载程序（${exeName}）。卸载要等那个窗口里的确认，我无法确认你有没有点完；点完后回「记录」页点「卸载对比」，或直接问我「卸干净了没」。重装入口：${reinstallHint}`,
             undo: '不可撤回',
             snapshotId: snapshot?.id,
+            /**
+             * 这一类就是"当场查不到"：卸载的主体是用户在那个窗口里点确认，
+             * 我们拉起它之后就交出去了。所以如实标 unavailable，而不是
+             * 立刻去读一次注册表、把"还没点完"报成"没卸掉"。
+             */
+            verify: {
+              state: 'unavailable',
+              fact: `卸载要等你在它自己的窗口里点完，这一刻查不出结果；点完再问我「卸干净了没」，我拿卸载前的快照对比注册表项、安装目录和开机自启项`
+            },
             data: {
               name: entry.name,
               version: entry.version,
@@ -1857,6 +1938,27 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           return { ok: false, detail: err instanceof Error ? err.message : String(err) }
         }
       },
+      /**
+       * 事后核对：重新读一遍记忆清单，看这条在不在。
+       *
+       * 记忆的"写成功"是最不该靠回执宣布的一种——写盘失败被吞掉、或者列表被
+       * 别的地方覆盖，用户下次对话才发现"它没记住"。所以这里按文本重新找一遍。
+       */
+      verify: async (args) => {
+        if (!deps.memory) return { state: 'unavailable', fact: '这个环境读不了记忆清单' }
+        const text = String(args.text ?? '').trim()
+        try {
+          const list = await deps.memory.list()
+          // 用与去重同一个判据：落盘时文本会被规整（空白压缩、截断），
+          // 拿原文全等去比，模型换了个换行就会误报"没记住"
+          const found = list.some((item) => sameMemory(item.text, text))
+          return found
+            ? { state: 'confirmed', fact: `重新读了一遍记忆清单（共 ${list.length} 条）：这条在里面` }
+            : { state: 'mismatch', fact: `重新读了一遍记忆清单（共 ${list.length} 条）：没找到这条` }
+        } catch (err) {
+          return { state: 'unavailable', fact: `重新读记忆清单失败：${err instanceof Error ? err.message : String(err)}` }
+        }
+      },
       run: async (args): Promise<ToolResult> => {
         if (!deps.memory) return { ok: false, summary: '当前环境不能保存记忆' }
         const list = await deps.memory.list()
@@ -1912,6 +2014,24 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           return { ok: true, undo: `备份了 ${list.length} 条记忆` }
         } catch (err) {
           return { ok: false, detail: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      /**
+       * 事后核对：重新读清单，确认这条真的不在了。
+       *
+       * 和 save_memory 反过来查：删成功的证据是"找不到"，不是"回执说删了"。
+       */
+      verify: async (args) => {
+        if (!deps.memory) return { state: 'unavailable', fact: '这个环境读不了记忆清单' }
+        const ref = String(args.ref ?? '').trim()
+        try {
+          const list = await deps.memory.list()
+          const still = list.some((item) => item.id === ref || sameMemory(item.text, ref))
+          return still
+            ? { state: 'mismatch', fact: `重新读了一遍记忆清单（共 ${list.length} 条）：这条还在` }
+            : { state: 'confirmed', fact: `重新读了一遍记忆清单（共 ${list.length} 条）：这条已经不在了` }
+        } catch (err) {
+          return { state: 'unavailable', fact: `重新读记忆清单失败：${err instanceof Error ? err.message : String(err)}` }
         }
       },
       run: async (args): Promise<ToolResult> => {

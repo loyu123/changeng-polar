@@ -38,6 +38,7 @@ import type { AuthAnswer, RecordEntry } from '../src/shared/types'
  *  17. allowAlways 命中：记忆里有 key 时免弹卡直接执行（authz=user_always）；无记忆照常弹卡
  *  18. 授权记忆能持久化、重启后还在、且能撤销
  *  19. 候选卡：选完重新解析再弹授权卡；取消/无选择能力时不安装也不猜
+ *  20. 写操作事后核对：删完自己再查一次；结论进审计；演练模式不核对
  */
 
 const ctx: ToolContext = {
@@ -146,6 +147,18 @@ async function main(): Promise<void> {
     `authz=${once.records[0]?.authz} undo=${once.records[0]?.undo}`
   )
 
+  // ---- 3b 事后核对：删完之后必须自己再查一次，而不是复述回执 ----
+  check(
+    '删除后的事后核对是重新查过的',
+    onceResult.verify?.state === 'confirmed' && /已经没有/.test(onceResult.verify?.fact ?? ''),
+    `verify=${onceResult.verify?.state} · ${onceResult.verify?.fact ?? '（没有核对）'}`
+  )
+  check(
+    '核对结论进审计（能回答「那次到底查没查」）',
+    once.records[0]?.verified === 'confirmed' && Boolean(once.records[0]?.verifyFact),
+    `verified=${once.records[0]?.verified} fact=${once.records[0]?.verifyFact ?? '（空）'}`
+  )
+
   // ---- 4 销毁类不给「始终允许」（用演练模式，避免测试动作本身破坏演示文件） ----
   const keep = path.join(SANDBOX_ROOT, '月度报销单-2026-10.txt')
   const alwaysAsked = makeGate('always')
@@ -163,6 +176,12 @@ async function main(): Promise<void> {
     '演练模式不真执行',
     dryResult.ok === true && existsSync(keep) && dry.records[0]?.result === 'ok',
     `ok=${dryResult.ok} 文件仍在=${existsSync(keep)} 留痕=${dry.records[0]?.result}`
+  )
+
+  check(
+    '演练模式不做核对（什么都没执行，没有可核对的）',
+    dryResult.verify === undefined,
+    `verify=${dryResult.verify?.state ?? '（无）'}`
   )
 
   // ---- 6 只读工具自动放行 ----

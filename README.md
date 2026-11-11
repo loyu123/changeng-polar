@@ -22,7 +22,7 @@ npm run dev                      # dev mode (hot reload)
 npm run build                    # produce the three out/ bundles
 npm run typecheck                # typecheck main + renderer against both tsconfigs
 npm test                         # unit tests (vitest, no network, no registry access)
-npm run gate                     # offline acceptance for the auth gate (no model, 58 assertions)
+npm run gate                     # offline acceptance for the auth gate (no model, 61 assertions)
 npm run smoke                    # model-free: verify registry reads + web search
 npm run mock                     # local fake model (exercise the chat path with no API key)
 npm run eval                     # run the 36 eval cases, writes evals/report.json
@@ -185,7 +185,7 @@ scripts/
   lib/load-config.ts       script config loading: env vars > decrypted plaintext > on-disk plaintext
   lib/decrypt-config.cjs   Electron child process; decrypts credentials with the key from <userData>\Local State
   smoke.ts                 local reads + search smoke test
-  gate-check.ts            offline acceptance for the auth gate (no model, 58 assertions)
+  gate-check.ts            offline acceptance for the auth gate (no model, 61 assertions)
   check-h1.ts / e3-check.ts / view-check.ts     one-off verification scripts
   orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   orchestrator bus smoke tests
   backends-*.ts / mixed-backends.ts / github-smoke.ts       external worker backend checks
@@ -199,15 +199,23 @@ tests/                     unit tests (vitest, no network, no registry access)
 
 ## Boundaries (enforced in code, not left to the model's good intentions)
 
-**The main process registers 17 tools, tiered by effect:**
+**The main process registers 21 tools, tiered by effect:**
 
 | Tier | Tools | Gate behavior |
 |---|---|---|
-| `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `list_memory` | Auto-pass + audit trail |
+| `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `github_search`, `list_memory` | Auto-pass + audit trail |
 | `ui` (opens a page / window only) | `open_settings_page`, `launch_app`, `open_folder`, `open_file` | Auto-pass + audit trail |
-| `write` (local data) | `save_memory`, `forget_memory` | Back up first; if the backup fails, nothing runs |
+| `write` (local data) | `github_upload`, `delegate_to_agent`, `run_project`, `save_memory`, `forget_memory` | Back up first; if the backup fails, nothing runs. `github_upload` / `delegate_to_agent` / `run_project` always raise a card (`requiresConfirmation`) |
 | `install` (changes the machine) | `install_app` | Card required; **the only tier allowed "always allow"** |
 | `destroy` (irreversible) | `delete_to_recycle`, `uninstall_app` | Card required every time; `allowAlways` is fixed to `false` |
+
+**After any `write` / `destroy` / `install` action succeeds, the gate re-reads the machine and reports a fact, not a receipt.** The verdict travels with the tool result as `verify: { state, fact }` and into the audit log (`verified` / `verifyFact`):
+
+- `confirmed` — re-checked, and the fact matches the action (e.g. the deleted file really is gone; the uploaded file's remote git blob sha equals the local one)
+- `mismatch` — re-checked and it **doesn't** match; the difference is reported verbatim rather than turned into "done"
+- `unavailable` — this kind of action cannot be checked on the spot (an uninstall waits for the user to finish clicking through the app's own window); the fact says so and names the way to confirm later
+
+A tool either declares `verify` (the gate calls it) or fills the verdict itself when the check needs context only available mid-execution. A mutating tool that does neither gets `unavailable: 没有实现事后核对` — never a silent pass. The system prompt forbids announcing completion on anything but a `confirmed` verdict, and the records page shows the fact under the row. Before this existed, "installed / cleaned up / uploaded" was just the model repeating the tool's own one-liner.
 
 Per-tool constraints:
 

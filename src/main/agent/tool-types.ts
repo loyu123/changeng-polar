@@ -2,6 +2,7 @@ import type {
   AuthzDecision,
   ButlerConfig,
   Evidence,
+  FactCheck,
   RecordEntry,
   RecordKind,
   ToolChoiceOption,
@@ -33,6 +34,15 @@ export interface ToolResult {
    * 进审计记录，应用台账据此回答"这个是不是管家装的"。
    */
   installedName?: string
+  /**
+   * 写操作的事后核对。
+   *
+   * 谁来填有两种合法方式：工具自己声明 `verify`（闸门在 execute 之后统一调用），
+   * 或者在这个结果里直接填（装程序这类——核对需要的基准线要在装的过程中抓，
+   * 事后补不了）。两种都没给的话，闸门会填一条 unavailable，
+   * 于是"没有核对"这件事也必须是明说的，而不是看起来像"已核对通过"。
+   */
+  verify?: FactCheck
 }
 
 /** 授权卡上的文案：给人看，模型看不懂也没关系 */
@@ -115,6 +125,14 @@ export interface ToolDef {
    * 解析失败就返回 { ok: false }，闸门不会弹卡，也不会执行。
    */
   plan?: (args: Record<string, any>, ctx: ToolContext) => Promise<ToolPlan>
+  /**
+   * 执行之后重新查一遍事实（write / destroy / install 专用，闸门统一调用）。
+   *
+   * 只在 `result.ok === true` 时调用：动作本身失败时，"事后"没有可核对的东西。
+   * 抛异常不算核对通过——闸门会把它降级成 unavailable 并原样带上错误信息。
+   * 返回 `result.verify` 优先级更高（工具已经在执行过程中查过了）。
+   */
+  verify?: (args: Record<string, any>, ctx: ToolContext, result: ToolResult) => Promise<FactCheck>
   /** write 档专用：执行前备份，返回撤销句柄 */
   backup?: (args: Record<string, any>, ctx: ToolContext) => Promise<{ ok: boolean; undo?: string; detail?: string }>
   run: (args: Record<string, any>, ctx: ToolContext) => Promise<ToolResult>

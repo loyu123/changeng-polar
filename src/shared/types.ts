@@ -13,6 +13,23 @@ export type AuthzDecision = 'auto' | 'user_once' | 'user_always' | 'denied' | 'e
 /** 用户在授权卡上的选择；expired 只由 60 秒超时产生，用户点不出来 */
 export type AuthAnswer = 'once' | 'always' | 'deny' | 'expired'
 
+/**
+ * 写操作之后的事实核对（不是"工具说成功"，而是"重新查过之后事实是什么"）。
+ *
+ * 三种状态刻意分开，因为它们是三件不同的事：
+ * - confirmed：重新查过，事实与动作相符
+ * - mismatch：重新查过，**对不上**（要把差异说出来，不能说成完成）
+ * - unavailable：这类动作当场查不到（卸载要等用户点完它自己的卸载窗口），
+ *   附一句"怎么才能查到"。它不是"通过"，也不是"失败"
+ */
+export type VerifyState = 'confirmed' | 'mismatch' | 'unavailable'
+
+export interface FactCheck {
+  state: VerifyState
+  /** 一句话事实：查了什么、查到什么 */
+  fact: string
+}
+
 export interface Evidence {
   id: string
   /** local = 本机实测读取；web = 联网访问 */
@@ -330,6 +347,10 @@ export interface RecordEntry {
    * 的 data，显示名进这个字段。
    */
   installedName?: string
+  /** 事后核对的三态结果（旧记录没有这个字段：那时还没有事后核对） */
+  verified?: VerifyState
+  /** 核对那一句话：重新查了什么、查到什么 */
+  verifyFact?: string
 }
 
 /**

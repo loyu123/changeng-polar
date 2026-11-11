@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import type { AuthAnswer, AuthRequest, AuthzDecision, RecordEntry, RecordKind, ToolChoiceRequest } from '../../shared/types'
+import type {
+  AuthAnswer,
+  AuthRequest,
+  AuthzDecision,
+  FactCheck,
+  RecordEntry,
+  RecordKind,
+  ToolChoiceRequest
+} from '../../shared/types'
 import type { ToolContext, ToolDef, ToolPlan, ToolResult, ToolTarget } from './tool-types'
 
 /**
@@ -92,6 +100,46 @@ export async function confirmDataEgress(
 }
 
 const KNOWN_EFFECTS = new Set(['read', 'ui', 'write', 'destroy', 'install'])
+
+/** 会改动机器的那三档：只有它们才有"事后核对"这回事 */
+const MUTATING_EFFECTS: ReadonlySet<string> = new Set(['write', 'destroy', 'install'])
+
+/**
+ * 写操作之后重新查一遍事实。
+ *
+ * 存在的理由：在此之前，"装好了/删干净了/传上去了"全靠模型自己读工具返回的那句话，
+ * 于是它照着念就成了"事实"。而失败恰恰是沉默的——winget 说成功、
+ * 注册表里却没有；回收站那次调用返回了、文件还在原处。
+ *
+ * 三条规则：
+ * 1. 只在动作本身成功时核对（失败时没有可核对的东西）
+ * 2. 工具自己在执行过程中已经查过的（`result.verify`）优先，不重复查一遍
+ * 3. 没法当场核对的（比如卸载要等用户点完卸载窗口）必须说成 unavailable，
+ *    不许当成"通过"——"查不到"和"查了没问题"是两件事，混淆它们就是这套机制的意义所在
+ *
+ * 核对本身抛异常也不放行：降级成 unavailable 并带上原始错误，宁可显得没查成，
+ * 也不能因为核对炸了就把这一步当成没问题。
+ */
+async function factCheck(
+  def: ToolDef,
+  args: Record<string, any>,
+  ctx: ToolContext,
+  result: ToolResult
+): Promise<FactCheck | null> {
+  if (!MUTATING_EFFECTS.has(def.effect) || !result.ok) return null
+  if (result.verify) return result.verify
+  if (!def.verify) {
+    return { state: 'unavailable', fact: `「${def.label}」没有实现事后核对，这次只能按工具自己的回执转述` }
+  }
+  try {
+    return await def.verify(args, ctx, result)
+  } catch (err) {
+    return {
+      state: 'unavailable',
+      fact: `核对没能跑完：${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
 
 /**
  * 授权卡的答案只认这两个「通过」值，其余一律按拒绝处理。
@@ -271,6 +319,8 @@ export async function executeThroughGate(
       snapshot: result.snapshotId,
       sourceUrl: result.sourceUrl,
       installedName: result.installedName,
+      verified: result.verify?.state,
+      verifyFact: result.verify?.fact,
       ...extra
     })
   }
@@ -302,12 +352,11 @@ export async function executeThroughGate(
       backupUndo = backup.undo
     }
     const result = await execute()
-    audit(
-      { ...result, undo: result.undo ?? backupUndo },
-      authz,
-      result.ok ? 'ok' : 'partial'
-    )
-    return result
+    // 核对一次：拿到的事实跟着结果一起回给模型和记录页，不让它自己圆
+    const verify = await factCheck(def, args, ctx, result)
+    const checked = verify ? { ...result, verify } : result
+    audit({ ...checked, undo: result.undo ?? backupUndo }, authz, result.ok ? 'ok' : 'partial')
+    return checked
   }
 
   // ---- 写：先备份，备份不成就不写 ----

@@ -100,3 +100,50 @@ describe('工具定义完整性', () => {
     }
   })
 })
+
+/**
+ * 每个会改动机器的工具都必须回答"事后查到了什么"。
+ *
+ * 两种合法做法：声明 verify（闸门在动作成功后统一调用），或者在结果里自己填
+ * （装程序、卸载这类核对需要的上下文只有执行过程中才有）。两条都没有的话，
+ * 闸门会填一条 unavailable——不至于静默，但那个工具从此就只是"回执说成了"。
+ *
+ * 所以这份名单是**故意的**：新增一个写类工具却忘了核对，这条会先红。
+ */
+describe('写操作的事后核对覆盖', () => {
+  const SELF_VERIFIED = new Set([
+    'install_app', // 核对要装之前抓的自启项基准线，事后补不了
+    'uninstall_app', // 主体是用户在那个卸载窗口里点确认，当场查不到
+    'delegate_to_agent', // 事实来自验收检查，不是回执
+    'run_project' // 事实来自逐条验收计数
+  ])
+
+  it('改动机器的工具要么声明 verify，要么在名单里（自填结论）', () => {
+    const mutating = createTools().filter((t) => ['write', 'destroy', 'install'].includes(t.effect))
+    expect(mutating.length).toBeGreaterThan(0)
+    const missing = mutating
+      .filter((t) => typeof t.verify !== 'function' && !SELF_VERIFIED.has(t.name))
+      .map((t) => t.name)
+    expect(missing).toEqual([])
+  })
+
+  it('名单里的工具必须真的存在（改了名字别忘了同步这里）', () => {
+    const names = new Set(createTools().map((t) => t.name))
+    for (const name of SELF_VERIFIED) {
+      expect(names.has(name), name).toBe(true)
+    }
+  })
+
+  it('删除到回收站的核对是"再去 stat 一次"，不是复述回执', async () => {
+    const tool = createTools().find((t) => t.name === 'delete_to_recycle')!
+    expect(typeof tool.verify).toBe('function')
+    // 路径不存在时它必须能自己给出结论，而不是要求宿主提供什么
+    const outcome = await tool.verify!(
+      { path: 'C:\\definitely-not-here\\nope.txt' },
+      { config: {} as never, record: (e) => ({ ...e, id: '', ts: '' }) },
+      { ok: true, summary: '' }
+    )
+    expect(outcome.state).toBe('confirmed')
+    expect(outcome.fact).toContain('没有')
+  })
+})

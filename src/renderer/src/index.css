@@ -1543,6 +1543,11 @@ textarea {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 事后核对那一行：允许换行——"查了什么、查到什么"压成一行省略号就没用了 */
+.lact .sub.verify {
+  white-space: normal;
+  color: #6f6f66;
+}
 .res {
   display: flex;
   align-items: center;

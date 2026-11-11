@@ -22,7 +22,7 @@ npm run dev                      # 开发模式（热更新）
 npm run build                    # 产出 out/ 三端产物
 npm run typecheck                # 主进程 + 渲染层两份 tsconfig 各查一遍
 npm test                         # 单测（vitest，不连网、不读注册表）
-npm run gate                     # 授权闸门离线验收（不接模型，58 条）
+npm run gate                     # 授权闸门离线验收（不接模型，61 条）
 npm run smoke                    # 不依赖模型：验证注册表读取 + 联网检索
 npm run mock                     # 本地假模型（无 Key 时验证对话链路）
 npm run eval                     # 跑 36 条评测，结果写 evals/report.json
@@ -207,7 +207,7 @@ scripts/
   lib/load-config.ts       脚本读配置：环境变量 > 解密后的明文 > 盘上明文
   lib/decrypt-config.cjs   Electron 子进程，用 <userData>\Local State 的密钥解密凭据
   smoke.ts                 本机读取 + 检索冒烟
-  gate-check.ts            授权闸门的离线验收（不接模型，58 条）
+  gate-check.ts            授权闸门的离线验收（不接模型，61 条）
   check-h1.ts / e3-check.ts / view-check.ts     单项核对脚本
   orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   编排总线冒烟
   backends-*.ts / mixed-backends.ts / github-smoke.ts       外部工作体后端核对
@@ -221,15 +221,23 @@ tests/                     单测（vitest，不连网、不读注册表）
 
 ## 边界（代码层，不靠模型自觉）
 
-**主进程注册 17 个工具，按效果分档：**
+**主进程注册 21 个工具，按效果分档：**
 
 | 档位 | 工具 | 闸门行为 |
 |---|---|---|
-| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`list_memory` | 自动放行 + 留痕 |
+| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`github_search`、`list_memory` | 自动放行 + 留痕 |
 | `ui`（只打开页面 / 窗口） | `open_settings_page`、`launch_app`、`open_folder`、`open_file` | 自动放行 + 留痕 |
-| `write`（本地数据） | `save_memory`、`forget_memory` | 先备份，备份失败就不执行 |
+| `write`（本地数据） | `github_upload`、`delegate_to_agent`、`run_project`、`save_memory`、`forget_memory` | 先备份，备份失败就不执行；`github_upload` / `delegate_to_agent` / `run_project` 一律要过卡（`requiresConfirmation`） |
 | `install`（改动机器） | `install_app` | 必须过卡；**全表唯一允许「始终允许」的档位** |
 | `destroy`（不可撤回） | `delete_to_recycle`、`uninstall_app` | 必须逐次过卡，`allowAlways` 固定 `false` |
+
+**任何 `write` / `destroy` / `install` 动作成功之后，闸门会重新查一遍机器，报的是事实而不是回执。** 结论跟着工具结果一起回去（`verify: { state, fact }`），同时进审计（`verified` / `verifyFact`）：
+
+- `confirmed`——重新查过，事实与动作相符（删掉的文件确实不在了；上传的那份远端 git blob sha 与本地算出来的一致）
+- `mismatch`——重新查过但**对不上**，差异原样报出来，不许转写成"已完成"
+- `unavailable`——这类动作当场查不到（卸载要等用户点完程序自己的卸载窗口），事实里写明这一点，并给出之后怎么确认
+
+工具要么声明 `verify`（闸门负责调用），要么在结果里自己填（核对需要的上下文只有执行过程中才有）。两样都没有的写类工具会拿到 `unavailable: 没有实现事后核对`，不会静默通过。系统提示词禁止在非 `confirmed` 的情况下宣布"已经完成"，记录页把这句话显示在那一行下面。在这之前，"装好了 / 删干净了 / 传上去了"只是模型把工具自己那句话复述了一遍。
 
 逐条约束：
 

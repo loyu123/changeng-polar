@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { SearchHit } from '../../shared/types'
@@ -207,6 +208,55 @@ export async function uploadFile(req: UploadRequest): Promise<UploadResult> {
     summary: `已上传到 ${req.repo}/${req.remotePath}${url ? `（${url}）` : ''}`,
     undoHint
   }
+}
+
+/**
+ * 上传之后回读远端那个路径，证明"东西真的在 GitHub 上"。
+ *
+ * 为什么值得多一次请求：上传是**删不掉**的写，而且 gh 说成功、实际没上去
+ * （分支写错、仓库权限只读、企业策略拦了）都是会发生的。回读时比对的是
+ * git blob sha —— GitHub 自己用这个值寻址内容，它与本地文件算出来的值相等，
+ * 才等于"远端那份就是我这一个文件"。只比大小不行：同名不同稿很容易同大小。
+ */
+export async function verifyRemoteFile(req: {
+  repo: string
+  remotePath: string
+  branch?: string
+  file: string
+}): Promise<{ ok: boolean; sha?: string; size?: number; localSha?: string; reason?: string }> {
+  let content: Buffer
+  try {
+    content = await fs.readFile(req.file)
+  } catch (err) {
+    return { ok: false, reason: `读不到本地文件：${err instanceof Error ? err.message : String(err)}` }
+  }
+  const branch = req.branch?.trim() || 'main'
+  const res = await runGh([
+    'api',
+    `repos/${req.repo}/contents/${req.remotePath}?ref=${branch}`,
+    '--jq',
+    '{sha: .sha, size: .size}'
+  ])
+  if (!res.ok) return { ok: false, reason: ghErrorText(res) }
+  let remote: { sha?: string; size?: number }
+  try {
+    remote = JSON.parse(res.stdout) as { sha?: string; size?: number }
+  } catch {
+    return { ok: false, reason: '回读到的不是合法的 JSON' }
+  }
+  return { ok: true, sha: remote.sha, size: remote.size, localSha: gitBlobSha(content) }
+}
+
+/**
+ * 本地文件按 git 的方式算 blob sha（`sha1("blob <len> " + content)`）。
+ *
+ * 用它和远端比，比"再下载一遍内容"便宜，也比比大小可靠。
+ */
+export function gitBlobSha(content: Buffer): string {
+  return createHash('sha1')
+    .update(`blob ${content.byteLength} `)
+    .update(content)
+    .digest('hex')
 }
 
 /**

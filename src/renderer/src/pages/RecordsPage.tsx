@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { RecordEntry } from '../../../shared/types'
+import type { RecordEntry, VerifyState } from '../../../shared/types'
 import { SnapshotDiffCard } from '../components/SnapshotDiffCard'
 
 type Filter = 'all' | 'confirmed' | 'rejected'
@@ -86,6 +86,18 @@ const RESULT_LABEL: Record<RecordEntry['result'], { tag: string; note: string }>
   ok: { tag: 'tag-ok', note: '已执行' },
   rejected: { tag: 'tag-red', note: '已拒绝' },
   partial: { tag: 'tag-gray', note: '部分完成' }
+}
+
+/**
+ * 事后核对的三态。
+ *
+ * 只给"重新查过"和"查了对不上"上标签：unavailable 是"这类动作当场查不到"
+ * （卸载要等用户自己点完），它不是结论，标成绿的或红的都是在替它下结论——
+ * 那句话放在下面的核对行里，让人自己读。
+ */
+const VERIFY_TAG: Record<Exclude<VerifyState, 'unavailable'>, { tag: string; note: string }> = {
+  confirmed: { tag: 'tag-ok', note: '核对通过' },
+  mismatch: { tag: 'tag-red', note: '核对不符' }
 }
 
 export default function RecordsPage({ active }: { active: boolean }) {
@@ -189,10 +201,15 @@ export default function RecordsPage({ active }: { active: boolean }) {
                     <div style={{ minWidth: 0 }}>
                       <div className="tx">{record.title}</div>
                       <div className="sub">{record.sub}</div>
+                      {/* 写操作的事后核对：查了什么、查到什么。没有这一行就是当时没核对 */}
+                      {record.verifyFact && <div className="sub verify">核对：{record.verifyFact}</div>}
                     </div>
                   </div>
                   <div className="res">
                     <span className={`tag ${label.tag}`}>{label.note}</span>
+                    {record.verified && record.verified !== 'unavailable' && (
+                      <span className={`tag ${VERIFY_TAG[record.verified].tag}`}>{VERIFY_TAG[record.verified].note}</span>
+                    )}
                     <span className="note">
                       {record.result === 'rejected' ? '文件未动' : record.undo ? `撤回：${record.undo}` : ''}
                     </span>

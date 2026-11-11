@@ -40,9 +40,21 @@ function schemaOf(tools: ToolDef[]): ToolSchema[] {
   }))
 }
 
-/** 超长时收缩 data 数组而不是截断字符串，保证交给模型的永远是合法 JSON（导出供测试） */
+/**
+ * 超长时收缩 data 数组而不是截断字符串，保证交给模型的永远是合法 JSON（导出供测试）。
+ *
+ * `verify`（写操作的事后核对）必须一起带上、且永远不参与截断：它是模型唯一有权
+ * 复述的"事实"。截断时把它丢了，模型就只剩 summary 那句话可念，于是又回到
+ * 「照着工具回执宣布完成」。
+ */
 export function trimToolPayload(result: ToolResult): string {
-  const full = { ok: result.ok, summary: result.summary, data: result.data, undo: result.undo }
+  const base = {
+    ok: result.ok,
+    summary: result.summary,
+    undo: result.undo,
+    verify: result.verify
+  }
+  const full = { ...base, data: result.data }
   const payload = JSON.stringify(full)
   if (payload.length <= MAX_TOOL_CHARS) return payload
 
@@ -50,8 +62,7 @@ export function trimToolPayload(result: ToolResult): string {
     let items = full.data.slice(0, Math.max(2, Math.floor(full.data.length / 2)))
     while (items.length >= 1) {
       const candidate = JSON.stringify({
-        ok: full.ok,
-        summary: full.summary,
+        ...base,
         data: items,
         note: `共 ${full.data.length} 条，已截断为前 ${items.length} 条`
       })
@@ -84,8 +95,7 @@ export function trimToolPayload(result: ToolResult): string {
   }
 
   return JSON.stringify({
-    ok: full.ok,
-    summary: full.summary,
+    ...base,
     note: `明细过长（${payload.length} 字符），已省略，请依据 summary 回答或缩小查询范围`
   })
 }
