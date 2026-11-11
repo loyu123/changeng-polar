@@ -2,15 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { judgeModelOf, scoreCase, type ScoreVerdict } from './judge'
 import { answerFingerprint, AnswerSetError, judgeRecordsOf, loadAnswerSet, type AnswerSet } from './answer-set'
-import {
-  buildComparison,
-  parseRepeat,
-  parseSources,
-  RejudgeArgError,
-  shouldRepeat,
-  stabilityOf,
-  unstableIds
-} from './rejudge-plan'
+import { parseRepeat, RepeatArgError, stabilityOf } from './lib/repeat'
+import { buildComparison, parseSources, shouldRepeat, unstableIds } from './rejudge-plan'
 import { describeMissing, loadScriptConfig } from './lib/load-config'
 
 /**
@@ -105,13 +98,13 @@ function argValue(args: string[], name: string): string | undefined {
 /** 读一份报告并把它变成答案集；读不出来就说明为什么，不猜 */
 function readAnswerSet(file: string, cases: ReadonlyArray<Case>): { set: AnswerSet; raw: Record<string, unknown> } {
   if (!existsSync(file)) {
-    throw new RejudgeArgError(`找不到报告：${file}\n先跑一次 \`npm run eval\` 生成回答，或用 --from=<路径> 指定另一份。`)
+    throw new RepeatArgError(`找不到报告：${file}\n先跑一次 \`npm run eval\` 生成回答，或用 --from=<路径> 指定另一份。`)
   }
   let raw: Record<string, unknown>
   try {
     raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
   } catch (err) {
-    throw new RejudgeArgError(`报告读不出来（${file}）：${err instanceof Error ? err.message : String(err)}`)
+    throw new RepeatArgError(`报告读不出来（${file}）：${err instanceof Error ? err.message : String(err)}`)
   }
   return { set: loadAnswerSet(raw, cases), raw }
 }
@@ -124,7 +117,8 @@ async function main(): Promise<void> {
   const onlyId = argValue(args, 'id')
   let repeat: number
   try {
-    repeat = parseRepeat(argValue(args, 'repeat'))
+    // H3 每判一遍就要问三次裁判，20 轮 = 60 次调用一条用例，再高不是量抖动是烧钱
+    repeat = parseRepeat(argValue(args, 'repeat'), 20, 'H3 每轮要问三次裁判，再高只是在烧钱')
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)
@@ -169,7 +163,7 @@ async function main(): Promise<void> {
     try {
       loadedReport = readAnswerSet(from, allCases)
     } catch (err) {
-      if (err instanceof RejudgeArgError || err instanceof AnswerSetError) {
+      if (err instanceof RepeatArgError || err instanceof AnswerSetError) {
         console.error(`这份报告没法复判：${err.message}`)
         if (err instanceof AnswerSetError) {
           console.error('复判要求报告里存着回答原文、工具名、来源条数、授权记录四项。')

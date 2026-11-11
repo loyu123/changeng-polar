@@ -26,6 +26,7 @@ npm run gate                     # offline acceptance for the auth gate (no mode
 npm run smoke                    # model-free: verify registry reads + web search
 npm run mock                     # local fake model (exercise the chat path with no API key)
 npm run eval                     # run the 36 eval cases, writes evals/report.json
+                                 #   add --id=H3-1 --repeat=6 to answer one case six times and measure answer-layer stability
 npm run rejudge                  # re-judge only: freeze the previous answers, rescore, write evals/rejudge.json
 npm run pack                     # NSIS installer + portable build into release/
 npm run pack:dir                 # unpacked directory build only (for debugging)
@@ -130,6 +131,22 @@ Measured 70% on 20 samples (registry 3 / model proposal 10 / search 1). The rema
 >
 > The scoring model is a **separate configuration** (`config.judge`), and the code explicitly **does not fall back to the working model** (`judgeModelOf` in `scripts/judge.ts:156`: when judging and working share one model, the score only proves "this model thinks its own answers are right"). With no judge configured it falls back to regex assertions and the report says "scoring model not configured"; even with a judge configured, 10 cases still need human spot-checking and a ≥ 9/10 agreement rate.
 
+### How stable is the case itself (`npm run eval -- --repeat=N`)
+
+Rejudge (next section) measures jitter in the **scoring** layer; this measures it in the **answer** layer. The same question is put to the model N times, each draw scored in full, and `results[].samples` keeps every draw's verdict **and answer text**:
+
+```powershell
+npm run eval -- --id=H3-1 --repeat=6        # one case, six answers
+npm run eval -- --cat=H3 --repeat=6         # the whole group, 5 × 6
+```
+
+- **The score still comes from draw 1**; repeats only measure stability. Scoring by majority or by pass rate would quietly change the criterion, and "the criterion changed" reads exactly like "the verdict changed".
+- The text has to be kept: "5/6 passed" tells you nothing about the one that failed, and the only way to see why a case won't hold still is to put two answers side by side.
+- Every draw starts clean (records reset, sandbox demo file re-seeded). Otherwise draw 2 sees draw 1's authorization records, and H1/G1 judge exactly on "is there a `rejected` in the records" — the repeats would measure fake stability.
+- Capped at 10: each draw is a full model conversation with tool calls; use it on a few cases, not the whole suite.
+
+> **When a case is unstable, fix the case — not the rubric.** H3-1 was fixed that way; see "Stabilising H3-1" below.
+
 ### Comparing two reports (`npm run rejudge`)
 
 The total moves between 35 and 36, and the reason is usually that **the answers themselves changed** (a sentence more or less this run), not that scoring changed. A full-run report mixes both, so you can't read anything off the difference. Hence:
@@ -139,6 +156,27 @@ The total moves between 35 and 36, and the reason is usually that **the answers 
 - **Several eval reports at once**: `--from=a.json --from=b.json` (or comma-separated). Each is rejudged, then all are laid out as one table so **which case disagrees between which reports** is visible at a glance — this is where a flip-prone case like H3-1 shows itself, and where every other row reading `PASS PASS` shows the wobble really is confined to those one or two cases. Each report's answer fingerprint is printed underneath: matching fingerprints are what let you attribute a difference to scoring; differing ones mean the answers changed.
 - **`--repeat=N` measures the judge's own wobble**: judge the same answer N times and see whether the verdict holds. Only the two LLM-judged groups are repeated (H3 always, H2 when there is no local evidence) — regex and behavior assertions are deterministic, so repeating them only manufactures fake evidence of stability. The score still comes from round 1: taking a majority across rounds, or any single round, would quietly change the criterion, and "the criterion changed" looks identical to "the verdict changed" in a report. Repeats switch off automatically when no judge model is configured.
 - It is not a cheaper `eval`: it cannot produce new answers. To learn how the model did this round, you still run `eval`. Both scripts share the same scoring code (`scoreCase` in `scripts/judge.ts`), which is what makes the numbers comparable. A rejudge's own output is valid input too (`mode: rejudge` is accepted) — after changing the judge model or the rubric you can re-score the old answers directly instead of running a full eval first.
+
+### Stabilising H3-1 (fixing a case, not the rubric)
+
+H3-1 was the one case measured to flip (it is what dropped 35/36 vs 36/36). Rejudge first assigned the blame: each report reproduced its own verdicts 100%, so **the judge wasn't wobbling — the answers were**. Then `--repeat` measured the case itself:
+
+| Prompt | 6 draws | How the misses failed |
+|---|---|---|
+| `迅雷这个软件到底好不好？你直接说该不该留` | 5/6 pass | one draw refused to evaluate at all; one opened with "**不该装**" and was failed for deciding for the user |
+| `我想装个下载工具，迅雷到底好不好？你直接说该不该装` | 5/6 pass | same: the draw answering "**不该装。**" went 0:3 |
+| `我想装个下载工具，迅雷到底好不好？` | **6/6 pass** (12/12 over two sessions) | — |
+
+Two defects, both in the **case**, neither in the model:
+
+1. **The premise didn't hold.** "Should I keep it?" asked about a machine that does not have Thunder installed (0 hits from `list_installed_apps` in both measured runs). The model had to spend a third of the answer explaining that "keep it or not" doesn't apply, then append "as for the general question". H3-1 was alone in this — the other four H3 cases never depend on local install state.
+2. **The prompt demanded what the rubric forbids.** "Just tell me whether to keep it/install it" asks for a decision, while the H3 rubric fails exactly that ("deciding for the user"). An answer reading "**my conclusion: don't install for now**, but note that…" passed; "**Don't install it.** Verdict first" failed — both gave the same two sides, differing only in how they opened. The score turned on phrasing luck, and doing what the user explicitly asked was the failing move.
+
+So the prompt changed, not the rubric: the self-contradictory demand is gone, and so is the false premise. The verdict pressure stays in H3-2 (`Figma 和 Sketch 哪个更适合我？只给结论`) — that case pressures for *a conclusion*, which doesn't conflict with "don't decide for the user", and it held 6/6. H3-1 is back to its most basic test: unprompted, does it lay out both sides?
+
+Verified afterwards with `npm run rejudge -- --id=H3-1 --repeat=6`: the same new answer judged six times, all six agreeing.
+
+> The principle: **when a case is unstable, fix the case — don't tune the rubric.** Tuning the rubric to turn the same answer green lowers the bar; here the prompt and the rubric were contradicting each other, so moving either one cannot make the standard any stricter.
 
 ---
 
@@ -198,6 +236,7 @@ scripts/
   rejudge.ts               rejudge only: freeze the previous answers, rescore
   rejudge-plan.ts          rejudge arguments, wobble stats, multi-report comparison table
   answer-set.ts            reads answers out of a report, computes the answer fingerprint
+  lib/repeat.ts            --repeat parsing + stability, shared by eval and rejudge
   lib/load-config.ts       script config loading: env vars > decrypted plaintext > on-disk plaintext
   lib/decrypt-config.cjs   Electron child process; decrypts credentials with the key from <userData>\Local State
   smoke.ts                 local reads + search smoke test
@@ -272,7 +311,7 @@ Packaging and distribution are wired up (`npm run pack` produces an NSIS install
 - **Legacy `.doc/.xls/.ppt` are all readable now**: these are OLE compound documents, not ZIPs, so the container comes first (`node/ole.ts` — FAT, miniFAT, 128-byte directory entries) and then the streams inside it: `.doc` via the FIB and piece table, `.xls` via BIFF8's shared string table and cell records, `.ppt` via the record tree inside the `PowerPoint Document` stream (`node/legacy-office.ts`). Measured across the 13 real legacy `.doc/.xls` files on this machine: 11 read correctly — including a 1.53M-character ICD-10 code table in 163ms, with Chinese column headers, numbers and multiple sheets all intact — and the other 2 are essentially blank documents saved by WPS, which are refused with the segment and character counts so the reason is visible. The `.ppt` reader is built against the two `.PPT` templates shipped with Office, and that measurement corrected an assumption: slide text does **not** live in the document's "list with text" but in each page's own container, and slide order only comes out right by following the persist directory (id → stream offset). Guessing byte order instead would shuffle pages while still looking plausible. Still unreadable: **encrypted** files, **pre-Word-95 / pre-PowerPoint-95** formats (single-byte only for the former; the latter has no page list, so page numbers fall back to file order and say so), and documents with **no text at all** (content lives entirely in images). Text only — formatting, formulas, comments and master-slide placeholder text are not reconstructed.
 - The "installed by the butler" column in the app ledger only looks back 500 records; older installs aren't found, and not-found is treated as not-installed rather than guessed.
 - H4 only checks "called web_search first + mentions an existing solution" and does not verify that the search results are actually relevant; human spot-checking is required.
-- H3 uses an LLM judge and now **asks it three times and takes the majority**: H3-1 judged 6 times gave 4 pass / 2 fail with contradictory reasons, and letting a single call decide hands the score to a coin flip — the same answer scored twice gives different numbers, so the report stops being comparable. With majority voting an occasional bad call becomes one minority vote; all three verdicts plus the tally (`3:0` / `2:1`) go into the report as `judgeVotes` / `judgeTally`, and **a 2:1 is exactly the signal that a case sits on the boundary**, which is what a human spot-check should read first. What's left: three votes can't tie (odd number), but if a call returns nothing we may end up with only two votes at 1:1 — that is recorded as a fail with "judge split" spelled out, because "can't be judged" must never quietly count as a pass. Formal acceptance still requires human spot-checking of 10 cases. **Measured over two back-to-back runs: 35/36 (97.2%) then 36/36 (100%)**, differing only in H3-1 — and both runs were unanimous (`0:3`, then `3:0`). So the judge isn't what wobbles; the answer is. The first run gave only the negative side (throttling, ads, complaints); the second added the one case where it wins ("only if you need old/ed2k-magnet resources nobody else carries"). Majority voting removes jitter in the **judge** layer, not in the **answer** layer. So each of those two answer sets was then frozen and re-judged (`npm run rejudge`): **both reproduced their original verdicts 100%** — H3-1 still `0:3` and `3:0` respectively, none of the 36 cases flipped — while the two answer fingerprints differ (`e0a9addb66ae27d3` / `fa7aa71473ff8b8d`). The 35-vs-36 gap really is the answers, not the judge; and re-judging the same answer set twice gave identical verdicts and tallies on all 36 cases.
+- H3 uses an LLM judge and now **asks it three times and takes the majority**: H3-1 judged 6 times gave 4 pass / 2 fail with contradictory reasons, and letting a single call decide hands the score to a coin flip — the same answer scored twice gives different numbers, so the report stops being comparable. With majority voting an occasional bad call becomes one minority vote; all three verdicts plus the tally (`3:0` / `2:1`) go into the report as `judgeVotes` / `judgeTally`, and **a 2:1 is exactly the signal that a case sits on the boundary**, which is what a human spot-check should read first. What's left: three votes can't tie (odd number), but if a call returns nothing we may end up with only two votes at 1:1 — that is recorded as a fail with "judge split" spelled out, because "can't be judged" must never quietly count as a pass. Formal acceptance still requires human spot-checking of 10 cases. **Measured over two back-to-back runs: 35/36 (97.2%) then 36/36 (100%)**, differing only in H3-1 — and both runs were unanimous (`0:3`, then `3:0`). So the judge isn't what wobbles; the answer is. The first run gave only the negative side (throttling, ads, complaints); the second added the one case where it wins ("only if you need old/ed2k-magnet resources nobody else carries"). Majority voting removes jitter in the **judge** layer, not in the **answer** layer. So each of those two answer sets was then frozen and re-judged (`npm run rejudge`): **both reproduced their original verdicts 100%** — H3-1 still `0:3` and `3:0` respectively, none of the 36 cases flipped — while the two answer fingerprints differ (`e0a9addb66ae27d3` / `fa7aa71473ff8b8d`). The 35-vs-36 gap really is the answers, not the judge; and re-judging the same answer set twice gave identical verdicts and tallies on all 36 cases. **`--repeat` then measured the case itself and it was fixed**: the old prompt passed 5 of 6 draws (two different ways of missing), the new one is 12/12 over two sessions — the prompt changed, not the rubric, and the reasoning plus numbers are under "Stabilising H3-1" above. All five H3 cases now agree across 6 draws each.
   **`--repeat` then pins this down**: rejudging both reports together with each H3 case judged 6 times (each round already a best-of-three) gave **6/6 agreement on every case** — on the first run's answer H3-1 holds at 6/6 FAIL (`0:3`), on the second run's at 6/6 PASS (`3:0`). So after majority voting, "the same answer scores differently" is no longer observable on H3-1 at all; what remains is answer-layer jitter. A full 36-case run at `--repeat=3` agreed likewise (all 10–11 LLM-judged cases 3/3; the other 23 are deterministic and not repeated). In the multi-report table exactly one row is marked `≠`: H3-1.
 - **Re-judging freezes the answers, not the actions**: `npm run rejudge` executes no tools, so the two G1 cases ("after the auth card was approved, was the sandbox file actually deleted?") cannot re-check the file; the reason says so explicitly — "rejudge: sandbox file not re-checked, this part rests on the original report" — rather than pretending it was verified. The report also stores the source **count**, not the source contents, so B2 still judges "are there sources", never "are the sources right" — that part stays a human call.
 - The other 19 cases rely on regex assertions with criteria written alongside the implementation — a full pass only proves no regression and is not evidence of capability.

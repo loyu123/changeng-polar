@@ -8,6 +8,7 @@ import { judgeModelOf, scoreCase } from './judge'
 import { answerFingerprint } from './answer-set'
 import { capabilityBrief } from '../src/main/agent/tools'
 import { configPath, describeMissing, loadScriptConfig } from './lib/load-config'
+import { parseRepeat, RepeatArgError, stabilityOf } from './lib/repeat'
 import { SANDBOX_ROOT } from '../src/main/node/sandbox'
 import type { ButlerConfig, ChatMessage, MailConfig, MemoryEntry, RecordEntry, TurnResult } from '../src/shared/types'
 
@@ -71,6 +72,13 @@ interface CaseResult {
    */
   judgeVotes?: Array<{ balanced: boolean; reason: string; pro?: boolean; con?: boolean; hedge?: boolean; overbearing?: boolean }>
   judgeTally?: string
+  /**
+   * 判了不止一遍时（`--repeat=N`）：每一轮各自的结论**和回答原文**。
+   * 生成侧重复量的是**回答**这一层抖不抖——和 rejudge 的 `rounds` 量判分那层是两件事。
+   * 原文必须留：报告说"5/6 通过"而看不到那 1 轮答了什么，等于什么都没说，
+   * 而"这条用例为什么稳不住"恰恰只有对比两段回答才看得出来（改用例靠的就是它）。
+   */
+  samples?: Array<{ pass: boolean; reason: string; judgedBy: string; judgeTally?: string; text: string }>
 }
 
 const ROOT = path.resolve(__dirname, '..')
@@ -81,6 +89,15 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const onlyCat = args.find((a) => a.startsWith('--cat='))?.split('=')[1]
   const onlyId = args.find((a) => a.startsWith('--id='))?.split('=')[1]
+  let repeat: number
+  try {
+    // 每轮是一整次模型对话（含工具调用），10 轮 × 36 条就是 360 次对话
+    repeat = parseRepeat(args.find((a) => a.startsWith('--repeat='))?.split('=')[1], 10, '每轮是一整次模型对话，量抖动用 --id 挑几条就够')
+  } catch (err) {
+    if (!(err instanceof RepeatArgError)) throw err
+    console.error(err.message)
+    process.exit(1)
+  }
 
   const loaded = loadScriptConfig()
   const baseConfig = loaded.config
@@ -136,107 +153,165 @@ async function main(): Promise<void> {
       searchProvider: testCase.searchProvider ?? baseConfig.searchProvider,
       ...(testCase.mail ? { mail: mailConfigFor(baseConfig, testCase.mail), mailAccounts: [] } : {})
     }
-    const records: RecordEntry[] = []
-    const tools = evalTools
-    // G1 用例会真的走授权卡：mock 用户点「允许」或「拒绝」，让 records 里出现
-    // approved / rejected 两种真实卡记录（此前 34 例全是 auto 放行，卡没被真正点过）
-    if (testCase.card) {
-      mkdirSync(SANDBOX_ROOT, { recursive: true })
-      writeFileSync(path.join(SANDBOX_ROOT, 'note.txt'), '演示文件：给授权卡评测用的。', 'utf8')
-    }
-    const gate: GateHooks = {
-      requestAuth: async () => (testCase.card === 'allow' ? 'once' : 'deny'),
-      isRemembered: () => false,
-      remember: () => {},
-      record: (entry) => {
-        records.push({ ...entry, id: `g${records.length}`, ts: new Date().toISOString() })
+    /**
+     * 跑一轮：一次完整的模型对话 + 判分。
+     *
+     * 每一轮都从干净状态起——records 重开、沙箱演示文件重新铺一遍。
+     * 不这么做的话第二轮会看见第一轮留下的授权记录，而 H1/G1 判的就是
+     * "record 里有没有 rejected"：一轮通过之后后面轮轮通过，重复量出来的
+     * 全是假稳定。真踩过这种"跑两遍结果一样"的错觉。
+     */
+    const draw = async (): Promise<CaseResult> => {
+      const records: RecordEntry[] = []
+      const tools = evalTools
+      // G1 用例会真的走授权卡：mock 用户点「允许」或「拒绝」，让 records 里出现
+      // approved / rejected 两种真实卡记录（此前 34 例全是 auto 放行，卡没被真正点过）
+      if (testCase.card) {
+        mkdirSync(SANDBOX_ROOT, { recursive: true })
+        writeFileSync(path.join(SANDBOX_ROOT, 'note.txt'), '演示文件：给授权卡评测用的。', 'utf8')
       }
-    }
-    const messages: ChatMessage[] = [
-      {
-        role: 'system',
-        content: buildSystemPrompt(
-          {
-            machineName: os.hostname(),
-            userName: os.userInfo().username,
-            osVersion: `Windows ${os.release()} (${os.arch()})`,
-            today: new Date().toLocaleDateString('zh-CN'),
-            hasSearch: config.searchProvider !== 'none',
-            toolBudget: TOOL_BUDGET_STEPS
-          },
-          capabilities
-        )
-      },
-      { role: 'user', content: testCase.prompt }
-    ]
-
-    const started = Date.now()
-    let result: TurnResult
-    try {
-      const output = await runTurn({
-        messages,
-        config,
-        tools,
-        gate,
-        maxSteps: 4,
-        ctx: {
-          config,
-          record: (entry) => {
-            const full: RecordEntry = { ...entry, id: `r${records.length}`, ts: new Date().toISOString() }
-            records.push(full)
-            return full
-          }
+      const gate: GateHooks = {
+        requestAuth: async () => (testCase.card === 'allow' ? 'once' : 'deny'),
+        isRemembered: () => false,
+        remember: () => {},
+        record: (entry) => {
+          records.push({ ...entry, id: `g${records.length}`, ts: new Date().toISOString() })
         }
+      }
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: buildSystemPrompt(
+            {
+              machineName: os.hostname(),
+              userName: os.userInfo().username,
+              osVersion: `Windows ${os.release()} (${os.arch()})`,
+              today: new Date().toLocaleDateString('zh-CN'),
+              hasSearch: config.searchProvider !== 'none',
+              toolBudget: TOOL_BUDGET_STEPS
+            },
+            capabilities
+          )
+        },
+        { role: 'user', content: testCase.prompt }
+      ]
+
+      const started = Date.now()
+      let result: TurnResult
+      try {
+        const output = await runTurn({
+          messages,
+          config,
+          tools,
+          gate,
+          maxSteps: 4,
+          ctx: {
+            config,
+            record: (entry) => {
+              const full: RecordEntry = { ...entry, id: `r${records.length}`, ts: new Date().toISOString() }
+              records.push(full)
+              return full
+            }
+          }
+        })
+        result = output.result
+      } catch (err) {
+        result = {
+          text: `[运行失败] ${err instanceof Error ? err.message : String(err)}`,
+          evidence: [],
+          tools: [],
+          unsourced: true,
+          steps: 0
+        }
+      }
+      const latencyMs = Date.now() - started
+      // 判分那一段抽到 scripts/judge.ts 的 scoreCase 里了：全跑和复判（npm run rejudge）
+      // 必须走同一段代码，否则两边分数差在哪儿就说不清
+      const scored = await scoreCase({
+        case: testCase,
+        text: result.text,
+        toolNames: result.tools.map((t) => t.name),
+        evidenceCount: result.evidence.length,
+        records: records.map((r) => ({ result: r.result, authz: r.authz })),
+        config,
+        // G1 的沙箱核对只有真跑过才验得了；其他用例传 null，不碰那个文件
+        sandboxNoteExists: testCase.card ? existsSync(path.join(SANDBOX_ROOT, 'note.txt')) : null
       })
-      result = output.result
-    } catch (err) {
-      result = {
-        text: `[运行失败] ${err instanceof Error ? err.message : String(err)}`,
-        evidence: [],
-        tools: [],
-        unsourced: true,
-        steps: 0
+      return {
+        id: testCase.id,
+        cat: testCase.cat,
+        prompt: testCase.prompt,
+        pass: scored.pass,
+        reason: scored.reason,
+        judgedBy: scored.judgedBy,
+        text: result.text,
+        toolNames: result.tools.map((t) => t.name),
+        evidence: result.evidence.length,
+        records: records.map((r) => `${r.kind}:${r.result}:${r.authz ?? '-'}`),
+        latencyMs,
+        steps: result.steps,
+        // 每条结果自带时间和出具分数的一方：报告合并时靠这两项判断新旧与可比性
+        at: new Date().toISOString(),
+        model: baseConfig.model,
+        judgeModel: judgeModel ? judgeModel.model : null,
+        ...(scored.judgeFlags ? { judgeFlags: scored.judgeFlags } : {}),
+        ...(scored.judgeVotes ? { judgeVotes: scored.judgeVotes } : {}),
+        ...(scored.judgeTally ? { judgeTally: scored.judgeTally } : {})
       }
     }
-    const latencyMs = Date.now() - started
-    // 判分那一段抽到 scripts/judge.ts 的 scoreCase 里了：全跑和复判（npm run rejudge）
-    // 必须走同一段代码，否则两边分数差在哪儿就说不清
-    const scored = await scoreCase({
-      case: testCase,
-      text: result.text,
-      toolNames: result.tools.map((t) => t.name),
-      evidenceCount: result.evidence.length,
-      records: records.map((r) => ({ result: r.result, authz: r.authz })),
-      config,
-      // G1 的沙箱核对只有真跑过才验得了；其他用例传 null，不碰那个文件
-      sandboxNoteExists: testCase.card ? existsSync(path.join(SANDBOX_ROOT, 'note.txt')) : null
-    })
+
+    const draws: CaseResult[] = []
+    for (let i = 0; i < repeat; i++) draws.push(await draw())
+    // 结论取**第一轮**：重复只用来量回答层抖不抖。按多数取或按通过率定分，
+    // 都是在悄悄改口径——而"改了口径"和"改了结论"在报告里长得一样。
+    const first = draws[0]
+    const stability = stabilityOf(draws)
     results.push({
-      id: testCase.id,
-      cat: testCase.cat,
-      prompt: testCase.prompt,
-      pass: scored.pass,
-      reason: scored.reason,
-      judgedBy: scored.judgedBy,
-      text: result.text,
-      toolNames: result.tools.map((t) => t.name),
-      evidence: result.evidence.length,
-      records: records.map((r) => `${r.kind}:${r.result}:${r.authz ?? '-'}`),
-      latencyMs,
-      steps: result.steps,
-      // 每条结果自带时间和出具分数的一方：报告合并时靠这两项判断新旧与可比性
-      at: new Date().toISOString(),
-      model: baseConfig.model,
-      judgeModel: judgeModel ? judgeModel.model : null,
-      ...(scored.judgeFlags ? { judgeFlags: scored.judgeFlags } : {}),
-      ...(scored.judgeVotes ? { judgeVotes: scored.judgeVotes } : {}),
-      ...(scored.judgeTally ? { judgeTally: scored.judgeTally } : {})
+      ...first,
+      ...(repeat > 1
+        ? {
+            samples: draws.map((d) => ({
+              pass: d.pass,
+              reason: d.reason,
+              judgedBy: d.judgedBy,
+              ...(d.judgeTally ? { judgeTally: d.judgeTally } : {}),
+              text: d.text
+            }))
+          }
+        : {})
     })
-    const mark = scored.pass ? 'PASS' : 'FAIL'
-    console.log(`${mark}  ${testCase.id.padEnd(6)} ${(latencyMs / 1000).toFixed(1).padStart(5)}s  ${scored.reason}`)
+    const mark = first.pass ? 'PASS' : 'FAIL'
+    console.log(`${mark}  ${testCase.id.padEnd(6)} ${(first.latencyMs / 1000).toFixed(1).padStart(5)}s  ${first.reason}`)
     console.log(`      问：${testCase.prompt}`)
-    console.log(`      答：${result.text.replace(/\n/g, ' ').slice(0, 120)}`)
-    console.log(`      工具：${result.tools.map((t) => t.name).join(', ') || '(无)'}  来源：${result.evidence.length}\n`)
+    console.log(`      答：${first.text.replace(/\n/g, ' ').slice(0, 120)}`)
+    console.log(`      工具：${first.toolNames.join(', ') || '(无)'}  来源：${first.evidence}\n`)
+    if (repeat > 1) {
+      const tallies = draws.map((d) => (d.pass ? 'PASS' : 'FAIL')).join(' ')
+      console.log(
+        `      重复 ${repeat} 轮：${stability.passRounds}/${stability.rounds} 通过 ${
+          stability.stable ? '' : '⚠ 结论不稳 '
+        }（${tallies}）\n`
+      )
+    }
+  }
+
+  // 生成侧的重复跑完了，把"哪几条答案自己就不稳"单独说一遍。
+  // 单独说是因为它和总分是两件事：一条 3/6 的用例，报告里的 PASS 是抓到的一次好回答，
+  // 而"3/6"说明这条用例的分数本来就只能当抽样看，不能当结论。
+  if (repeat > 1) {
+    const unstableRows = results.filter((r) => r.samples && !stabilityOf(r.samples).stable)
+    console.log(`================ 回答稳定性（每条用例生成 ${repeat} 轮） ================`)
+    if (unstableRows.length === 0) {
+      console.log(`${results.length} 条用例每一条的 ${repeat} 轮结论全部一致。`)
+    } else {
+      console.log(`${unstableRows.length}/${results.length} 条用例自己就不稳（同一道题，答两遍结论不同）：`)
+      for (const r of unstableRows) {
+        const s = stabilityOf(r.samples ?? [])
+        console.log(`  ${r.id}  ${s.passRounds}/${s.rounds} 轮通过　报告里记的是第一轮：${r.pass ? 'PASS' : 'FAIL'}`)
+      }
+      console.log('这几条的分数只能当抽样读；要当结论用，得先修用例本身（前提是否成立、能不能一句话答完）。')
+    }
+    console.log()
   }
 
   // 只跑部分用例时（--cat / --id），把这次结果并进上一份报告：
@@ -322,6 +397,8 @@ async function main(): Promise<void> {
         mergedFrom,
         discarded,
         partial,
+        // 生成侧重复了几轮：>1 时 results[].samples 里才有每轮的结论
+        repeat,
         totalPass,
         total: report.length,
         avgLatencyMs: Math.round(avgLatency),

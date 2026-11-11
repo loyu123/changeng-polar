@@ -7,7 +7,7 @@
  * 它们不碰网络也不读文件，所以"复判的口径"可以像判据一样被锁在测试里。
  */
 
-export class RejudgeArgError extends Error {}
+import { stabilityOf, type RoundVerdict } from './lib/repeat'
 
 /**
  * `--from` 可以有多个（也可以逗号分隔）。**去重**，顺序保留：
@@ -25,21 +25,6 @@ export function parseSources(args: string[]): string[] {
 }
 
 /**
- * 重复判几次。默认 1 = 老行为（判一遍）。
- *
- * 上限 20 不是为了省事：H3 每判一遍就要问三次裁判，20 × 3 = 60 次调用一条用例，
- * 再高就不是"量抖动"而是"烧钱"，而抖动率在 10 轮左右已经稳了。
- * 0 / 负数 / 小数一律拒绝——`--repeat=0` 最危险：一条都没判，报告却是满分。
- */
-export function parseRepeat(raw: string | undefined): number {
-  if (raw === undefined) return 1
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n < 1) throw new RejudgeArgError(`--repeat 要是正整数，收到 "${raw}"`)
-  if (n > 20) throw new RejudgeArgError(`--repeat 上限 20（收到 ${n}）：H3 每轮要问三次裁判，再高只是在烧钱`)
-  return n
-}
-
-/**
  * 这条用例要不要重复判。
  *
  * 只有 LLM 裁判会抖：正则和行为断言是确定性的，同一条回答判一百遍也是一样结果，
@@ -49,32 +34,6 @@ export function parseRepeat(raw: string | undefined): number {
 export function shouldRepeat(cat: string, judgeConfigured: boolean): boolean {
   if (!judgeConfigured) return false
   return cat === 'H3' || cat === 'H2'
-}
-
-export interface RoundVerdict {
-  pass: boolean
-  judgedBy: string
-}
-
-export interface Stability {
-  /** 实际判了几轮 */
-  rounds: number
-  /** 几轮判通过 */
-  passRounds: number
-  /** 其中有几轮是 LLM 裁判给的结论（其余是正则/行为断言，重复它们没有意义） */
-  llmRounds: number
-  /** 每轮结论完全一致 */
-  stable: boolean
-}
-
-export function stabilityOf(rounds: readonly RoundVerdict[]): Stability {
-  const passRounds = rounds.filter((r) => r.pass).length
-  return {
-    rounds: rounds.length,
-    passRounds,
-    llmRounds: rounds.filter((r) => r.judgedBy === 'llm').length,
-    stable: passRounds === 0 || passRounds === rounds.length
-  }
 }
 
 export interface ComparisonColumn {

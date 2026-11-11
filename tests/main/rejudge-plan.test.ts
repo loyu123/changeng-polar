@@ -1,21 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import {
-  buildComparison,
-  parseRepeat,
-  parseSources,
-  RejudgeArgError,
-  shouldRepeat,
-  stabilityOf,
-  unstableIds
-} from '../../scripts/rejudge-plan'
+import { buildComparison, parseSources, shouldRepeat, unstableIds } from '../../scripts/rejudge-plan'
 
 /**
- * 复判的口径：参数、抖动、对表。
+ * 复判的口径：来源解析、重复判的范围、多份报告的对表。
  *
- * 这三样都出过（或极容易出）"看起来对、其实错"的错：
- * 同一份报告点两次名 → 每条判两遍白花钱；`--repeat=0` → 一条没判却是满分；
- * 对表时把某份报告缺的用例当成失败 → "没跑到"看起来像"跑了没过"。
- * 所以它们必须被锁在测试里，而不是靠跑一次真机看着顺眼。
+ * 这几样都出过（或极容易出）"看起来对、其实错"的错：
+ * 同一份报告点两次名 → 每条判两遍白花钱；对确定性判据也做重复 →
+ * 造出一堆"稳定"的假证据；对表时把某份报告缺的用例当成失败 →
+ * "没跑到"看起来像"跑了没过"。所以它们必须被锁在测试里，
+ * 而不是靠跑一次真机看着顺眼。
+ *
+ * 重复次数的解析和稳定性判断在 `tests/main/repeat.test.ts`（两个脚本共用）。
  */
 
 describe('parseSources', () => {
@@ -41,31 +36,6 @@ describe('parseSources', () => {
   })
 })
 
-describe('parseRepeat', () => {
-  it('不写就是 1（老行为）', () => {
-    expect(parseRepeat(undefined)).toBe(1)
-  })
-
-  it('正整数照收', () => {
-    expect(parseRepeat('3')).toBe(3)
-    expect(parseRepeat('20')).toBe(20)
-  })
-
-  it('0 必须拒绝：一条都没判，报告却是满分', () => {
-    expect(() => parseRepeat('0')).toThrow(RejudgeArgError)
-  })
-
-  it('负数、小数、乱写一律拒绝', () => {
-    expect(() => parseRepeat('-1')).toThrow(RejudgeArgError)
-    expect(() => parseRepeat('2.5')).toThrow(RejudgeArgError)
-    expect(() => parseRepeat('三')).toThrow(RejudgeArgError)
-  })
-
-  it('超过 20 拒绝：H3 每轮就要三次裁判，再高不是量抖动是烧钱', () => {
-    expect(() => parseRepeat('21')).toThrow(/20/)
-  })
-})
-
 describe('shouldRepeat', () => {
   it('H3、H2 会走 LLM 裁判，要重复', () => {
     expect(shouldRepeat('H3', true)).toBe(true)
@@ -79,26 +49,6 @@ describe('shouldRepeat', () => {
   it('没配判分模型就全不重复——那会儿连 H3 都走正则', () => {
     expect(shouldRepeat('H3', false)).toBe(false)
     expect(shouldRepeat('H2', false)).toBe(false)
-  })
-})
-
-describe('stabilityOf', () => {
-  const r = (pass: boolean, judgedBy = 'llm') => ({ pass, judgedBy })
-
-  it('每轮一致 → 稳定', () => {
-    expect(stabilityOf([r(true), r(true), r(true)])).toMatchObject({ stable: true, passRounds: 3, rounds: 3 })
-  })
-
-  it('有一轮不一样 → 不稳定，且把通过了几轮记下来', () => {
-    expect(stabilityOf([r(true), r(false), r(true)])).toMatchObject({ stable: false, passRounds: 2, rounds: 3 })
-  })
-
-  it('全不通过也是稳定：稳定说的是"每轮一样"，不是"都通过"', () => {
-    expect(stabilityOf([r(false), r(false)])).toMatchObject({ stable: true, passRounds: 0 })
-  })
-
-  it('数得清有几轮真是 LLM 判的（其余重复没有意义）', () => {
-    expect(stabilityOf([r(true, 'llm'), r(true, 'regex-fallback')])).toMatchObject({ llmRounds: 1 })
   })
 })
 
