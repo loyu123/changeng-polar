@@ -52,6 +52,8 @@ export interface IpcContext {
   orb: {
     apply: (prefs: import('../../shared/types').OrbPrefs, hooks: { onPositionSaved: (x: number, y: number) => void }) => void
   }
+  /** 后台安装的任务清单：界面列出"还在装什么"、取消、装完清掉 */
+  installJobs: import('../node/install-jobs').InstallJobs
 }
 
 export function registerAppIpc(ctx: IpcContext): void {

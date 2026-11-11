@@ -143,6 +143,15 @@ export interface ToolDeps {
   /** 把已经开着的那个窗口调到前面（拿不到窗口就返回 false，不影响"它开着"这个结论） */
   focusApp?: (pid: number) => Promise<boolean>
   /**
+   * 后台安装的任务清单。
+   *
+   * 有它 = 安装不再占住那一轮对话：工具立刻返回，装完之后由任务自己收尾并通知。
+   * 没有它（评测、闸门自检、离线验收）= 老样子同步装完再返回。
+   * 不给这些环境编一个假后台：那里没有窗口、没有通知、也没有人能点取消，
+   * "后台"只会变成"结果不知道去哪了"。
+   */
+  installJobs?: import('../node/install-jobs').InstallJobs
+  /**
    * 启动系统应用清单里的条目（`shell:AppsFolder\<AppID>`）。
    *
    * 豆包、商店应用这类**不建任何快捷方式**的程序只有这一条路。
@@ -295,6 +304,97 @@ async function verifyInstall(
 
 function ev(partial: Omit<Evidence, 'id' | 'at'>): Evidence {
   return { id: `ev_${randomUUID().slice(0, 8)}`, at: new Date().toISOString(), ...partial }
+}
+
+/**
+ * 从"装"到"核对完"的整条路，一次跑完。
+ *
+ * 抽出来是为了让前台/后台两种跑法用的是**同一段代码**：有没有后台任务清单，
+ * 装的过程、取消的措辞、核对的口径都必须一模一样。分两份写的话，
+ * 迟早一边改了另一边没改，而"装没装上"这件事容不得两种说法。
+ *
+ * `beforeStartup` 是装之前抓的自启项基准线，必须由调用方在装之前取好传进来——
+ * 这里已经太晚了，安装器一开，基准线就没了。
+ *
+ * 返回体里单独给一个 `status`，**不靠 summary 的措辞去猜**：核对那段话里本来
+ * 就含有"或安装被中途取消"这种字样，用正则从里面认"这次是不是被取消了"，
+ * 迟早把一次核对失败认成用户取消（真踩过）。
+ */
+async function runInstallToCompletion(
+  chosen: WingetPackage,
+  beforeStartup: string[] | null,
+  signal?: AbortSignal
+): Promise<{ result: ToolResult; status: 'ok' | 'failed' | 'cancelled' }> {
+  const outcome = await installWinget(chosen.id, signal)
+  if (outcome.cancelled) {
+    // 用户自己点的取消不是故障：别让模型说成"安装失败"或再劝一次
+    return { result: { ok: false, summary: `「${chosen.name}」${outcome.detail}` }, status: 'cancelled' }
+  }
+  /**
+   * 走到这里说明装前查重没查到，但 winget 说"已经装了"——
+   * 清单缓存、用户自己刚装过、或查重那一步超时都会这样。
+   * 这时候**什么都没装**，绝不能顺着下面"装完了"的流程宣布安装成功：
+   * 那会让用户以为刚装上是新版本。
+   */
+  if (outcome.alreadyInstalled) {
+    return {
+      result: {
+        ok: false,
+        summary: `「${chosen.name}」本来就在这台机器上，这一轮没有安装任何东西（winget 发现已有此包，直接没有运行安装程序）。如实告诉用户它已经在了，不要重试 install_app，也不要劝他重装——需要更新时软件自己会提示；他想看到这个程序就调用 launch_app 打开它。`,
+        data: { id: chosen.id, version: chosen.version, source: 'winget', alreadyInstalled: true }
+      },
+      status: 'failed'
+    }
+  }
+  if (!outcome.ok) {
+    return { result: { ok: false, summary: `没能安装「${chosen.name}」：${outcome.detail}` }, status: 'failed' }
+  }
+
+  const verified = await verifyInstall(chosen, beforeStartup, signal)
+  const headline = verified.confirmed
+    ? `已通过 winget 安装「${chosen.name}」（${chosen.id}）`
+    : `winget 报告安装成功，但核对没对上：程序清单里查不到「${chosen.name}」（${chosen.id}）`
+
+  return {
+    status: verified.confirmed ? 'ok' : 'failed',
+    result: {
+      // winget 说成功、我们却查不到，这条就按未成功上报（审计记 partial），
+      // 让模型如实说"没核实到"，而不是替 winget 宣布装好了
+      ok: verified.confirmed,
+      summary: `${headline}。${verified.note}`,
+      undo: '安装不可撤回（卸载可再找管家）',
+      sourceUrl: outcome.sourceUrl,
+      /**
+       * 核对结果直接填上，不让闸门再跑一遍：装完核对需要装之前抓的自启项基准线，
+       * 事后补不了。填的是同一次核对（三条事实）的结论，格式与其它工具统一。
+       */
+      verify: {
+        state: verified.confirmed ? 'confirmed' : 'mismatch',
+        fact: verified.note
+      },
+      // 只登记核实到的显示名：没核实到就不往台账上写"管家装的"
+      installedName: verified.confirmed ? verified.displayName : undefined,
+      data: {
+        id: chosen.id,
+        version: chosen.version,
+        source: 'winget',
+        sourceUrl: outcome.sourceUrl,
+        installedName: verified.displayName,
+        installLocation: verified.app?.installLocation || null,
+        installDate: verified.app ? formatInstallDate(verified.app.installDate) : null,
+        confirmed: verified.confirmed
+      },
+      evidence: [
+        ev({
+          type: 'local',
+          title: `安装：${chosen.name}`,
+          detail: `winget 交互式安装（安装器界面里由用户确认） · Id ${chosen.id} · 用户授权后执行 · 装后核对${
+            verified.confirmed ? '通过' : '未对上'
+          }${outcome.sourceUrl ? ` · 安装包来源 ${outcome.sourceUrl}` : ''}`
+        })
+      ]
+    }
+  }
 }
 
 /**
@@ -1796,7 +1896,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     name: 'install_app',
     label: '安装软件（需授权）',
     description:
-      '通过 winget（Windows 官方包管理器）安装一个软件：先在 winget 仓库检索，唯一匹配才出授权卡，然后**拉起这个软件自己的安装界面**由用户在窗口里点完（安装位置、快捷方式、开机自启都由他选）。来源与哈希校验由 winget 负责，不在桌面留安装包；安装不可撤回，装完可在「设置 → 应用」卸载。**装之前会先查一遍它是不是已经装着了**：已经装了就一个字节都不动、直接告诉你它在了，这时如实转告用户，**不要重试、不要劝他重装，也不要提"帮你升级"——要不要升级由软件自己提示**；他要看到这个程序就调用 launch_app。只有用户明确说要重装/修复时才传 force=true。**调用后要在界面上等用户点完，可能好几分钟；用户在安装器里点「取消」时工具会说明是用户取消，不要当成失败、也不要劝他再试一次。**装完会自动核对程序清单与新增的开机自启项，核对结果会附在返回里：**核对没对上时必须如实说"没核实到装好了"，不要因为 winget 报了成功就告诉用户已经装好**。授权卡上用户可以点「始终允许」：只对同一个包的同一版本生效（换个包/换版本仍要重新授权），并可在「设置 → 授权记忆」里撤销。用户没有明确同意前不要调用。名字有歧义（多个候选）时会自动弹出候选卡让用户自己点，这时不要自己替用户挑、也不要重复调用；仓库里没有这个词时，先把口语名/拼音/错拼翻成官方名称或英文名再调一次。',
+      '通过 winget（Windows 官方包管理器）安装一个软件：先在 winget 仓库检索，唯一匹配才出授权卡，然后**拉起这个软件自己的安装界面**由用户在窗口里点完（安装位置、快捷方式、开机自启都由他选）。来源与哈希校验由 winget 负责，不在桌面留安装包；安装不可撤回，装完可在「设置 → 应用」卸载。**装之前会先查一遍它是不是已经装着了**：已经装了就一个字节都不动、直接告诉你它在了，这时如实转告用户，**不要重试、不要劝他重装，也不要提"帮你升级"——要不要升级由软件自己提示**；他要看到这个程序就调用 launch_app。只有用户明确说要重装/修复时才传 force=true。**这个工具是"拉起来就返回"的：返回时安装器窗口才刚打开，结果还不知道，可能要好几分钟。所以返回后只能说"安装窗口已经打开了、装完会告诉你核对结果"，绝不能说已经装好了，也别说"正在安装、请稍候"——用户可以接着问别的事，管家装完会另行**自动核对**程序清单与新增的开机自启项，并通知他结果。**用户在安装器里点「取消」时，后台会说明是用户取消，不要当成失败、也不要劝他再试一次。核对没对上时必须如实说"没核实到装好了"，不要因为 winget 报了成功就告诉用户已经装好。授权卡上用户可以点「始终允许」：只对同一个包的同一版本生效（换个包/换版本仍要重新授权），并可在「设置 → 授权记忆」里撤销。用户没有明确同意前不要调用。名字有歧义（多个候选）时会自动弹出候选卡让用户自己点，这时不要自己替用户挑、也不要重复调用；仓库里没有这个词时，先把口语名/拼音/错拼翻成官方名称或英文名再调一次。',
     effect: 'install',
     // 全注册表唯一开「始终允许」的档位：安装是系统改动但非销毁，key 含包名+版本，
     // 换目标即失效；删除/卸载（销毁类）永远逐次弹卡，不允许记忆
@@ -1911,80 +2011,56 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
            * 之前这里是"全程没有界面、取消不了"（那时真的用 --silent），
            * 现在改成一律交互式，那句话就成了假话，必须跟着改。
            */
-          impact: `会启动这个软件自己的安装界面（${chosen.id}）：安装位置、桌面快捷方式、开机自启都在那个界面里由你决定，长庚不替你选。**需要你在弹出的窗口里点完**，这一轮对话会等你——点「取消」就等于什么都没装。装完会自动核对程序清单与新增的自启项并写进记录。来源与哈希由 winget 校验，不在桌面留安装包。`,
+          impact: `会启动这个软件自己的安装界面（${chosen.id}）：安装位置、桌面快捷方式、开机自启都在那个界面里由你决定，长庚不替你选。**需要你在弹出的窗口里点完**——点「取消」就等于什么都没装。**点完就开始装，你不用在这儿等着**，可以接着问别的事：装完长庚会自动核对程序清单与新增的自启项，结果另行告诉你，并写进记录。来源与哈希由 winget 校验，不在桌面留安装包。`,
           undoHint: '安装不可撤回；装完可在「设置 → 应用」里卸载',
           reinstallHint: `安装源：winget（Id: ${chosen.id}）`
         },
         execute: async (): Promise<ToolResult> => {
-          // 装之前先扫一次自启项：装完只陈述前后差异，不推断是谁加的。
-          // 扫不到就当没有基准线，后面就不聊自启项（宁可不提，也不猜）
+          /**
+           * 装之前先扫一次自启项：装完只陈述前后差异，不推断是谁加的。
+           * 扫不到就当没有基准线，后面就不聊自启项（宁可不提，也不猜）。
+           *
+           * 这一步必须在**返回**之前做：它是核对用的基准线，安装器一开就变了。
+           */
           const beforeStartup = await listStartupItems(true)
             .then((r) => r.items.map((i) => i.name))
             .catch(() => null)
 
-          const outcome = await installWinget(chosen.id, ctx.signal)
-          if (outcome.cancelled) {
-            // 用户自己点的取消不是故障：别让模型说成"安装失败"或再劝一次
-            return { ok: false, summary: `「${chosen.name}」${outcome.detail}` }
-          }
           /**
-           * 走到这里说明装前查重没查到，但 winget 说"已经装了"——
-           * 清单缓存、用户自己刚装过、或查重那一步超时都会这样。
-           * 这时候**什么都没装**，绝不能顺着下面"装完了"的流程宣布安装成功：
-           * 那会让用户以为刚装上是新版本。
+           * 没有任务清单的环境（评测、闸门自检、离线验收）就照老样子同步做完。
+           *
+           * 不给它编一个假的后台：那些环境里没有窗口、没有通知、也没有人点取消，
+           * "后台"在那里只会变成"结果不知道去哪了"。
            */
-          if (outcome.alreadyInstalled) {
-            return {
-              ok: false,
-              summary: `「${chosen.name}」本来就在这台机器上，这一轮没有安装任何东西（winget 发现已有此包，直接没有运行安装程序）。如实告诉用户它已经在了，不要重试 install_app，也不要劝他重装——需要更新时软件自己会提示；他想看到这个程序就调用 launch_app 打开它。`,
-              data: { id: chosen.id, version: chosen.version, source: 'winget', alreadyInstalled: true }
-            }
-          }
-          if (!outcome.ok) {
-            return { ok: false, summary: `没能安装「${chosen.name}」：${outcome.detail}` }
-          }
+          const registry = deps.installJobs
+          if (!registry) return (await runInstallToCompletion(chosen, beforeStartup, ctx.signal)).result
 
-          const verified = await verifyInstall(chosen, beforeStartup, ctx.signal)
-          const headline = verified.confirmed
-            ? `已通过 winget 安装「${chosen.name}」（${chosen.id}）`
-            : `winget 报告安装成功，但核对没对上：程序清单里查不到「${chosen.name}」（${chosen.id}）`
+          const job = registry.start({ name: chosen.name, pkgId: chosen.id, version: chosen.version })
+          // 后台任务自己收尾：装完核对、更新任务状态。审计由闸门在 deferred 落定时写
+          const done = (async (): Promise<ToolResult> => {
+            try {
+              const final = await runInstallToCompletion(chosen, beforeStartup, job.signal)
+              // 状态用 final.status，不从 summary 里认字眼——核对失败那句话里也带着「取消」
+              job.finish(final.status, final.result.summary)
+              return final.result
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err)
+              job.finish('failed', `安装没做完：${reason}`)
+              return { ok: false, summary: `「${chosen.name}」没装成：${reason}` }
+            }
+          })()
 
           return {
-            // winget 说成功、我们却查不到，这条就按未成功上报（审计记 partial），
-            // 让模型如实说"没核实到"，而不是替 winget 宣布装好了
-            ok: verified.confirmed,
-            summary: `${headline}。${verified.note}`,
-            undo: '安装不可撤回（卸载可再找管家）',
-            sourceUrl: outcome.sourceUrl,
             /**
-             * 核对结果直接填上，不让闸门再跑一遍：装完核对需要装之前抓的自启项基准线，
-             * 事后补不了。填的是同一次核对（三条事实）的结论，格式与其它工具统一。
+             * `ok: true` 说的是"这件事已经开始了"，不是"装好了"。
+             *
+             * 这两件事必须分开说：安装器现在才刚弹出来，结果还不知道。
+             * summary 里写清楚，模型才不会照着这句回执对用户宣布装好了。
              */
-            verify: {
-              state: verified.confirmed ? 'confirmed' : 'mismatch',
-              fact: verified.note
-            },
-            // 只登记核实到的显示名：没核实到就不往台账上写"管家装的"
-            installedName: verified.confirmed ? verified.displayName : undefined,
-            data: {
-              id: chosen.id,
-              version: chosen.version,
-              source: 'winget',
-              sourceUrl: outcome.sourceUrl,
-              installedName: verified.displayName,
-              installLocation: verified.app?.installLocation || null,
-              installDate: verified.app ? formatInstallDate(verified.app.installDate) : null,
-              confirmed: verified.confirmed
-            },
-            evidence: [
-              ev({
-                type: 'local',
-                title: `安装：${chosen.name}`,
-                detail: `winget 交互式安装（安装器界面里由用户确认） · Id ${chosen.id} · 用户授权后执行 · 装后核对${
-                  verified.confirmed ? '通过' : '未对上'
-                }${outcome.sourceUrl ? ` · 安装包来源 ${outcome.sourceUrl}` : ''}`
-              })
-            ]
+            ok: true,
+            summary: `「${chosen.name}」的安装已经开始了，现在由安装器自己的窗口负责：位置、快捷方式、开机自启都在那个窗口里由用户决定，装的时候不用等我。装完我会核对程序清单，结果另行告诉你——**不要说它已经装好了，也别说正在安装，就说安装窗口已经打开了、装完会告诉他核对结果**。这期间用户可以继续问别的事。`,
+            deferred: done,
+            data: { id: chosen.id, version: chosen.version, source: 'winget', jobId: job.id, background: true }
           }
         }
       }

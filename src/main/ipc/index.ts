@@ -1,6 +1,7 @@
 import { registerAppIpc, type IpcContext } from './app'
 import { registerChatIpc } from './chat'
 import { registerConfigIpc } from './config'
+import { registerInstallIpc } from './install'
 import { registerOrbIpc } from './orb'
 import { registerOrchestrationIpc } from './orchestration'
 import { registerWorkIpc } from './work'
@@ -15,4 +16,5 @@ export function registerIpc(ctx: IpcContext): void {
   registerWorkIpc(ctx)
   registerOrbIpc(ctx)
   registerOrchestrationIpc(ctx)
+  registerInstallIpc(ctx.installJobs)
 }

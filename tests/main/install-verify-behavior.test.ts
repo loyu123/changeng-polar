@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext } from '../../src/main/agent/tool-types'
+import { InstallJobs } from '../../src/main/node/install-jobs'
 
 /**
  * install_app 的装后核对。
@@ -18,6 +19,8 @@ const hoisted = vi.hoisted(() => ({
   checkThrows: false,
   /** 装前查重漏了、winget 自己发现已装（清单缓存、用户刚装过） */
   wingetAlreadyInstalled: false,
+  /** 安装器被用户中途关掉（winget 回来说取消） */
+  wingetCancelled: false,
   /** 注册表里的程序清单 */
   apps: [] as Array<Record<string, unknown>>,
   /** 两次启动项扫描之间的名字集合（安装前 / 安装后共用同一个数组，靠 mutate 模拟变化） */
@@ -34,9 +37,11 @@ vi.mock('../../src/main/node/install', async (importOriginal) => {
     wingetAvailable: async () => true,
     searchWinget: async () => [{ name: '网易云音乐', id: 'NetEase.CloudMusic', version: '2.10.6' }],
     installWinget: async () =>
-      hoisted.wingetAlreadyInstalled
-        ? { ok: false, alreadyInstalled: true, detail: '这台机器上本来就有这个软件，winget 没有执行安装' }
-        : { ok: true, detail: 'ok', sourceUrl: 'https://example.com/cloudmusic.exe' },
+      hoisted.wingetCancelled
+        ? { ok: false, cancelled: true, detail: '安装被中止（用户取消）' }
+        : hoisted.wingetAlreadyInstalled
+          ? { ok: false, alreadyInstalled: true, detail: '这台机器上本来就有这个软件，winget 没有执行安装' }
+          : { ok: true, detail: 'ok', sourceUrl: 'https://example.com/cloudmusic.exe' },
     checkInstalled: async () => {
       // 第一次是装前查重，之后都是装后核对：两次问的是同一个函数但含义不同，
       // 混在一起会让"装完核对"的用例全被查重挡在 plan 阶段
@@ -88,6 +93,7 @@ beforeEach(() => {
   hoisted.preInstalled = false
   hoisted.checkThrows = false
   hoisted.wingetAlreadyInstalled = false
+  hoisted.wingetCancelled = false
   hoisted.apps = []
   hoisted.startupBefore = []
   hoisted.startupAfter = []
@@ -294,5 +300,86 @@ describe('install_app 装后核对', () => {
     const result = await planned.execute()
     expect(result.ok).toBe(false)
     expect(result.summary).not.toContain('D:\\\\')
+  })
+})
+
+describe('install_app · 后台任务', () => {
+  /**
+   * 安装不占住整轮对话：有任务清单时，工具拉起来就返回，
+   * 装完由任务自己收尾（核对、更新状态）。审计由闸门在 deferred 落定时写。
+   */
+  const withJobs = () => {
+    const jobs = new InstallJobs()
+    const tool = createTools({ installJobs: jobs }).find((t) => t.name === 'install_app')!
+    return { jobs, tool }
+  }
+
+  it('有任务清单时立刻返回，不等安装器', async () => {
+    const { jobs, tool } = withJobs()
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    if (!planned.ok) throw new Error(planned.reason)
+    const result = await planned.execute()
+    expect(result.ok).toBe(true)
+    expect(result.deferred).toBeInstanceOf(Promise)
+    // 装的时候清单里就能看到它
+    expect(jobs.list()[0]).toMatchObject({ name: '网易云音乐', status: 'running' })
+    // 话必须说清"开始了"而不是"装好了"，否则模型会照着回执对用户宣布完成
+    expect(result.summary).toContain('安装已经开始了')
+    expect(result.summary).not.toContain('已通过 winget 安装')
+  })
+
+  it('后台跑完：任务状态更新，清单里留下核对结论', async () => {
+    const { jobs, tool } = withJobs()
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    if (!planned.ok) throw new Error(planned.reason)
+    const result = await planned.execute()
+    const final = await result.deferred!
+
+    expect(final.ok).toBe(true)
+    expect(final.summary).toContain('已通过 winget 安装')
+    expect(final.installedName).toBe('网易云音乐')
+    const [view] = jobs.list()
+    expect(view.status).toBe('ok')
+    expect(view.detail).toContain('已通过 winget 安装')
+    expect(jobs.runningCount()).toBe(0)
+  })
+
+  it('后台跑成"核对没对上"：任务记 failed，不记 ok', async () => {
+    hoisted.checkFound = false
+    hoisted.apps = []
+    const { jobs, tool } = withJobs()
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    if (!planned.ok) throw new Error(planned.reason)
+    const result = await planned.execute()
+    const final = await result.deferred!
+
+    expect(final.ok).toBe(false)
+    expect(jobs.list()[0].status).toBe('failed')
+    expect(jobs.list()[0].detail).toContain('核对没对上')
+  })
+
+  it('后台被取消：任务记 cancelled，不记 failed', async () => {
+    hoisted.wingetCancelled = true
+    const { jobs, tool } = withJobs()
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    if (!planned.ok) throw new Error(planned.reason)
+    const result = await planned.execute()
+    await result.deferred!
+
+    const [view] = jobs.list()
+    expect(view.status).toBe('cancelled')
+    // 用户自己按的取消，界面上要说"没再等它"，不能说成"没装成"
+    expect(view.detail).toContain('取消')
+  })
+
+  it('没有任务清单的环境（评测/离线验收）照旧同步装完再返回', async () => {
+    const tool = createTools().find((t) => t.name === 'install_app')!
+    const planned = await tool.plan!({ name: 'NetEase.CloudMusic' }, ctx)
+    if (!planned.ok) throw new Error(planned.reason)
+    const result = await planned.execute()
+    // 不给这些环境编一个假后台：那里没有窗口、没有通知、也没人能点取消
+    expect(result.deferred).toBeUndefined()
+    expect(result.ok).toBe(true)
+    expect(result.summary).toContain('已通过 winget 安装')
   })
 })

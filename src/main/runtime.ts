@@ -22,6 +22,7 @@ import { memoryBlock } from './node/memory'
 import { SANDBOX_ROOT } from './node/sandbox'
 import { focusProcessWindow, probeLaunch } from './node/running'
 import type { Store } from './node/store'
+import type { InstallJobs } from './node/install-jobs'
 import { logError } from './log'
 
 /**
@@ -183,6 +184,13 @@ export interface TurnRuntimeOptions {
   broker: AuthBroker
   /** 「始终允许」的内存副本：闸门要同步判断，文件只用于持久化与展示 */
   alwaysAllowed: Set<string>
+  /**
+   * 后台安装的任务清单。
+   *
+   * 不传 = 安装仍然同步跑完再返回（评测、离线验收这类没有窗口的场景）。
+   * 传了 = 安装拉起来就返回，装完由任务广播并通知，用户这期间能接着聊。
+   */
+  installJobs?: InstallJobs
   openSettings: (page: string) => Promise<void>
 }
 
@@ -267,6 +275,7 @@ export class TurnRuntime {
         rootDir: path.join(app.getPath('userData'), 'orchestrator'),
         worker: worker ?? {}
       },
+      installJobs: this.opts.installJobs,
       /**
        * 允许上传到 GitHub 的目录：沙箱（长庚自己的试验场）+ 编排产出。
        *

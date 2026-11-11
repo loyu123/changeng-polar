@@ -358,3 +358,119 @@ describe('授权闸门 · 候选卡（歧义选择）', () => {
     expect(records.at(-1)?.sub).toContain('已经装在这台机器上了')
   })
 })
+
+describe('授权闸门 · 后台任务（安装）', () => {
+  /**
+   * 安装不再占住整轮对话：工具把活放到后台，立刻返回。
+   *
+   * 这里锁的是记账的时机——**不能在安装器刚弹出来的时候就记一条 ok**。
+   * 记账晚一点没问题，记错是另一回事：那条 ok 会进应用台账，
+   * 于是"管家装的"变成一句没根据的话。
+   */
+  const deferredTool = (final: () => Promise<{ ok: boolean; summary: string; verify?: { state: 'confirmed'; fact: string } }>) => {
+    let settle!: (r: Awaited<ReturnType<typeof final>>) => void
+    const pending = new Promise<Awaited<ReturnType<typeof final>>>((resolve) => {
+      settle = resolve
+    })
+    const tool = makeTool({
+      effect: 'install',
+      allowAlways: true,
+      run: vi.fn(async () => ({
+        ok: true,
+        summary: '「哔哩哔哩」的安装已经开始了',
+        deferred: pending.then(() => final())
+      }))
+    })
+    return { tool, settle }
+  }
+
+  it('立刻返回，不在这一刻记账', async () => {
+    const { tool } = deferredTool(async () => ({ ok: true, summary: '装好了' }))
+    const { hooks, records } = makeHooks('once')
+    const result = await executeThroughGate(tool, {}, ctx, hooks)
+    expect(result.summary).toContain('安装已经开始了')
+    expect(records).toHaveLength(0)
+  })
+
+  it('返回给调用方的那一份不带 deferred（Promise 不该跟着结果流出去）', async () => {
+    const { tool } = deferredTool(async () => ({ ok: true, summary: '装好了' }))
+    const { hooks } = makeHooks('once')
+    const result = await executeThroughGate(tool, {}, ctx, hooks)
+    expect('deferred' in result).toBe(false)
+  })
+
+  it('落定之后才写审计，且只写一条，authz 仍是用户批的那次', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const tool = makeTool({
+      effect: 'install',
+      allowAlways: true,
+      run: vi.fn(async () => ({
+        ok: true,
+        summary: '安装已经开始了',
+        deferred: gate.then(() => ({ ok: true, summary: '已通过 winget 安装「哔哩哔哩」', verify: { state: 'confirmed' as const, fact: '核过程序清单：在册' } }))
+      }))
+    })
+    const { hooks, records } = makeHooks('once')
+    await executeThroughGate(tool, {}, ctx, hooks)
+    expect(records).toHaveLength(0)
+
+    release()
+    // 让 then 链跑完（含事实核对那一跳）
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      result: 'ok',
+      authz: 'user_once',
+      tool: 'demo_destroy',
+      // 核对结果要跟着记录走：没有它，记录页只能说"装成功了"而说不出查到了什么
+      verified: 'confirmed'
+    })
+  })
+
+  it('后台失败了也留痕：不能出现"装过但不知道怎么样"的记录', async () => {
+    const tool = makeTool({
+      effect: 'install',
+      allowAlways: true,
+      run: vi.fn(async () => ({
+        ok: true,
+        summary: '安装已经开始了',
+        deferred: Promise.reject(new Error('winget 进程被系统杀掉'))
+      }))
+    })
+    const { hooks, records } = makeHooks('once')
+    await executeThroughGate(tool, {}, ctx, hooks)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(records).toHaveLength(1)
+    expect(records[0].result).toBe('partial')
+    expect(records[0].sub).toContain('winget 进程被系统杀掉')
+  })
+
+  it('后台最终没装成 → 审计记 partial，不写成 ok', async () => {
+    const tool = makeTool({
+      effect: 'install',
+      allowAlways: true,
+      run: vi.fn(async () => ({
+        ok: true,
+        summary: '安装已经开始了',
+        deferred: Promise.resolve({ ok: false, summary: '你在安装器里取消了安装' })
+      }))
+    })
+    const { hooks, records } = makeHooks('once')
+    await executeThroughGate(tool, {}, ctx, hooks)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(records.at(-1)?.result).toBe('partial')
+  })
+
+  it('用户拒绝时根本不会执行，也就没有后台任务', async () => {
+    const run = vi.fn(async () => ({ ok: true, summary: 'x', deferred: Promise.resolve({ ok: true, summary: 'x' }) }))
+    const tool = makeTool({ effect: 'install', allowAlways: true, run })
+    const { hooks, records } = makeHooks('deny')
+    const result = await executeThroughGate(tool, {}, ctx, hooks)
+    expect(result.ok).toBe(false)
+    expect(run).not.toHaveBeenCalled()
+    expect(records.at(-1)?.result).toBe('rejected')
+  })
+})

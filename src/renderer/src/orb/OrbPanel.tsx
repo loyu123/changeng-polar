@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AuthAnswer, AuthRequest, ChatMessage, ChatSession, Evidence, ToolChoiceRequest } from '../../../shared/types'
+import { InstallStrip } from '../components/InstallStrip'
 import { MarkdownText } from '../components/MarkdownText'
 
 /** 与主进程 runtime.ts 的 AUTH_TIMEOUT_MS 对齐：卡 60 秒没人理就按拒绝收口 */
@@ -615,6 +616,8 @@ export function OrbPanel(): React.ReactNode {
       </div>
 
       <div className="pfoot">
+        {/* 安装是后台跑的：面板里也得看得见还在装什么，否则这里点完"装个 X"就没下文了 */}
+        <InstallStrip compact />
         <div className={`pinput${pendingAuth ? ' off' : ''}`}>
           <textarea
             ref={inputRef}

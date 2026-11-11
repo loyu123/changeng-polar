@@ -354,6 +354,36 @@ export async function executeThroughGate(
       backupUndo = backup.undo
     }
     const result = await execute()
+
+    /**
+     * 后台任务（现在只有安装）：动作已经开始了，但还没干完。
+     *
+     * 这里**不能**当场核对和记账——那时安装器才刚弹出来，写一条 `ok` 就是假话，
+     * factCheck 也只能对着一份占位结果跑。所以改成等它落定再补：
+     * 核对、审计、authz 仍然全走闸门这一条路，一次动作仍然只有一条记录。
+     *
+     * 记账晚一点没问题，晚记和记错是两回事。
+     */
+    if (result.deferred) {
+      void result.deferred
+        .then(async (final) => {
+          const verify = await factCheck(def, args, ctx, final)
+          const checked = verify ? { ...final, verify } : final
+          audit({ ...checked, undo: final.undo ?? backupUndo }, authz, final.ok ? 'ok' : 'partial')
+        })
+        .catch((err) => {
+          // 后台任务自己炸了也要留痕：没有记录的"装过但不知道怎么样"是最坏的一种状态
+          audit(
+            { ok: false, summary: `后台任务失败：${err instanceof Error ? err.message : String(err)}` },
+            authz,
+            'partial'
+          )
+        })
+      // 把 deferred 摘掉再交给调用方：一个 Promise 不该跟着结果往模型和日志里跑
+      const { deferred: _pending, ...now } = result
+      return now
+    }
+
     // 核对一次：拿到的事实跟着结果一起回给模型和记录页，不让它自己圆
     const verify = await factCheck(def, args, ctx, result)
     const checked = verify ? { ...result, verify } : result

@@ -372,6 +372,31 @@ export interface RecordEntry {
 }
 
 /**
+ * 一次正在后台跑的安装。
+ *
+ * 安装为什么要单独有个「任务」的说法：安装器一开就是好几分钟，而这几分钟里
+ * 用户该能接着问别的事。所以安装不再占着那一轮对话，而是挂在这里，
+ * 界面按这份清单显示"还在装什么"，装完再告诉他。
+ *
+ * 状态是**三态而不是两态**：`cancelled` 和 `failed` 必须分开。
+ * 用户自己在安装器里点了取消，说成"安装失败"会让他以为机器出了问题；
+ * 混成一个字段就没法如实区分。
+ */
+export interface InstallJobView {
+  id: string
+  /** 界面上显示的名字（winget 解析出来的那个） */
+  name: string
+  /** winget 包 Id，例如 Bilibili.Bilibili */
+  pkgId: string
+  version: string
+  startedAt: string
+  status: 'running' | 'ok' | 'failed' | 'cancelled'
+  /** 一句话结论，跑完才有 */
+  detail?: string
+  finishedAt?: string
+}
+
+/**
  * 卸载前抓的状态快照：注册表项 + 安装目录规模 + 关联的开机自启项。
  *
  * 用途只有两个：卡片上告诉用户"这次会动掉多少东西"，以及卸载后对比

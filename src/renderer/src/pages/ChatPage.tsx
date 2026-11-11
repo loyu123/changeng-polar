@@ -8,6 +8,7 @@ import type {
   ToolChoiceRequest,
   ToolTrace
 } from '../../../shared/types'
+import { InstallStrip } from '../components/InstallStrip'
 import { MarkdownText } from '../components/MarkdownText'
 import { conclusionOf, speak, stopSpeaking } from '../utils/speech'
 
@@ -833,6 +834,7 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
               <path d="M32 22.4 Q32.9 27 37.5 27.9 Q32.9 28.8 32 33.4 Q31.1 28.8 26.5 27.9 Q31.1 27 32 22.4Z" fill="#C7DBEC" stroke="none" />
             </svg>
             <div className="ask">今天要做什么？</div>
+            <InstallStrip />
             {composerEl}
             <div className="home-hint">
               只读查看本机<span className="dot" />写操作会先征求你的同意<span className="dot" />
@@ -955,6 +957,7 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
         )}
       </div>
 
+      <InstallStrip />
       {composerEl}
       </main>
     </div>

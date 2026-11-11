@@ -43,6 +43,19 @@ export interface ToolResult {
    * 于是"没有核对"这件事也必须是明说的，而不是看起来像"已核对通过"。
    */
   verify?: FactCheck
+  /**
+   * 这件事还没干完：已经放到后台了，完成时这个 Promise 会 resolve 成最终结果。
+   *
+   * 为什么用 Promise 而不是让工具自己写审计：审计那一条里有一半字段只有闸门知道
+   * （谁批的 authz、卡片上写的 target、kind）。工具自己拼一份，就会和闸门写的
+   * 那份慢慢长歪；而"后台任务再调一次 record"会让一次安装留下两条对不上的记录。
+   * 交给闸门在 Promise 落定时补完，全程仍然只有一个记账的人、一条记录。
+   *
+   * 闸门看到它就不当场核对/记账，直接返回。**返回给模型的那一份必须把
+   * deferred 摘掉**：`trimToolPayload` 只挑 ok/summary/undo/verify/data，
+   * 但别的调用方可能会整包 JSON.stringify，一个 Promise 在那里是 `{}`。
+   */
+  deferred?: Promise<ToolResult>
 }
 
 /** 授权卡上的文案：给人看，模型看不懂也没关系 */

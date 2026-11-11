@@ -7,11 +7,12 @@ import { Store } from './node/store'
 import { makeSafeStorageCodec } from './node/secrets'
 import { prepareSandbox } from './node/sandbox'
 import { TaskRunner } from './node/tasks'
+import { InstallJobs } from './node/install-jobs'
 import { AuthBroker, TurnRuntime, openSettingsPage } from './runtime'
 import { createWindow, getMainWindow, markQuitting, sendToWindow, setCloseToTray, showMainWindow } from './window'
 import { createTray, destroyTray, hasTray, refreshTray, type TrayOptions } from './tray'
 import { applyOrbPrefs, createOrb, destroyOrb } from './orb'
-import { notifyReady, notifyTask } from './notify'
+import { notifyInstall, notifyReady, notifyTask } from './notify'
 import { registerIpc } from './ipc'
 import { logError } from './log'
 
@@ -50,10 +51,38 @@ const broker = new AuthBroker()
  */
 const alwaysAllowed = new Set<string>()
 
+/**
+ * 后台安装的任务清单。
+ *
+ * 装机器的几分钟不该占住一整轮对话，所以安装被挪出 `chat:send` 的等待链，
+ * 挂在这张表上：界面按它显示"还在装什么"，装完由它广播 + 弹系统通知。
+ *
+ * 通知开关复用「定时任务跑完通知」那一个（notifyOnTask）：对用户来说
+ * "长庚在后台干完了活，告诉我一声"是同一件事，分两个开关只会让人找不到。
+ */
+const installJobs = new InstallJobs()
+installJobs.onChange = () => sendToWindow('install:changed')
+installJobs.onFinish = (job) => {
+  /**
+   * 用户自己按掉的（「不等了」，或在安装器里点了取消）不弹系统通知：
+   * 他刚刚已经表达过"我不等了"，再追一条"「X」没装成"既是打扰、也说重了——
+   * 这一趟什么都没装，是他自己的决定，不是失败。记录页里照样查得到。
+   */
+  if (job.status === 'cancelled') return
+  void store
+    .getConfig()
+    .then((config) => {
+      if (!desktopPrefsOf(config).notifyOnTask) return
+      notifyInstall(job.name, job.detail ?? '', job.status === 'ok')
+    })
+    .catch(() => {})
+}
+
 const runtime = new TurnRuntime({
   store,
   broker,
   alwaysAllowed,
+  installJobs,
   openSettings: openSettingsPage
 })
 
@@ -219,7 +248,8 @@ void app.whenReady().then(async () => {
     },
     orb: {
       apply: (next, hooks) => applyOrbPrefs(next, hooks)
-    }
+    },
+    installJobs
   })
 
   // 记录页的「去还原」在 ipc/app.ts 里注册

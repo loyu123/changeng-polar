@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatSession,
   DesktopPrefs,
+  InstallJobView,
   MemoryEntry,
   OrbPrefs,
   RecordEntry,
@@ -137,6 +138,30 @@ const api = {
       const listener = (): void => handler()
       ipcRenderer.on('tasks:changed', listener)
       return () => ipcRenderer.removeListener('tasks:changed', listener)
+    }
+  },
+
+  /**
+   * 后台安装的任务清单。
+   *
+   * 安装不再占住那一轮对话：工具拉起来就返回，这里列出"还在装什么"。
+   * 没有"开始安装"的入口——安装只能由模型提出来、用户过授权卡之后由工具拉起，
+   * 渲染层能直接装东西就等于绕开了整条授权链。
+   */
+  install: {
+    list: () => ipcRenderer.invoke('install:list') as Promise<InstallJobView[]>,
+    /** 返回 false = 它已经不在跑了（装完了，或 id 不对） */
+    cancel: (id: string) => ipcRenderer.invoke('install:cancel', id) as Promise<boolean>,
+    /** 清掉已经结束的那些 */
+    clear: () => ipcRenderer.invoke('install:clear') as Promise<InstallJobView[]>,
+    /**
+     * 装完要通知，而通知来的时候那一轮对话早就结束了——
+     * `chat.onEvent` 的监听器在 send() 返回时就摘了，所以这条必须常驻订阅。
+     */
+    onChanged: (handler: (jobs: InstallJobView[]) => void) => {
+      const listener = (_e: unknown, jobs: InstallJobView[]): void => handler(jobs)
+      ipcRenderer.on('install:changed', listener)
+      return () => ipcRenderer.removeListener('install:changed', listener)
     }
   },
 
