@@ -227,14 +227,8 @@ export class TurnRuntime {
       openFolder: (dirPath) => openFolder(dirPath),
       // 「把那个 Word 打开」：会执行的后缀在 node/file.ts 就拒了
       openFile: (filePath) => openFile(filePath),
-      // 卸载卡上的「重装入口」：注册表没登记时，用查证过的官网兜底
-      officialSite: async (appName) => {
-        const known = (await store.getVerifyMap())[appName]
-        return known?.status === 'verified' ? known.sourceUrl : undefined
-      },
       saveSnapshot: (snapshot) => store.saveSnapshot(snapshot),
       appNotes: () => store.getNotes(),
-      appVerify: () => store.getVerifyMap(),
       memory: {
         list: () => store.listMemory(),
         save: (list) => store.saveMemory(list)

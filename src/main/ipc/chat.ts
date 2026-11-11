@@ -62,12 +62,8 @@ export function registerChatIpc(ctx: IpcContext): void {
    * 原来渲染层一打开搜索框就拉 300 条会话的全部消息，每次按键全量扫一遍。
    */
   ipcMain.handle('search:all', async (_e, query: string, limit?: number) => {
-    const [projects, todos, sessions] = await Promise.all([
-      ctx.store.listProjects(),
-      ctx.store.listTodos(),
-      ctx.store.listSessions()
-    ])
-    return searchAll({ projects, todos, sessions, query: String(query ?? ''), limit })
+    const sessions = await ctx.store.listSessions()
+    return searchAll({ sessions, query: String(query ?? ''), limit })
   })
 
   // 卸载快照：对比是即时算的（拿当下再查一遍注册表/目录/自启项），不落盘——

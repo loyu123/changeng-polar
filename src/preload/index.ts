@@ -10,13 +10,10 @@ import type {
   DesktopPrefs,
   MemoryEntry,
   OrbPrefs,
-  ProjectDef,
   RecordEntry,
   SnapshotDiff,
   TaskDef,
-  TodoDef,
-  TurnResult,
-  VerifyResult
+  TurnResult
 } from '../shared/types'
 import type { DesktopState } from '../shared/desktop'
 
@@ -69,17 +66,15 @@ const api = {
     list: (limit?: number) => ipcRenderer.invoke('records:list', limit) as Promise<RecordEntry[]>
   },
 
-  /** 全局搜索：项目/方案/任务/会话，在主进程侧扫，只回命中的条目 */
+  /** 全局搜索：搜会话，在主进程侧扫，只回命中的条目 */
   find: {
     all: (query: string, limit?: number) =>
       ipcRenderer.invoke('search:all', query, limit) as Promise<
         Array<{
           key: string
-          kind: 'project' | 'plan' | 'task' | 'session'
+          kind: 'session'
           title: string
           sub: string
-          projectId?: string
-          planId?: string
           sessionId?: string
           messageId?: string
         }>
@@ -89,17 +84,6 @@ const api = {
   /** 卸载快照对比：拿当下与卸载前快照比对（没有对应快照时返回 null） */
   snapshot: {
     diff: (id: string) => ipcRenderer.invoke('snapshot:diff', id) as Promise<SnapshotDiff | null>
-  },
-
-  /**
-   * 纯写字补全：不带工具、不弹授权卡。
-   * 项目页生成方案/简报走这里，不走 chat.send（那条会带全套工具和闸门）。
-   */
-  llm: {
-    complete: (payload: { messages: ChatMessage[]; system?: string }) =>
-      ipcRenderer.invoke('llm:complete', payload) as Promise<
-        { ok: true; text: string } | { ok: false; error: string }
-      >
   },
 
   chat: {
@@ -156,20 +140,6 @@ const api = {
     }
   },
 
-  /** 项目：命名好的快捷指令集 */
-  projects: {
-    list: () => ipcRenderer.invoke('projects:list') as Promise<ProjectDef[]>,
-    save: (project: Partial<ProjectDef>) => ipcRenderer.invoke('projects:save', project) as Promise<ProjectDef[]>,
-    delete: (id: string) => ipcRenderer.invoke('projects:delete', id) as Promise<ProjectDef[]>,
-    /** 导出成 Markdown：弹保存框，写到用户选的位置 */
-    exportMarkdown: (payload: { name: string; markdown: string }) =>
-      ipcRenderer.invoke('projects:export', payload) as Promise<{
-        ok: boolean
-        path?: string
-        canceled?: boolean
-      }>
-  },
-
   /**
    * 编排项目（派给外部工作体跑的那些）。
    *
@@ -190,13 +160,6 @@ const api = {
     save: (session: Partial<ChatSession>) => ipcRenderer.invoke('sessions:save', session) as Promise<ChatSession>,
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id) as Promise<ChatSession[]>,
     clear: () => ipcRenderer.invoke('sessions:clear') as Promise<ChatSession[]>
-  },
-
-  /** 派发任务：方案里拆出来的待办，只做跟踪，不排程、不自动执行 */
-  todos: {
-    list: () => ipcRenderer.invoke('todos:list') as Promise<TodoDef[]>,
-    save: (todo: Partial<TodoDef>) => ipcRenderer.invoke('todos:save', todo) as Promise<TodoDef>,
-    delete: (id: string) => ipcRenderer.invoke('todos:delete', id) as Promise<TodoDef[]>
   },
 
   /** 能力开关：主进程注册的工具清单 + 各自启用状态 */

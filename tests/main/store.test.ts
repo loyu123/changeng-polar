@@ -33,26 +33,26 @@ describe('Store · 并发写入', () => {
     expect(cfg).toMatchObject({ model: 'a', temperature: 0.5, apiKey: 'k' })
   })
 
-  it('并发新增两个项目，两条都在', async () => {
+  it('并发新增两条会话，两条都在', async () => {
     const store = new Store(dir)
     const add = (id: string) =>
-      store.mutateProjects((list) => {
-        const next = [...list, { id, name: id, prompts: [], createdAt: '' }]
+      store.mutateSessions((list) => {
+        const next = [...list, { id, ts: 1, title: id, messages: [] }]
         return { list: next, result: next }
       })
-    await Promise.all([add('p1'), add('p2')])
-    expect((await store.listProjects()).map((p) => p.id).sort()).toEqual(['p1', 'p2'])
+    await Promise.all([add('s1'), add('s2')])
+    expect((await store.listSessions()).map((s) => s.id).sort()).toEqual(['s1', 's2'])
   })
 
-  it('并发新增两个待办，两条都在', async () => {
+  it('并发新增两条记忆，两条都在', async () => {
     const store = new Store(dir)
     const add = (id: string) =>
-      store.mutateTodos((list) => ({
-        list: [...list, { id, title: id, status: 'todo' as const, priority: 'normal' as const, createdAt: '' }],
+      store.mutateMemory((list) => ({
+        list: [...list, { id, kind: 'fact' as const, text: id, createdAt: '', updatedAt: '' }],
         result: []
       }))
-    await Promise.all([add('t1'), add('t2')])
-    expect((await store.listTodos()).map((t) => t.id).sort()).toEqual(['t1', 't2'])
+    await Promise.all([add('m1'), add('m2')])
+    expect((await store.listMemory()).map((m) => m.id).sort()).toEqual(['m1', 'm2'])
   })
 
   it('一次失败不会把后续写入卡死', async () => {

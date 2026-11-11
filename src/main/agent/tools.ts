@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import type { AppInfo, AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit, VerifyResult } from '../../shared/types'
+import type { AppInfo, AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit } from '../../shared/types'
 import { diffStartupNames, listInstalledApps, listStartupItems, type StartupDiff } from '../node/registry'
 import { deleteToRecycle, listSandbox, SANDBOX_ROOT } from '../node/sandbox'
 import { captureSnapshot } from '../node/snapshot'
@@ -161,14 +161,10 @@ export interface ToolDeps {
    * 在解析阶段定（会执行的后缀一律拒绝），这里不再重复判断。
    */
   openFile?: (filePath: string) => Promise<string>
-  /** 查已查证的官网地址：注册表没登记下载来源时的兜底（重装入口） */
-  officialSite?: (appName: string) => Promise<string | undefined>
   /** 卸载前的快照落盘（主进程注入 Store；评测脚本可不注入，只跳过存档） */
   saveSnapshot?: (snapshot: AppSnapshot) => Promise<void>
-  /** 应用功能说明的手写备注（主进程注入 Store；没有就只报查证结果） */
+  /** 应用功能说明的手写备注（主进程注入 Store；没有就只报注册表字段） */
   appNotes?: () => Promise<Record<string, AppNote>>
-  /** 查证结果（含官网 sentence）：台账的另一半，与手写备注一起构成"功能说明" */
-  appVerify?: () => Promise<Record<string, VerifyResult>>
   /** 跨会话记忆的读写（主进程注入 Store） */
   memory?: {
     list: () => Promise<MemoryEntry[]>
@@ -758,7 +754,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     name: 'list_installed_apps',
     label: '读取已安装程序清单',
     description:
-      '读取本机已安装程序清单（来自注册表 Uninstall 键，只读）。可回答"装了什么、版本、发布者、装在哪、什么时候装的"。用户给程序写过功能备注时，行里会带 note 字段——那是用户自己的记录，回答"这个程序是干什么的"时优先引用它；没有 note 就如实说没有登记说明。installedByButler 非空表示这个程序是管家装的，值就是当时的安装时间。',
+      '读取本机已安装程序清单（来自注册表 Uninstall 键，只读）。可回答"装了什么、版本、发布者、装在哪、什么时候装的"。用户给程序写过功能备注时，行里会带 note 字段——那是用户自己的记录，回答"这个程序是干什么的"时优先引用它；没有 note 就如实说没有登记说明，**不要自己从目录名或图标去猜它是干嘛的**。installedByButler 非空表示这个程序是管家装的，值就是当时的安装时间。',
     effect: 'read',
     parameters: {
       type: 'object',
@@ -784,12 +780,6 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         notes = (await deps.appNotes?.()) ?? {}
       } catch {
         notes = {}
-      }
-      let verifies: Record<string, { sentence: string; sourceUrl: string; status: string }> = {}
-      try {
-        verifies = (await deps.appVerify?.()) ?? {}
-      } catch {
-        verifies = {}
       }
       // 管家装过的程序（显示名 → 安装时间）：台账据此回答"这个是管家装的吗"
       let installs: Record<string, string> = {}
@@ -817,9 +807,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           installDate: formatInstallDate(a.installDate),
           installedByButler: installs[a.name] ?? null,
           sizeMB: a.sizeKB ? Math.round((a.sizeKB / 1024) * 10) / 10 : null,
-          note: notes[a.name]?.text ?? null,
-          description: verifies[a.name]?.status === 'verified' ? verifies[a.name].sentence : null,
-          officialUrl: verifies[a.name]?.status === 'verified' ? verifies[a.name].sourceUrl : null
+          note: notes[a.name]?.text ?? null
         })),
         evidence: [
           ev({
@@ -1754,12 +1742,10 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           }`
         : ''
       const registrySource = entry.installSource.trim() || entry.urlInfoAbout.trim()
-      // 注册表没登记下载来源时，用「应用」页已经查证过的官网兜底；两处都没有就如实说没有
-      const verifiedSite = registrySource ? '' : ((await deps.officialSite?.(entry.name)) ?? '')
-      const source = registrySource || verifiedSite
-      const sourceLabel = registrySource ? '注册表登记' : verifiedSite ? '官网（已查证）' : ''
-      const reinstallHint = source
-        ? `下载/官网：${source}（${sourceLabel}）`
+      // 注册表没登记下载来源就如实说没有——早先这里还会用「官网查证」的结果兜底，
+      // 那条链路已整体移除（它的唯一入口是已删掉的台账页），不再假装有第二来源
+      const reinstallHint = registrySource
+        ? `下载/官网：${registrySource}（注册表登记）`
         : '注册表没有记录下载来源，重装只能自己找官网'
       const scopeText = entry.scope === 'machine' ? '本机安装' : '仅为当前用户安装'
 
@@ -1809,7 +1795,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
               ev({
                 type: 'local',
                 title: `卸载：${entry.name}`,
-                detail: `注册表卸载入口 ${entry.key} · 用户授权后启动 · 安装来源：${source || '未登记'}${
+                detail: `注册表卸载入口 ${entry.key} · 用户授权后启动 · 安装来源：${registrySource || '未登记'}${
                   snapshotText ? ` · ${snapshotText}` : ''
                 }`
               })

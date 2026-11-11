@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
-import type { AlwaysAllowedEntry, ButlerConfig, ChatMessage } from '../../shared/types'
-import { chatCompletion, pingModel } from '../agent/llm'
+import type { AlwaysAllowedEntry, ButlerConfig } from '../../shared/types'
+import { pingModel } from '../agent/llm'
 import { testMail } from '../node/mail'
 import { searchWeb } from '../node/web'
 import { mergeMemory, removeMemory } from '../node/memory'
@@ -15,36 +15,6 @@ export function registerConfigIpc(ctx: IpcContext): void {
   ipcMain.handle('config:test', async (_e, patch: Partial<ButlerConfig>) => {
     const config = { ...(await ctx.store.getConfig()), ...patch }
     return pingModel(config)
-  })
-
-  /**
-   * 纯写字补全：给项目页生成方案/简报用。
-   *
-   * 不能借用 chat:send —— 那条链路带全套工具 schema 和授权闸门，而项目页并没有
-   * 装 chat:event 监听器：模型一旦在写简报时申请 install_app，卡会 emit 出去、
-   * 谁都不渲染，用户在屏幕上什么都看不到，60 秒后超时变拒绝。
-   * 这里 tools 传空数组，模型只能写字，不会触发任何需要授权的动作。
-   */
-  ipcMain.handle('llm:complete', async (_e, payload: { messages?: ChatMessage[]; system?: string }) => {
-    const config = await ctx.store.getConfig()
-    const messages: ChatMessage[] = [
-      ...(typeof payload?.system === 'string' && payload.system.trim()
-        ? [{ role: 'system' as const, content: payload.system }]
-        : []),
-      ...(Array.isArray(payload?.messages) ? payload.messages : [])
-    ]
-    if (messages.length === 0) return { ok: false, error: '没有要补全的内容' }
-    try {
-      const res = await chatCompletion({
-        config,
-        messages,
-        tools: [],
-        signal: AbortSignal.timeout(120_000)
-      })
-      return { ok: true, text: res.content.trim() }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
   })
 
   // 邮箱连接自检：只连一次 IMAP 只读打开收件箱，不进模型、不拉正文

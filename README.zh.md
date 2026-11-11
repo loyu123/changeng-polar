@@ -26,7 +26,6 @@ npm run gate                     # 授权闸门离线验收（不接模型，58 
 npm run smoke                    # 不依赖模型：验证注册表读取 + 联网检索
 npm run mock                     # 本地假模型（无 Key 时验证对话链路）
 npm run eval                     # 跑 36 条评测，结果写 evals/report.json
-npm run a4-baseline              # A4 回归：固定 20 个样本（含 4 个必须判否的负样本），掉出容差退出码 1
 npm run pack                     # 出 NSIS 安装包 + 便携版到 release/
 npm run pack:dir                 # 只出目录版（不打包，调试用）
 ```
@@ -37,7 +36,7 @@ npm run pack:dir                 # 只出目录版（不打包，调试用）
 - 本机 Ollama：`http://127.0.0.1:11434/v1`，Key 可留空
 - 只想看界面：`npm run mock`，然后把 baseUrl 指到 `http://127.0.0.1:8123/v1`
 
-**命令行脚本（`eval` / `a4-baseline` / `verify-probe`）直接复用应用里填的凭据**，不用再填一遍：
+**命令行脚本（`eval`）直接复用应用里填的凭据**，不用再填一遍：
 它们会起一个 Electron 子进程，从 `<userData>\Local State` 取到 safeStorage 的密钥把 `config.json`
 里的 `enc:v1:...` 解成明文（只复制一份 `Local State` 到临时目录，跑完即删，应用自己的 profile 一个字节不动）。
 想临时换一套 Key，用环境变量覆盖即可，脚本会打印实际用了哪些：
@@ -51,7 +50,7 @@ npm run eval
 
 数据都落在 `%APPDATA%\changeng-polar\`：`config.json`（模型/检索/邮箱凭据，落盘前经 safeStorage 加密）、
 `records.jsonl`（append-only 动作记录，5MB 轮转，只留最近三份）、`verify.json`（查证缓存）、
-`auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆），以及任务/项目/待办/会话各一份 JSON。
+`auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆），以及任务/会话/程序备注各一份 JSON。
 
 ---
 
@@ -198,9 +197,9 @@ src/
   renderer/
     index.html             主窗口
     orb.html               悬浮球窗口
-    src/pages/             九个页面：概览 / 对话 / 应用 / 记录 / 任务 / 项目 / 账号 / 插件 / 设置
+    src/pages/             七个页面：对话 / 记录 / 任务 / 编排 / 账号 / 插件 / 设置
     src/orb/               悬浮球与面板的渲染层
-    src/components/        全局搜索、Markdown、快照对比卡、存为方案
+    src/components/        全局搜索、Markdown、快照对比卡
     src/utils/speech.ts    播报（只念结论，按需触发）
 scripts/
   eval.ts                  36 条评测 + 记分板
@@ -209,8 +208,9 @@ scripts/
   lib/decrypt-config.cjs   Electron 子进程，用 <userData>\Local State 的密钥解密凭据
   smoke.ts                 本机读取 + 检索冒烟
   gate-check.ts            授权闸门的离线验收（不接模型，58 条）
-  a4-baseline.ts           A4 固定样本回归，掉出容差退出码 1
-  check-h1.ts / e3-check.ts / verify-probe.ts   单项核对脚本
+  check-h1.ts / e3-check.ts / view-check.ts     单项核对脚本
+  orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   编排总线冒烟
+  backends-*.ts / mixed-backends.ts / github-smoke.ts       外部工作体后端核对
   make-icon.py             应用图标生成
   mock-llm.cjs             本地假模型
 evals/cases.json           评测集（36 条 / 7 组）

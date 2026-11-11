@@ -26,7 +26,6 @@ npm run gate                     # offline acceptance for the auth gate (no mode
 npm run smoke                    # model-free: verify registry reads + web search
 npm run mock                     # local fake model (exercise the chat path with no API key)
 npm run eval                     # run the 36 eval cases, writes evals/report.json
-npm run a4-baseline              # A4 regression: 20 fixed samples (4 must be judged negative), exit 1 when out of tolerance
 npm run pack                     # NSIS installer + portable build into release/
 npm run pack:dir                 # unpacked directory build only (for debugging)
 ```
@@ -37,7 +36,7 @@ Models are configured inside the app under **Settings**, and any OpenAI-compatib
 - Local Ollama: `http://127.0.0.1:11434/v1`, API key can be left empty
 - Just want to see the UI: `npm run mock`, then point baseUrl at `http://127.0.0.1:8123/v1`
 
-**Command-line scripts (`eval` / `a4-baseline` / `verify-probe`) reuse the credentials already entered in the app** — you don't re-enter them. They spawn an Electron child process, read the safeStorage key from `<userData>\Local State`, and decrypt the `enc:v1:...` values in `config.json` into plaintext (only a copy of `Local State` is placed in a temp directory, deleted afterwards; the app's own profile is untouched byte for byte). To override credentials temporarily, use environment variables — the scripts print which ones they actually used:
+**Command-line scripts (`eval`) reuse the credentials already entered in the app** — you don't re-enter them. They spawn an Electron child process, read the safeStorage key from `<userData>\Local State`, and decrypt the `enc:v1:...` values in `config.json` into plaintext (only a copy of `Local State` is placed in a temp directory, deleted afterwards; the app's own profile is untouched byte for byte). To override credentials temporarily, use environment variables — the scripts print which ones they actually used:
 
 ```powershell
 $env:BUTLER_API_KEY="sk-..."            # also BUTLER_BASE_URL / BUTLER_MODEL
@@ -46,7 +45,7 @@ $env:BUTLER_MAIL_AUTHCODE="..."         # mail auth code (M1 group cases)
 npm run eval
 ```
 
-All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `verify.json` (verification cache), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks / projects / todos / sessions.
+All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks / sessions / app notes.
 
 ---
 
@@ -171,14 +170,14 @@ src/
       web.ts               DDG / Bing / Tavily / Serper / BingAPI chained search + page fetch
       html.ts              strip tags, decode entities, locate the body component
       ps.ts                PowerShell invocation and JSON output parsing
-      store.ts             serialized queues for config / append-only log / verification cache / per-domain JSON
+      store.ts             serialized queues for config / append-only log / per-domain JSON
   preload/index.ts         exposes only whitelisted methods (including answering auth cards)
   renderer/
     index.html             main window
     orb.html               floating-orb window
-    src/pages/             nine pages: overview / chat / apps / records / tasks / projects / accounts / plugins / settings
+    src/pages/             seven pages: chat / records / tasks / orchestration / accounts / plugins / settings
     src/orb/               renderer for the orb and its panel
-    src/components/        global search, markdown, snapshot diff card, save-as-plan
+    src/components/        global search, markdown, snapshot diff card
     src/utils/speech.ts    speech output (reads the conclusion only, triggered on demand)
 scripts/
   eval.ts                  the 36 eval cases + scoreboard
@@ -187,8 +186,9 @@ scripts/
   lib/decrypt-config.cjs   Electron child process; decrypts credentials with the key from <userData>\Local State
   smoke.ts                 local reads + search smoke test
   gate-check.ts            offline acceptance for the auth gate (no model, 58 assertions)
-  a4-baseline.ts           A4 fixed-sample regression, exit 1 when out of tolerance
-  check-h1.ts / e3-check.ts / verify-probe.ts   one-off verification scripts
+  check-h1.ts / e3-check.ts / view-check.ts     one-off verification scripts
+  orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   orchestrator bus smoke tests
+  backends-*.ts / mixed-backends.ts / github-smoke.ts       external worker backend checks
   make-icon.py             app icon generation
   mock-llm.cjs             local fake model
 evals/cases.json           the eval set (36 cases / 7 groups)

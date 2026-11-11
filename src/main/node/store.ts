@@ -8,11 +8,8 @@ import type {
   ButlerConfig,
   ChatSession,
   MemoryEntry,
-  ProjectDef,
   RecordEntry,
-  TaskDef,
-  TodoDef,
-  VerifyResult
+  TaskDef
 } from '../../shared/types'
 import { decodeConfigSecrets, encodeConfigSecrets, PLAIN_CODEC, type SecretCodec } from './secrets'
 
@@ -188,24 +185,6 @@ export class Store {
     return out
   }
 
-  async getVerifyMap(): Promise<Record<string, VerifyResult>> {
-    try {
-      const raw = await fs.readFile(this.p('verify.json'), 'utf8')
-      return JSON.parse(stripBom(raw)) as Record<string, VerifyResult>
-    } catch {
-      return {}
-    }
-  }
-
-  async setVerify(result: VerifyResult): Promise<void> {
-    await this.enqueue('verify.json', async () => {
-      const map = await this.getVerifyMap()
-      map[result.appName] = result
-      await fs.mkdir(this.dir, { recursive: true })
-      await this.writeAtomic('verify.json', JSON.stringify(map, null, 2))
-    })
-  }
-
   /** 卸载前抓的快照：按 id 存取，卸载后的对比（diff）凭这条记录回查 */
   private async readSnapshots(): Promise<Record<string, AppSnapshot>> {
     try {
@@ -297,7 +276,7 @@ export class Store {
     await this.enqueue('auth-memory.json', () => this.writeAlwaysAllowed([]))
   }
 
-  /** 通用 JSON 列表读写：定时任务与项目共用 */
+  /** 通用 JSON 列表读写：定时任务、会话、记忆共用 */
   private async readJsonList<T>(name: string): Promise<T[]> {
     const file = this.p(name)
     let raw = ''
@@ -358,42 +337,6 @@ export class Store {
       const list = (await this.readJsonList<TaskDef>('tasks.json')).filter((t) => t.id !== id)
       await this.writeJsonList('tasks.json', list)
       return list
-    })
-  }
-
-  async listProjects(): Promise<ProjectDef[]> {
-    return this.readJsonList<ProjectDef>('projects.json')
-  }
-
-  /**
-   * 项目写入：**整个读-改-写都在队列里**。
-   *
-   * 之前 handler 先 listProjects() 再 saveProjects()，读在队列外——两个入口同时
-   * 保存（对话页「存为方案」与项目页自动保存）仍会互相覆盖。把 mutate 交给 Store
-   * 在临界区内执行，才真的只有一份数据被改。
-   */
-  async mutateProjects(
-    mutate: (list: ProjectDef[]) => { list: ProjectDef[]; result: ProjectDef[] }
-  ): Promise<ProjectDef[]> {
-    return this.enqueue('projects.json', async () => {
-      const { list, result } = mutate(await this.readJsonList<ProjectDef>('projects.json'))
-      await this.writeJsonList('projects.json', list)
-      return result
-    })
-  }
-
-  async listTodos(): Promise<TodoDef[]> {
-    return this.readJsonList<TodoDef>('todos.json')
-  }
-
-  /** 同 mutateProjects：待办的读-改-写也在临界区内完成 */
-  async mutateTodos(
-    mutate: (list: TodoDef[]) => { list: TodoDef[]; result: TodoDef[] }
-  ): Promise<TodoDef[]> {
-    return this.enqueue('todos.json', async () => {
-      const { list, result } = mutate(await this.readJsonList<TodoDef>('todos.json'))
-      await this.writeJsonList('todos.json', list)
-      return result
     })
   }
 

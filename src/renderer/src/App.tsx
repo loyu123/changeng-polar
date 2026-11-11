@@ -116,7 +116,7 @@ export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [prefill, setPrefill] = useState({ text: '', nonce: 0 })
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('model')
-  /** 从项目页点「出自对话」：跳回对话页定位那条回答 */
+  /** 全局搜索或「移到主窗口」跳过来：定位到某条会话里的那条回答 */
   const [focusChat, setFocusChat] = useState<{
     sessionId: string
     messageId?: string
@@ -148,10 +148,8 @@ export default function App() {
   useEffect(() => {
     loadStats()
     const off = window.butler.tasks.onChanged(loadStats)
-    window.addEventListener('polar:projects-changed', loadStats)
     return () => {
       off()
-      window.removeEventListener('polar:projects-changed', loadStats)
     }
   }, [])
 
@@ -325,7 +323,6 @@ export default function App() {
       <GlobalSearch
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
-        onOpenProject={() => setRoute('orchestration')}
         onOpenChat={(sessionId, messageId) => {
           setFocusChat({ sessionId, messageId, nonce: Date.now() })
           setRoute('chat')

@@ -35,16 +35,6 @@ const KIND_ICON: Record<RecordEntry['kind'], { bg: string; stroke: string; path:
       </>
     )
   },
-  verify: {
-    bg: '#F2F7F2',
-    stroke: '#107C10',
-    path: (
-      <>
-        <circle cx="7" cy="7" r="4.2" />
-        <path d="M10.2 10.2L13.4 13.4" />
-      </>
-    )
-  },
   ui: {
     bg: '#FFF4CE',
     stroke: '#8A6100',

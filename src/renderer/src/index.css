@@ -2561,12 +2561,6 @@ details.techfold[open] > summary {
   overflow-y: auto;
   padding: 6px;
 }
-.gs-group {
-  padding: 8px 8px 4px;
-  font-size: 10.4px;
-  color: #adada5;
-  letter-spacing: 0.04em;
-}
 .gs-item {
   display: flex;
   align-items: center;
@@ -2604,14 +2598,6 @@ details.techfold[open] > summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.gs-kind {
-  flex: 0 0 auto;
-  font-size: 9.8px;
-  color: #75756d;
-  background: #f4f4f1;
-  border-radius: 4px;
-  padding: 1px 5px;
 }
 .gs-item mark {
   background: #fdf3d8;

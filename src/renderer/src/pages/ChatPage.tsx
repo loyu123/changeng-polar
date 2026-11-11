@@ -5,12 +5,10 @@ import type {
   ChatMessage,
   ChatSession,
   Evidence,
-  ProjectDef,
   ToolChoiceRequest,
   ToolTrace
 } from '../../../shared/types'
 import { MarkdownText } from '../components/MarkdownText'
-import { SaveToProject } from '../components/SaveToProject'
 import { conclusionOf, speak, stopSpeaking } from '../utils/speech'
 
 interface Msg {
@@ -262,9 +260,7 @@ interface Props {
   info: { machineName: string; userName: string } | null
   /** 输入框右下角的模型标记 / 首页「权限设置」：跳到设置对应分区 */
   onOpenSettings?: (section?: 'model' | 'security') => void
-  /** 中栏「项目」分组：跳到项目页 */
-  onOpenProjects?: () => void
-  /** 从项目页「出自对话」或全局搜索跳过来：打开这条会话，有 messageId 就定位那条回答 */
+  /** 全局搜索或桌面悬浮窗「移到主窗口」跳过来：打开这条会话，有 messageId 就定位那条回答 */
   focusChat?: { sessionId: string; messageId?: string; nonce: number } | null
 }
 
@@ -404,7 +400,7 @@ function SourceBox({ evidence }: { evidence: Evidence[] }) {
   )
 }
 
-export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects, focusChat }: Props) {
+export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: Props) {
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -418,8 +414,6 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [modelName, setModelName] = useState('')
-  /** 中栏「项目」分组 */
-  const [projects, setProjects] = useState<ProjectDef[]>([])
   /** 中栏搜索 */
   const [showSearch, setShowSearch] = useState(false)
   const [midQuery, setMidQuery] = useState('')
@@ -441,16 +435,6 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
     void window.butler.config.get().then((cfg) => setModelName(cfg.model ?? ''))
   }, [])
 
-  // 中栏项目分组：项目页增删改后跟着刷新
-  useEffect(() => {
-    const reload = (): void => {
-      void window.butler.projects.list().then(setProjects)
-    }
-    reload()
-    window.addEventListener('polar:projects-changed', reload)
-    return () => window.removeEventListener('polar:projects-changed', reload)
-  }, [])
-
   // 会话从磁盘读；磁盘为空且本地还留着旧记录时，搬迁一次
   useEffect(() => {
     void (async () => {
@@ -467,7 +451,7 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
     })()
   }, [])
 
-  // 从项目页点「出自对话」：打开这条会话，滚到那条回答并闪一下
+  // 全局搜索或桌面悬浮窗「移到主窗口」：打开这条会话，滚到那条回答并闪一下
   useEffect(() => {
     if (!focusChat || focusChat.nonce === lastFocusRef.current) return
     const session = sessions.find((s) => s.id === focusChat.sessionId)
@@ -812,22 +796,6 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
         </div>
       )}
 
-      {projects.length > 0 && (
-        <>
-          <div className="seclabel">
-            项目<span className="cnt">{projects.length}</span>
-          </div>
-          {projects.map((p) => (
-            <button className="item" key={p.id} onClick={() => onOpenProjects?.()} title="去项目页管理">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3.8 8.1V6.9c0-1 .8-1.8 1.8-1.8h3.2l1.7 2h7.7c1 0 1.8.8 1.8 1.8v8.2c0 1-.8 1.8-1.8 1.8H5.6c-1 0-1.8-.8-1.8-1.8Z" />
-              </svg>
-              <span className="t">{p.name}</span>
-            </button>
-          ))}
-        </>
-      )}
-
       <div className="seclabel">
         最近<span className="cnt">{sessions.length}</span>
       </div>
@@ -980,16 +948,6 @@ export default function ChatPage({ prefill, info, onOpenSettings, onOpenProjects
                       {m.tools.length > 0 ? '本轮动作没有产生可引用来源' : '本轮没有调用工具，回答不含出处'}
                     </span>
                   </div>
-                )}
-
-                {!m.streaming && !m.error && m.text && (
-                  <SaveToProject
-                    text={m.text}
-                    projects={projects}
-                    sessionId={activeSession ?? undefined}
-                    messageId={m.id}
-                    onOpenProjects={onOpenProjects}
-                  />
                 )}
               </div>
             </div>

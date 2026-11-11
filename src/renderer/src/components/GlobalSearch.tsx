@@ -3,26 +3,21 @@ import { useEffect, useRef, useState } from 'react'
 interface Props {
   open: boolean
   onClose: () => void
-  /** 打开项目；带 planId 时顺手展开那份方案 */
-  onOpenProject: (projectId: string, planId?: string) => void
   /** 打开会话；带 messageId 时定位到那条消息 */
   onOpenChat: (sessionId: string, messageId?: string) => void
 }
 
-type Kind = 'project' | 'plan' | 'task' | 'session'
+/** 现在只剩会话一类（项目/方案/待办那套已整块移除），字段保留 kind 是为了形状不变 */
+type Kind = 'session'
 
 interface Hit {
   key: string
   kind: Kind
   title: string
   sub: string
-  projectId?: string
-  planId?: string
   sessionId?: string
   messageId?: string
 }
-
-const KIND_LABEL: Record<Kind, string> = { project: '项目', plan: '方案', task: '任务', session: '会话' }
 
 /**
  * 在原文里找 needle 的位置。needle 必须是已小写的字符串——
@@ -50,12 +45,12 @@ function highlight(text: string, needle: string): React.ReactNode {
 }
 
 /**
- * 全局搜索：项目 / 方案 / 任务 / 会话，Ctrl+K 呼出。
+ * 全局搜索：会话，Ctrl+K 呼出。
  *
  * 检索本身在主进程做（see main/node/search.ts）：这里只负责输入、键盘和渲染，
  * 不再把全部会话内容拉进窗口，也不再每次按键全量扫一遍。
  */
-export function GlobalSearch({ open, onClose, onOpenProject, onOpenChat }: Props) {
+export function GlobalSearch({ open, onClose, onOpenChat }: Props) {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<Hit[]>([])
   const [cursor, setCursor] = useState(0)
@@ -115,11 +110,7 @@ export function GlobalSearch({ open, onClose, onOpenProject, onOpenChat }: Props
 
   const activate = (hit: Hit): void => {
     onClose()
-    if (hit.kind === 'session' && hit.sessionId) {
-      onOpenChat(hit.sessionId, hit.messageId)
-      return
-    }
-    if (hit.projectId) onOpenProject(hit.projectId, hit.planId)
+    if (hit.sessionId) onOpenChat(hit.sessionId, hit.messageId)
   }
 
   return (
@@ -134,7 +125,7 @@ export function GlobalSearch({ open, onClose, onOpenProject, onOpenChat }: Props
             ref={inputRef}
             className="gs-input"
             value={query}
-            placeholder="搜项目、方案、任务、会话…"
+            placeholder="搜会话…"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') onClose()
@@ -158,25 +149,19 @@ export function GlobalSearch({ open, onClose, onOpenProject, onOpenChat }: Props
           </div>
         ) : (
           <div className="gs-list" ref={listRef}>
-            {hits.map((hit, index) => {
-              const showGroup = index === 0 || hits[index - 1].kind !== hit.kind
-              return (
-                <div key={hit.key}>
-                  {showGroup && <div className="gs-group">{KIND_LABEL[hit.kind]}</div>}
-                  <button
-                    className={`gs-item${index === cursor ? ' on' : ''}`}
-                    onMouseEnter={() => setCursor(index)}
-                    onClick={() => activate(hit)}
-                  >
-                    <span className="gs-main">
-                      <span className="gs-title">{highlight(hit.title, needle)}</span>
-                      <span className="gs-sub">{highlight(hit.sub, needle)}</span>
-                    </span>
-                    <span className="gs-kind">{KIND_LABEL[hit.kind]}</span>
-                  </button>
-                </div>
-              )
-            })}
+            {hits.map((hit, index) => (
+              <button
+                key={hit.key}
+                className={`gs-item${index === cursor ? ' on' : ''}`}
+                onMouseEnter={() => setCursor(index)}
+                onClick={() => activate(hit)}
+              >
+                <span className="gs-main">
+                  <span className="gs-title">{highlight(hit.title, needle)}</span>
+                  <span className="gs-sub">{highlight(hit.sub, needle)}</span>
+                </span>
+              </button>
+            ))}
           </div>
         )}
       </div>

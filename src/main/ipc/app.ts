@@ -115,11 +115,8 @@ export function registerAppIpc(ctx: IpcContext): void {
       'records.jsonl.1',
       'records.jsonl.2',
       'tasks.json',
-      'projects.json',
-      'todos.json',
       'sessions.json',
       'auth-memory.json',
-      'verify.json',
       'notes.json',
       'snapshots.json'
     ]
@@ -143,10 +140,8 @@ export function registerAppIpc(ctx: IpcContext): void {
     // 这里只需要工具的元信息，不真的执行，所以依赖给空实现
     const tools = createTools({
       openSettings: async () => {},
-      officialSite: async () => undefined,
       saveSnapshot: async () => {},
-      appNotes: async () => ({}),
-      appVerify: async () => ({})
+      appNotes: async () => ({})
     })
     // 和对话里用的是同一个过滤函数：插件页显示的状态必须和实际能调到的工具一致
     const allowed = new Set(filterTools(tools, { toggles, readOnly }).map((t) => t.name))
@@ -167,20 +162,6 @@ export function registerAppIpc(ctx: IpcContext): void {
   ipcMain.handle('shell:recycle', () => {
     openRecycleBin()
     return true
-  })
-
-  // 项目档案导出：渲染层拼好 Markdown，这里只负责选路径、写文件
-  ipcMain.handle('projects:export', async (_e, payload: { name: string; markdown: string }) => {
-    const name = String(payload?.name ?? '项目').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40) || '项目'
-    const stamp = new Date().toISOString().slice(0, 10)
-    const result = await dialog.showSaveDialog({
-      title: '导出项目档案',
-      defaultPath: path.join(app.getPath('documents'), `${name}-${stamp}.md`),
-      filters: [{ name: 'Markdown', extensions: ['md'] }]
-    })
-    if (result.canceled || !result.filePath) return { ok: false, canceled: true }
-    await fs.writeFile(result.filePath, String(payload?.markdown ?? ''), 'utf8')
-    return { ok: true, path: result.filePath }
   })
 }
 

@@ -4,7 +4,7 @@ import { MEMORY_KIND_LABEL, type MemoryEntry, type MemoryKind } from '../../shar
 /**
  * 跨会话记忆。
  *
- * 为什么要有它：sessions / projects / todos / notes 是四个互不相干的文件，
+ * 为什么要有它：sessions / tasks / notes 是各管各的文件，
  * 每次对话只带本会话最近 12 条历史。于是"我说过我偏好什么""上次做到哪"
  * 这类事，换一次对话就全丢了——一个叫管家、却记不住主人的东西。
  *

@@ -11,8 +11,6 @@
     "start": "electron-vite preview",
     "eval": "tsx scripts/eval.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "verify-probe": "tsx scripts/verify-probe.ts",
-    "a4-baseline": "tsx scripts/a4-baseline.ts",
     "gate": "tsx scripts/gate-check.ts",
     "orchestrate": "tsx scripts/orchestrator-demo.ts",
     "orchestrate:parallel": "tsx scripts/orchestrator-parallel.ts",

@@ -161,12 +161,6 @@ export interface TaskDef {
   lastResult?: string
 }
 
-/** 出处：某条方案/任务是从哪次对话的哪条回答里攒出来的 */
-export interface SourceRef {
-  sessionId: string
-  messageId: string
-}
-
 /** 一条会话：落盘保存，便于回看与"出处"反查。messages 是渲染层结构，主进程只存取不解释 */
 export interface ChatSession {
   id: string
@@ -180,82 +174,6 @@ export interface ChatSession {
    * 用户回看时会疑惑"为什么它没有前文"，标一下就说得通。
    */
   origin?: 'orb'
-}
-
-export type ProjectStatus = 'active' | 'paused' | 'done'
-
-/** 方案：项目里可保存、可重跑的结构化产出（正文是 Markdown，不自动执行） */
-export interface PlanDef {
-  id: string
-  title: string
-  /** 方案正文（模型产出或手写） */
-  body: string
-  createdAt: string
-  /** 生成它的提示词，便于重跑 */
-  prompt?: string
-  /** 最终采纳哪条路径（人填） */
-  decision?: string
-  /** 可选路径的名称（从生成的元信息块解析，可手改） */
-  options?: string[]
-  /** 模型推荐哪条 */
-  recommended?: string
-  /** 工期估计 */
-  estimate?: string
-  /** 第一步动作 */
-  firstStep?: string
-  /** 出自哪次对话的哪条回答 */
-  source?: SourceRef
-}
-
-/** 项目简报：某一时刻的进度快照 + 判断（模型撰写或本地事实版） */
-export interface BriefDef {
-  id: string
-  createdAt: string
-  /** 简报正文（Markdown） */
-  body: string
-  /** 生成瞬间的任务计数，便于回看当时的进度 */
-  snapshot?: { total: number; done: number; doing: number; blocked: number; todo: number }
-  /** true = 由模型撰写；false = 模型不可用时的本地事实版 */
-  byModel?: boolean
-}
-
-/** 项目：一个有目标、有方案、有派发任务的实体；prompts 只是它的「常用指令」 */
-export interface ProjectDef {
-  id: string
-  name: string
-  /** 一句话目标：做成什么样算完成 */
-  goal?: string
-  /** 背景与现状 */
-  context?: string
-  /** 关键约束（时间、预算、不能碰的东西） */
-  constraints?: string
-  status?: ProjectStatus
-  prompts: string[]
-  plans?: PlanDef[]
-  briefs?: BriefDef[]
-  createdAt: string
-  updatedAt?: string
-}
-
-/** dropped = 路径收敛时被放弃的任务：保留可回看，不算未完成、不算完成 */
-export type TodoStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'dropped'
-export type TodoPriority = 'high' | 'normal' | 'low'
-
-/** 派发任务：从方案拆出来的一条待办；只做跟踪，不排程、不自动执行 */
-export interface TodoDef {
-  id: string
-  projectId?: string
-  title: string
-  detail?: string
-  /** 属于方案的哪条路径（对应 PlanDef.options 里的名字），用来对比不同路线的工作量 */
-  option?: string
-  /** 出自哪次对话的哪条回答 */
-  source?: SourceRef
-  status: TodoStatus
-  priority: TodoPriority
-  due?: string
-  createdAt: string
-  doneAt?: string
 }
 
 /** 带 Key 的来源：缺 Key 时直接说缺，而不是偷偷退回免费源 */
@@ -313,23 +231,11 @@ export interface AlwaysAllowedEntry {
   createdAt: string
 }
 
-export interface VerifyResult {
-  appName: string
-  status: 'verified' | 'unverified'
-  sentence: string
-  sourceUrl: string
-  evidenceText: string
-  checkedAt: string
-  /** 官网地址是怎么来的：注册表登记 / 模型提议后核对 / 检索出来 */
-  via?: 'registry' | 'guess' | 'search'
-  /** 失败原因（未查证时） */
-  reason?: string
-}
-
 /**
- * 应用功能说明的手写备注：覆盖查证生成的句子。
- * 说明的两个来源——查证（官网 sentence，随 verify.json 落盘）与人写；
+ * 应用功能说明的手写备注。
+ *
  * 用户写过的以人写为准，来源标记随行展示，不冒充官网出处。
+ * （早先还有一份「官网查证」的结果与之并列，那条链路已整体移除，见 git 历史。）
  */
 export interface AppNote {
   appName: string
@@ -391,7 +297,7 @@ export interface MailAccount extends MailConfig {
   label?: string
 }
 
-export type RecordKind = 'read' | 'web' | 'ui' | 'write' | 'destroy' | 'refuse' | 'verify' | 'memory' | 'task'
+export type RecordKind = 'read' | 'web' | 'ui' | 'write' | 'destroy' | 'refuse' | 'memory' | 'task'
 
 export interface RecordEntry {
   id: string
