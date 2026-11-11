@@ -1,9 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AlwaysAllowedEntry,
-  AppInfo,
   AppNote,
-  AppSnapshot,
   AuthAnswer,
   ButlerConfig,
   ChatEvent,
@@ -15,7 +13,6 @@ import type {
   ProjectDef,
   RecordEntry,
   SnapshotDiff,
-  StartupItem,
   TaskDef,
   TodoDef,
   TurnResult,
@@ -62,19 +59,6 @@ const api = {
       }>
   },
 
-  /** 只有计数用途（总览页）。台账页已移除。 */
-  apps: {
-    list: () =>
-      ipcRenderer.invoke('apps:list') as Promise<{
-        apps: AppInfo[]
-        durationMs: number
-      }>
-  },
-
-  startup: {
-    list: () => ipcRenderer.invoke('startup:list') as Promise<{ items: StartupItem[]; durationMs: number }>
-  },
-
   /** 邮箱连接自检：IMAP 只读打开收件箱，不拉正文；accountId 缺省测默认账号 */
   mail: {
     test: (patch: Partial<ButlerConfig>, accountId?: string) =>
@@ -102,9 +86,8 @@ const api = {
       >
   },
 
-  /** 卸载快照：get 取原始快照，diff 拿当下与快照比对（没有对应快照时返回 null） */
+  /** 卸载快照对比：拿当下与卸载前快照比对（没有对应快照时返回 null） */
   snapshot: {
-    get: (id: string) => ipcRenderer.invoke('snapshot:get', id) as Promise<AppSnapshot | null>,
     diff: (id: string) => ipcRenderer.invoke('snapshot:diff', id) as Promise<SnapshotDiff | null>
   },
 

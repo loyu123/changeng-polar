@@ -1,12 +1,10 @@
 import { ipcMain } from 'electron'
 import type { AuthAnswer, ChatMessage, ChatPayload } from '../../shared/types'
-import { listInstalledApps, listStartupItems } from '../node/registry'
 import { diffSnapshot } from '../node/snapshot'
 import { searchAll } from '../node/search'
-import { verifyApp } from '../verify'
 import type { IpcContext } from './app'
 
-/** 对话、记录、全局搜索、应用台账 */
+/** 对话、记录、全局搜索、卸载快照 */
 export function registerChatIpc(ctx: IpcContext): void {
   // 停止：除了打断网络请求，还要把「正等着用户点卡」的那一次按拒绝收口——
   // 否则用户点了停止，那张卡还挂着，直到超时才能动
@@ -72,43 +70,11 @@ export function registerChatIpc(ctx: IpcContext): void {
     return searchAll({ projects, todos, sessions, query: String(query ?? ''), limit })
   })
 
-  // 卸载快照：按 id 取原始快照；对比是即时算的（拿当下再查一遍注册表/目录/自启项），
-  // 不落盘——diff 只陈述现状，用户随时可以重新问
-  ipcMain.handle('snapshot:get', (_e, id: string) => ctx.store.getSnapshot(String(id ?? '')))
+  // 卸载快照：对比是即时算的（拿当下再查一遍注册表/目录/自启项），不落盘——
+  // diff 只陈述现状，用户随时可以重新问。没有对应快照时返回 null。
   ipcMain.handle('snapshot:diff', async (_e, id: string) => {
     const snapshot = await ctx.store.getSnapshot(String(id ?? ''))
     if (!snapshot) return null
     return diffSnapshot(snapshot)
-  })
-
-  // ---- 应用台账 ----
-  // 总览页的"已装应用"计数要用它（台账页已移除，但这项统计还有用）
-  ipcMain.handle('apps:list', async () => {
-    const { apps, durationMs } = await listInstalledApps()
-    return { apps, durationMs }
-  })
-  ipcMain.handle('apps:verify', async (_e, payload: { appName: string; publisher: string; officialUrl?: string }) => {
-    const config = await ctx.store.getConfig()
-    const result = await verifyApp(payload.appName, payload.publisher, config, {
-      officialUrl: payload.officialUrl
-    })
-    await ctx.store.setVerify(result)
-    await ctx.store.appendRecord({
-      kind: 'verify',
-      title: `查证「${payload.appName}」的功能说明`,
-      sub:
-        result.status === 'verified'
-          ? `官网：${result.sourceUrl}${result.via === 'registry' ? '（注册表登记）' : '（检索）'}`
-          : `未查证 · ${result.reason ?? ''}`,
-      result: result.status === 'verified' ? 'ok' : 'partial',
-      reversible: false,
-      sourceUrl: result.sourceUrl || undefined
-    })
-    return result
-  })
-
-  ipcMain.handle('startup:list', async () => {
-    const { items, durationMs } = await listStartupItems()
-    return { items, durationMs }
   })
 }

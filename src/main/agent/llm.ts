@@ -28,6 +28,57 @@ export function normalizeBaseUrl(raw: string): string {
   return base
 }
 
+/**
+ * 重试配置：只重试一次，退避 800ms。
+ *
+ * 为什么只针对「模型请求」：一轮对话里最多 5 步工具往返，每一步都是一次模型请求。
+ * 网关偶发 5xx、429 或连接被重置时，整轮直接失败意味着前面几步的工具结果全部白跑——
+ * 用户看到的是「查到了数据，但没能整理成结论」。
+ *
+ * 边界：
+ * - 只重试网络层失败、408、429、5xx。4xx 是请求本身有问题（模型名错、Key 无效），重试没有意义。
+ * - 用户主动取消（aborted）绝不重试。
+ * - 工具执行永远不重试：一次 delete_to_recycle 重放两遍就是删了两个东西。重试只在这里，
+ *   而且只包住「发请求」这一段，不碰任何工具。
+ */
+const MAX_ATTEMPTS = 2
+const RETRY_BACKOFF_MS = 800
+
+function retryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500
+}
+
+/** 网络层失败：fetch 抛出的 TypeError，以及我们自己的 180s 超时 */
+function retryableTransport(err: unknown): boolean {
+  const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: unknown }).name) : ''
+  // AbortError 是用户点的「停止」，不是可以重试的网络问题
+  if (name === 'AbortError') return false
+  // TimeoutError 来自 AbortSignal.timeout：网关卡住，换个请求有机会通
+  if (name === 'TimeoutError') return true
+  if (err instanceof TypeError) return true
+  const message = err instanceof Error ? err.message : ''
+  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
+}
+
+/** 可被取消的等待：用户点了停止要能立刻断掉，不能傻等退避 */
+function backoff(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('已取消'))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new Error('已取消'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function buildBody(
   config: ModelConfig,
   messages: ChatMessage[],
@@ -78,20 +129,37 @@ async function post(
 
   const timeout = AbortSignal.timeout(180_000)
   const composed = signal ? AbortSignal.any([signal, timeout]) : timeout
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal: composed
-  })
-  if (!res.ok) {
+  const url = `${base}/chat/completions`
+
+  for (let attempt = 1; ; attempt += 1) {
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: composed
+      })
+    } catch (err) {
+      // 用户取消就照原样抛，别把「停止」变成一次重试
+      if (signal?.aborted) throw err
+      if (attempt >= MAX_ATTEMPTS || !retryableTransport(err)) throw err
+      console.warn(`[llm] 第 ${attempt} 次请求失败，${RETRY_BACKOFF_MS}ms 后重试：`, err instanceof Error ? err.message : err)
+      await backoff(RETRY_BACKOFF_MS, signal)
+      continue
+    }
+
+    if (res.ok) return res
+
     const text = await res.text().catch(() => '')
-    throw new LlmError(
+    const err = new LlmError(
       `模型接口 ${res.status}：${text.slice(0, 400) || res.statusText}`,
       res.status
     )
+    if (attempt >= MAX_ATTEMPTS || !retryableStatus(res.status)) throw err
+    console.warn(`[llm] 模型接口返回 ${res.status}，${RETRY_BACKOFF_MS}ms 后重试`)
+    await backoff(RETRY_BACKOFF_MS, signal)
   }
-  return res
 }
 
 interface PendingCall {

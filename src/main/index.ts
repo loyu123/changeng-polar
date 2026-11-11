@@ -13,6 +13,7 @@ import { createTray, destroyTray, hasTray, refreshTray, type TrayOptions } from 
 import { applyOrbPrefs, createOrb, destroyOrb } from './orb'
 import { notifyReady, notifyTask } from './notify'
 import { registerIpc } from './ipc'
+import { logError } from './log'
 
 /**
  * 主进程入口：只做装配。
@@ -24,6 +25,20 @@ import { registerIpc } from './ipc'
  * - node/*       读注册表、邮件、安装、存储这些本机能力
  * 这样改一个功能不用先通读八百行入口。
  */
+
+/**
+ * 全局兜底：任何没被接住的拒绝/异常都要落到 errors.log。
+ *
+ * 为什么必须挂：从对话到审计几乎每一处写盘都是「发起就走」的，一处 appendFile
+ * 因为磁盘满或文件占用失败，在没有任何处理器的进程里就是一条未处理的拒绝——
+ * 打包后既没有终端也没有崩溃提示，用户只会看到「记录页少了几条」。
+ *
+ * uncaughtException 这里选择不退出：这是常驻桌面的个人助手，一次未预期的异常
+ * 退出等于把用户手上那轮对话连同工作体一起斩断。代价是异常之后进程状态未必干净，
+ * 所以照实记下来，宁可留一份可查的日志，也不假装没事。
+ */
+process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason))
+process.on('uncaughtException', (err) => logError('uncaughtException', err))
 
 const store = new Store(path.join(app.getPath('userData')), makeSafeStorageCodec(safeStorage))
 const inflight = new Map<string, AbortController>()
@@ -126,7 +141,7 @@ async function runTaskNow(id: string): Promise<{ ok: boolean; detail: string }> 
       sub: task.prompt.slice(0, 80),
       result: 'rejected',
       reversible: false
-    })
+    }).catch((err) => logError('audit', err))
     return { ok: false, detail: message.slice(0, 160) }
   }
 }

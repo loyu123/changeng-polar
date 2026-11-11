@@ -22,6 +22,7 @@ import { memoryBlock } from './node/memory'
 import { SANDBOX_ROOT } from './node/sandbox'
 import { focusProcessWindow, probeLaunch } from './node/running'
 import type { Store } from './node/store'
+import { logError } from './log'
 
 /**
  * 一轮对话的运行环境：工具装配 + 授权闸门的实现 + 系统提示词。
@@ -31,6 +32,16 @@ import type { Store } from './node/store'
  */
 
 const AUTH_TIMEOUT_MS = 60_000
+
+/**
+ * 写一条审计记录，失败只记日志。
+ *
+ * 审计是旁路：它写不成不该把正在执行的动作或整轮对话一起拖垮。但也不能静默——
+ * 「记录页少了一条」在事后排查时是最难查的那种问题，所以统一落到 errors.log。
+ */
+function recordAudit(store: Store, entry: Parameters<Store['appendRecord']>[0]): void {
+  void store.appendRecord(entry).catch((err) => logError('audit', err))
+}
 
 export function machineEnv(): {
   machineName: string
@@ -306,9 +317,12 @@ export class TurnRuntime {
               authz: 'user_always'
             })
           )
+          // 「始终允许」已经进内存了，用户这次点确实生效；写盘失败只影响重启后还在不在，
+          // 但不能一声不响——日志里要能查到「这一次授权没落成盘」
+          .catch((err) => logError('auth-memory', err))
       },
       record: (entry) => {
-        void store.appendRecord(entry)
+        recordAudit(store, entry)
       }
     }
   }
@@ -361,7 +375,7 @@ export class TurnRuntime {
         config,
         signal: controller.signal,
         record: (entry) => {
-          void this.opts.store.appendRecord(entry)
+          recordAudit(this.opts.store, entry)
           return { ...entry, id: randomUUID(), ts: new Date().toISOString() }
         }
       }
@@ -378,7 +392,7 @@ export class TurnRuntime {
       emit: () => {},
       uiAuth: false
     })
-    void this.opts.store.appendRecord({
+    recordAudit(this.opts.store, {
       kind: 'task',
       title: `定时任务「${task.name}」运行`,
       sub: task.prompt.slice(0, 80),

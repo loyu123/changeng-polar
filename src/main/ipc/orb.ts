@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { ChatSession, OrbPrefs } from '../../shared/types'
 import { ORB_SESSIONS_MAX, orbPrefsOf } from '../../shared/orb'
 import type { IpcContext } from './app'
+import { logError } from '../log'
 import {
   currentOrbPrefs,
   beginDrag,
@@ -38,7 +39,13 @@ export function registerOrbIpc(ctx: IpcContext): void {
       hotkey: typeof patch?.hotkey === 'string' ? patch.hotkey : current.hotkey
     }
     await ctx.store.saveConfig({ orb: next })
-    ctx.orb.apply(next, { onPositionSaved: (x, y) => void ctx.store.saveConfig({ orb: { ...currentOrbPrefs(), x, y } }) })
+    // 拖动结束时落盘位置：写失败只影响下次开机的位置，不该让这一次拖动报错
+    ctx.orb.apply(next, {
+      onPositionSaved: (x, y) =>
+        void ctx.store
+          .saveConfig({ orb: { ...currentOrbPrefs(), x, y } })
+          .catch((err) => logError('orb-position', err))
+    })
     return state()
   })
 
@@ -106,9 +113,11 @@ export function registerOrbIpc(ctx: IpcContext): void {
             await ctx.store.saveConfig({ orb: { ...current, enabled: false } })
             ctx.orb.apply({ ...current, enabled: false }, {
               onPositionSaved: (x, y) =>
-                void ctx.store.saveConfig({ orb: { ...currentOrbPrefs(), x, y } })
+                void ctx.store
+                  .saveConfig({ orb: { ...currentOrbPrefs(), x, y } })
+                  .catch((err) => logError('orb-position', err))
             })
-          })()
+          })().catch((err) => logError('orb-hide', err))
         }
       },
       {
