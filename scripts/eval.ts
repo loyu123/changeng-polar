@@ -77,8 +77,16 @@ interface CaseResult {
    * 生成侧重复量的是**回答**这一层抖不抖——和 rejudge 的 `rounds` 量判分那层是两件事。
    * 原文必须留：报告说"5/6 通过"而看不到那 1 轮答了什么，等于什么都没说，
    * 而"这条用例为什么稳不住"恰恰只有对比两段回答才看得出来（改用例靠的就是它）。
+   * 工具名同理：H4 掉的两次原因都是"没调 web_search"，不给工具名就只剩一句结论。
    */
-  samples?: Array<{ pass: boolean; reason: string; judgedBy: string; judgeTally?: string; text: string }>
+  samples?: Array<{
+    pass: boolean
+    reason: string
+    judgedBy: string
+    judgeTally?: string
+    text: string
+    toolNames: string[]
+  }>
 }
 
 const ROOT = path.resolve(__dirname, '..')
@@ -275,7 +283,8 @@ async function main(): Promise<void> {
               reason: d.reason,
               judgedBy: d.judgedBy,
               ...(d.judgeTally ? { judgeTally: d.judgeTally } : {}),
-              text: d.text
+              text: d.text,
+              toolNames: d.toolNames
             }))
           }
         : {})
