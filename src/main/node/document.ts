@@ -103,6 +103,23 @@ export function outputFolderOf(documentsDir: string): string {
   return path.join(documentsDir, OUTPUT_FOLDER)
 }
 
+/**
+ * 这个路径是不是长庚自己写出来的产出。
+ *
+ * 给 `shell:reveal` 用：那是渲染层唯一一处能指挥系统去定位文件的地方，
+ * 而"传个任意路径就能让资源管理器把它标出来"等于把本机文件系统交出去了。
+ * 只认产出目录里的东西，别处一律 false。
+ *
+ * 用 path.relative 而不是 startsWith：`C:\文档\长庚产出2\x.txt` 以同一个前缀开头，
+ * 但它不在这个目录里。
+ */
+export function isInsideOutput(documentsDir: string, filePath: string): boolean {
+  const root = path.resolve(outputFolderOf(String(documentsDir ?? '')))
+  const target = path.resolve(String(filePath ?? ''))
+  const rel = path.relative(root, target)
+  return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel)
+}
+
 /** 只认 ENOENT：读不到（权限、路径坏了）要当作"可能有"，不能当成"空着可以写" */
 async function exists(target: string): Promise<boolean> {
   try {

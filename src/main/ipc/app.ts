@@ -9,6 +9,7 @@ import { filterTools, machineEnv } from '../runtime'
 import { getMainWindow } from '../window'
 import { createTools } from '../agent/tools'
 import { openRecycleBin } from '../node/sandbox'
+import { isInsideOutput } from '../node/document'
 
 /** IPC 注册时共用的依赖：主进程入口只负责把它们装配起来传下去 */
 export interface IpcContext {
@@ -160,6 +161,26 @@ export function registerAppIpc(ctx: IpcContext): void {
   // 记录页的「去还原」：只打开回收站窗口，还原仍然由用户点
   ipcMain.handle('shell:recycle', () => {
     openRecycleBin()
+    return true
+  })
+
+  /**
+   * 在资源管理器里指出一个**长庚自己写出的文件**（记录页「打开所在位置」）。
+   *
+   * 作用域写死在产出目录：这是把 shell 能力暴露给渲染层的唯一一处，
+   * 而"传个任意路径就能让系统去定位它"等于把本机文件系统的浏览权交出去了。
+   * 只认 `write_document` 自己的落点，别处一律 false——不给理由，也不回显路径。
+   */
+  ipcMain.handle('shell:reveal', async (_e, p: string) => {
+    if (typeof p !== 'string' || !p.trim()) return false
+    if (!isInsideOutput(app.getPath('documents'), p)) return false
+    // 文件已经不在（用户自己删了/移了）：不假装定位成功
+    try {
+      await fs.access(p)
+    } catch {
+      return false
+    }
+    shell.showItemInFolder(path.resolve(p))
     return true
   })
 }

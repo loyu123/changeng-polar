@@ -213,7 +213,12 @@ const api = {
     /** 打开系统回收站（删除类记录的"怎么撤"） */
     recycleBin: () => ipcRenderer.invoke('shell:recycle') as Promise<boolean>,
     /** 打开本机文件夹（仅限 userData 内的路径） */
-    openPath: (p: string) => ipcRenderer.invoke('shell:openPath', p) as Promise<boolean>
+    openPath: (p: string) => ipcRenderer.invoke('shell:openPath', p) as Promise<boolean>,
+    /**
+     * 在资源管理器里指出长庚写出的那个文件（仅限「文档\长庚产出」内）。
+     * 返回 false = 不在这个目录里，或者文件已经不在了。
+     */
+    reveal: (p: string) => ipcRenderer.invoke('shell:reveal', p) as Promise<boolean>
   },
 
   /** 存储占用（存储与缓存分区） */

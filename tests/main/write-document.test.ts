@@ -7,6 +7,7 @@ import { createTools } from '../../src/main/agent/tools'
 import type { ToolContext, ToolDef } from '../../src/main/agent/tool-types'
 import {
   inspectDocument,
+  isInsideOutput,
   MAX_DOC_CHARS,
   OUTPUT_FOLDER,
   resolveDocument,
@@ -171,6 +172,30 @@ describe('写入与回读', () => {
     expect(again.ok).toBe(false)
     if (!again.ok) expect(again.exists).toBe(true)
     expect(await fs.readFile(planned.path, 'utf8')).toBe('原件')
+  })
+})
+
+describe('「打开所在位置」的作用域', () => {
+  // 注意：docsRoot 是 beforeAll 里才赋值的，所以 out 必须在 it 里面算，
+  // 不能在 describe 体里提前求值（那时 docsRoot 还是空串）
+  const outNow = (): string => path.join(docsRoot, OUTPUT_FOLDER)
+
+  it('产出目录里的文件才认', () => {
+    expect(isInsideOutput(docsRoot, path.join(outNow(), '周报.md'))).toBe(true)
+    expect(isInsideOutput(docsRoot, path.join(outNow(), '子目录', '周报.md'))).toBe(true)
+  })
+
+  it('边上那个前缀相同的目录不算（startsWith 会误判的那种）', () => {
+    expect(isInsideOutput(docsRoot, path.join(docsRoot, OUTPUT_FOLDER + '2', '周报.md'))).toBe(false)
+    expect(isInsideOutput(docsRoot, path.join(docsRoot, OUTPUT_FOLDER + '-备份', '周报.md'))).toBe(false)
+  })
+
+  it('目录本身、别处的文件、往上跳的路径都不算', () => {
+    expect(isInsideOutput(docsRoot, outNow())).toBe(false)
+    expect(isInsideOutput(docsRoot, path.join(docsRoot, '别的.md'))).toBe(false)
+    expect(isInsideOutput(docsRoot, path.join(outNow(), '..', '..', 'Windows', 'win.ini'))).toBe(false)
+    expect(isInsideOutput(docsRoot, 'C:\\Windows\\win.ini')).toBe(false)
+    expect(isInsideOutput(docsRoot, '')).toBe(false)
   })
 })
 

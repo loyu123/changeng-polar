@@ -22,7 +22,7 @@ npm run dev                      # 开发模式（热更新）
 npm run build                    # 产出 out/ 三端产物
 npm run typecheck                # 主进程 + 渲染层两份 tsconfig 各查一遍
 npm test                         # 单测（vitest，不连网、不读注册表）
-npm run gate                     # 授权闸门离线验收（不接模型，67 条）
+npm run gate                     # 授权闸门离线验收（不接模型，69 条）
 npm run smoke                    # 不依赖模型：验证注册表读取 + 联网检索
 npm run mock                     # 本地假模型（无 Key 时验证对话链路）
 npm run eval                     # 跑 36 条评测，结果写 evals/report.json
@@ -210,7 +210,7 @@ scripts/
   lib/load-config.ts       脚本读配置：环境变量 > 解密后的明文 > 盘上明文
   lib/decrypt-config.cjs   Electron 子进程，用 <userData>\Local State 的密钥解密凭据
   smoke.ts                 本机读取 + 检索冒烟
-  gate-check.ts            授权闸门的离线验收（不接模型，67 条）
+  gate-check.ts            授权闸门的离线验收（不接模型，69 条）
   check-h1.ts / e3-check.ts / view-check.ts     单项核对脚本
   orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   编排总线冒烟
   backends-*.ts / mixed-backends.ts / github-smoke.ts       外部工作体后端核对
@@ -259,6 +259,8 @@ tests/                     单测（vitest，不连网、不读注册表）
 - 渲染层 `nodeIntegration: false` + 白名单 IPC，拿不到任意 shell。
 - 外链与 `ms-settings:` 一律交给系统打开，应用内不加载远程页面。
 - 只读动作在记录页撤回列显示「—」——没有可撤回的东西，不假装可撤销。
+- **产出的文件在记录页能直接定位**：`write_document` 那几行的操作列是「打开所在位置」，点了在资源管理器里把它标出来。这条能力作用域写死在产出目录（`isInsideOutput`），文件已被移走或删掉时如实说"不在了"，不静默什么都不发生。审计记录为此多记一个 `tool` 字段——渲染层判断"这条是不是产出了文件"不能靠 title 文案，那是给人看的一句话，会改。
+- 记录里没有 `tool` 字段的旧数据一律当空处理：老记录不显示这个按钮，也不报错。
 - 授权卡可全程键盘操作（聚焦主按钮 / Tab 循环 / Enter 确认 / Esc 拒绝）；跑动中可点「停止」，会同时中断请求并放掉挂起的授权卡。
 - 「始终允许」会落盘到 `%APPDATA%\changeng-polar\auth-memory.json`，重启仍生效；设置页能看、能撤销。**只有 `install_app` 进这张表**（key 含包名 + 版本，换包或换版本即失效）；删除与卸载永远逐次弹卡。
 - **没有「程序备注」这个功能**（曾经有，已整条移除）：`notes.json` 和写入口都在，但写它的页面早就删了，于是 `list_installed_apps` 里那个 `note` 字段永远是空的——而工具描述还在让模型"用户写过备注时优先引用它"，一条兑现不了的承诺。程序是干什么的，现在只有三个来源：注册表字段（发布者、安装位置、产品网址）、联网检索，以及用户自己让长庚 `save_memory` 记一句（记忆在设置 → 记忆里可见可删，比散在程序台账里更容易找到，也不用再造一份写入口）。

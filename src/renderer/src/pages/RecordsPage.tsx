@@ -100,11 +100,29 @@ const VERIFY_TAG: Record<Exclude<VerifyState, 'unavailable'>, { tag: string; not
   mismatch: { tag: 'tag-red', note: '核对不符' }
 }
 
+/**
+ * 这一条记录产出了一个能打开的文件吗。
+ *
+ * 只认 `write_document` 且真的写成了：被拒绝、备份失败、核对不符的都没有文件可指，
+ * 给了按钮只会点出一个"找不到"。也不靠 title 文案判断——文案是给人看的，会改。
+ */
+function producesFile(record: RecordEntry): boolean {
+  return record.tool === 'write_document' && record.result !== 'rejected' && Boolean(record.target)
+}
+
 export default function RecordsPage({ active }: { active: boolean }) {
   const [records, setRecords] = useState<RecordEntry[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   /** 展开了对比卡的销毁记录 id */
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  /** 点「打开所在位置」但文件已经不在时的提示（按记录 id） */
+  const [missing, setMissing] = useState<string | null>(null)
+
+  const revealOutput = async (id: string, target: string): Promise<void> => {
+    const ok = await window.butler.shell.reveal(target)
+    // 文件被用户自己删了/移了：如实说，不要静默什么都不发生
+    setMissing(ok ? null : id)
+  }
 
   const toggleDiff = (id: string): void => {
     setExpanded((prev) => {
@@ -203,6 +221,9 @@ export default function RecordsPage({ active }: { active: boolean }) {
                       <div className="sub">{record.sub}</div>
                       {/* 写操作的事后核对：查了什么、查到什么。没有这一行就是当时没核对 */}
                       {record.verifyFact && <div className="sub verify">核对：{record.verifyFact}</div>}
+                      {missing === record.id && (
+                        <div className="sub verify">那个文件已经不在了（可能被你移走或删掉了）</div>
+                      )}
                     </div>
                   </div>
                   <div className="res">
@@ -215,7 +236,16 @@ export default function RecordsPage({ active }: { active: boolean }) {
                     </span>
                   </div>
                   {/* 能撤回的只有回收站，而且必须用户自己点；应用内不做「一键撤销」 */}
-                  {record.reversible && record.undo === '回收站还原' ? (
+                  {producesFile(record) ? (
+                    <button
+                      className="undo"
+                      style={{ justifySelf: 'end' }}
+                      onClick={() => void revealOutput(record.id, record.target!)}
+                      title={record.target}
+                    >
+                      打开所在位置
+                    </button>
+                  ) : record.reversible && record.undo === '回收站还原' ? (
                     <button className="undo" onClick={() => void window.butler.shell.recycleBin()}>
                       去还原
                     </button>

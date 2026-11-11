@@ -7,6 +7,7 @@ import { executeThroughGate, rememberKey, type GateHooks } from '../src/main/age
 import type { ToolContext, ToolDef } from '../src/main/agent/tool-types'
 import { DEFAULT_CONFIG, Store } from '../src/main/node/store'
 import { prepareSandbox, SANDBOX_ROOT } from '../src/main/node/sandbox'
+import { isInsideOutput } from '../src/main/node/document'
 import { listInstalledApps } from '../src/main/node/registry'
 import { planUninstall } from '../src/main/node/uninstall'
 import { findOpenWindow, normalizeAppName } from '../src/main/node/running'
@@ -39,7 +40,8 @@ import type { AuthAnswer, RecordEntry } from '../src/shared/types'
  *  18. 授权记忆能持久化、重启后还在、且能撤销
  *  19. 候选卡：选完重新解析再弹授权卡；取消/无选择能力时不安装也不猜
  *  20. 写操作事后核对：删完自己再查一次；结论进审计；演练模式不核对
- *  21. 写文件：落点被代码写死、同名不覆盖、卡片上的路径就是写下的路径、写完回读核对
+ *  21. 写文件：落点被代码写死、同名不覆盖、卡片上的路径就是写下的路径、写完回读核对；
+ *      审计带工具名，「打开所在位置」只认产出目录（渲染层拿不到任意路径的定位）
  */
 
 const ctx: ToolContext = {
@@ -885,6 +887,18 @@ async function main(): Promise<void> {
     secondData?.name === '周会纪要 (2).md' &&
       (await fs.readFile(docData?.path ?? '', 'utf8')) === '结论：先做完闸门。\n',
     `新名字=${secondData?.name ?? '无'}`
+  )
+  check(
+    '审计记下是哪个工具（记录页的「打开所在位置」靠它，不靠 title 文案）',
+    docOnce.records[0]?.tool === 'write_document' && once.records[0]?.tool === 'delete_to_recycle',
+    `write=${docOnce.records[0]?.tool} destroy=${once.records[0]?.tool}`
+  )
+  check(
+    '「打开所在位置」只认产出目录里的文件（渲染层拿不到任意路径的定位能力）',
+    isInsideOutput(docsRoot, docData?.path ?? '') === true &&
+      isInsideOutput(docsRoot, path.join(docsRoot, '别处.md')) === false &&
+      isInsideOutput(docsRoot, path.join(docsRoot, '长庚产出2', 'x.md')) === false,
+    `产出内=${isInsideOutput(docsRoot, docData?.path ?? '')}`
   )
   await fs.rm(docsRoot, { recursive: true, force: true })
 

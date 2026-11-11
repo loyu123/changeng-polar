@@ -313,6 +313,8 @@ export async function executeThroughGate(
       result: resultKind,
       reversible: Boolean(result.undo),
       effect: def.effect,
+      // 工具名单独记：title 是给人看的文案，渲染层拿它做判断迟早对不上
+      tool: def.name,
       target: target.target,
       undo: result.undo ?? target.undoHint,
       authz,

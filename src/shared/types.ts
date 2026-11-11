@@ -317,6 +317,14 @@ export interface RecordEntry {
   effect?: ToolEffect
   /** 动了什么：路径、程序名、检索词（不是"调了哪个工具"） */
   target?: string
+  /**
+   * 记这一条的是哪个工具。
+   *
+   * title 是给人看的一句话（"写文件：周会纪要"），会被改写、会被本地化，
+   * 渲染层拿它做判断（比如"这条产出的文件在哪、要不要给个打开的按钮"）迟早对不上。
+   * 旧记录没有这个字段：那时审计还没记工具名，读的时候当空处理。
+   */
+  tool?: string
   before?: string
   after?: string
   /** 怎么撤回：回收站 / 备份路径 / 无 */

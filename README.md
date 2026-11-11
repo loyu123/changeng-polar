@@ -22,7 +22,7 @@ npm run dev                      # dev mode (hot reload)
 npm run build                    # produce the three out/ bundles
 npm run typecheck                # typecheck main + renderer against both tsconfigs
 npm test                         # unit tests (vitest, no network, no registry access)
-npm run gate                     # offline acceptance for the auth gate (no model, 67 assertions)
+npm run gate                     # offline acceptance for the auth gate (no model, 69 assertions)
 npm run smoke                    # model-free: verify registry reads + web search
 npm run mock                     # local fake model (exercise the chat path with no API key)
 npm run eval                     # run the 36 eval cases, writes evals/report.json
@@ -187,7 +187,7 @@ scripts/
   lib/load-config.ts       script config loading: env vars > decrypted plaintext > on-disk plaintext
   lib/decrypt-config.cjs   Electron child process; decrypts credentials with the key from <userData>\Local State
   smoke.ts                 local reads + search smoke test
-  gate-check.ts            offline acceptance for the auth gate (no model, 67 assertions)
+  gate-check.ts            offline acceptance for the auth gate (no model, 69 assertions)
   check-h1.ts / e3-check.ts / view-check.ts     one-off verification scripts
   orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   orchestrator bus smoke tests
   backends-*.ts / mixed-backends.ts / github-smoke.ts       external worker backend checks
@@ -236,6 +236,7 @@ Per-tool constraints:
 - The renderer runs `nodeIntegration: false` with whitelisted IPC — no arbitrary shell access.
 - External links and `ms-settings:` are always handed to the system; no remote page is loaded inside the app.
 - Read-only actions show "—" in the undo column on the records page — there is nothing to undo, and it doesn't pretend otherwise.
+- **Produced files can be located right from the records page**: rows created by `write_document` get an "Open file location" button that highlights the file in Explorer. That capability is scoped to the output folder (`isInsideOutput`); if the file has since been moved or deleted, the row says so instead of silently doing nothing. Audit records gained a `tool` field for this — the renderer can't decide "did this produce a file?" from the title, which is human-facing prose that changes. Older rows without `tool` are treated as empty: no button, no error.
 - Auth cards are fully keyboard-operable (focus the primary button / Tab cycles / Enter confirms / Esc refuses); a "Stop" button during a run aborts both the request and any pending auth card.
 - "Always allow" is persisted to `%APPDATA%\changeng-polar\auth-memory.json` and survives restart; Settings can list and revoke it. **Only `install_app` enters this table** (the key includes package name + version, so a different package or version doesn't match); delete and uninstall always require a card.
 - **There is no per-app "notes" feature** (there used to be one; it has been removed entirely). `notes.json` and a save handler existed, but the page that wrote them was deleted long ago, so the `note` field in `list_installed_apps` was always empty — while the tool description still told the model to "prefer the user's note when one exists". That is a promise nothing could keep. What a program does now comes from three places only: registry fields (publisher, install location, product URL), web search, and the user asking the butler to `save_memory` a line about it (memories are visible and deletable in Settings → Memory, easier to find than something buried in an app ledger, and no second write path has to be invented).
