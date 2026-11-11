@@ -91,10 +91,14 @@ describe('文件 · 哪些能读', () => {
     expect(fileKindOf('a.pptx')).toBe('pptx')
   })
 
-  it('PDF / 老格式 / 图片 / 压缩包 / 音视频 / 程序：认得出，前两个能读', () => {
+  it('PDF / 老式 .doc/.xls 也算能读；图片 / 压缩包 / 音视频 / 程序读不了', () => {
     expect(fileKindOf('a.pdf')).toBe('pdf')
     expect(fileKindOf('合同.PDF')).toBe('pdf')
-    for (const f of ['a.doc', 'a.xls', 'a.jpg', 'a.png', 'a.zip', 'a.exe', 'a.mp3', 'a.mp4']) {
+    // 老式 Office 走 OLE 二进制，和 docx 那套 ZIP 完全不是一回事，所以单独归类
+    expect(fileKindOf('a.doc')).toBe('doc')
+    expect(fileKindOf('a.xls')).toBe('xls')
+    expect(fileKindOf('旧表.XLS')).toBe('xls')
+    for (const f of ['a.jpg', 'a.png', 'a.zip', 'a.exe', 'a.mp3', 'a.mp4']) {
       expect(fileKindOf(f), f).toBe('unsupported')
     }
   })
@@ -104,12 +108,14 @@ describe('文件 · 哪些能读', () => {
    * 而老格式和图片的原因完全不同（一个是结构不认，一个是根本没有字）。
    */
   it('读不了的原因分格式说清楚，并给出下一步', () => {
-    expect(unsupportedReason('C:\\x\\旧表.xls')).toContain('老格式')
+    expect(unsupportedReason('C:\\x\\旧片.ppt')).toContain('老格式')
     expect(unsupportedReason('C:\\x\\照片.jpg')).toContain('图片')
     expect(unsupportedReason('C:\\x\\包.zip')).toContain('压缩包')
-    expect(unsupportedReason('C:\\x\\a.doc')).toContain('用系统默认程序打开')
-    // 能读的格式要出现在"能读的是…"那句话里，免得用户以为 PDF 也读不了
-    expect(unsupportedReason('C:\\x\\a.doc')).toContain('PDF')
+    expect(unsupportedReason('C:\\x\\a.ppt')).toContain('用系统默认程序打开')
+    // 能读的格式要出现在"能读的是…"那句话里，免得用户以为 PDF / 老 .doc 也读不了
+    const reason = unsupportedReason('C:\\x\\a.ppt')
+    expect(reason).toContain('PDF')
+    expect(reason).toContain('.doc/.xls')
   })
 })
 

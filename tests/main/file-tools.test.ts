@@ -156,12 +156,22 @@ describe('read_file · 把字读出来', () => {
 
   it('读不了的格式在读之前就判掉，不留一条"读失败"的审计', async () => {
     const dir = sandbox()
-    const old = path.join(dir, '旧表.xls')
-    writeFileSync(old, 'not really a workbook')
+    const old = path.join(dir, '旧片.ppt')
+    writeFileSync(old, 'not really a presentation')
     const def = find('read_file')
     const result = await executeThroughGate(def, { path: old }, ctx, gate())
     expect(result.ok).toBe(false)
     expect(result.summary).toContain('老格式')
+  })
+
+  it('后缀是 .xls 但内容不是 OLE：如实说这不是老式 Office 文件', async () => {
+    const dir = sandbox()
+    const fake = path.join(dir, '旧表.xls')
+    writeFileSync(fake, 'not really a workbook')
+    const def = find('read_file')
+    const result = await executeThroughGate(def, { path: fake }, ctx, gate())
+    expect(result.ok).toBe(false)
+    expect(result.summary).toContain('OLE')
   })
 
   it('read_file 标了 readsPrivateData（读过之后外发要确认）', () => {

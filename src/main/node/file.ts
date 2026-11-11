@@ -10,6 +10,7 @@ import {
 } from './folder'
 import { officeText, type OfficeKind } from './office'
 import { pdfText, pdfWarningsNote } from './pdf'
+import { legacyOfficeText } from './legacy-office'
 
 /**
  * 打开 / 阅读一个具体文件。
@@ -23,13 +24,14 @@ import { pdfText, pdfWarningsNote } from './pdf'
  *    所以这些后缀在解析阶段就拒掉，要开程序走 launch_app（那条路有自己的门槛）。
  * 2. **不认 UNC 路径**，理由和打开文件夹一样：连共享目录是一次 SMB 登录，
  *    会把本机凭据交出去，而"看一个文件"用不着付这个代价。
- * 3. **读不了就说读不了**。老式 .doc/.xls、加密文档、图片、压缩包，
- *    一律如实拒绝并让用户自己打开看——绝不吐一段乱码让模型去总结。
- *    这条最重要：读错比不读糟得多，因为错的内容会被当成事实讲给用户。
+ * 3. **读不了就说读不了**。加密文档、图片、压缩包一律如实拒绝；
+ *    PDF 的扫描件、老式 .doc/.xls 里加密的文件也会明说读不出——
+ *    绝不吐一段乱码让模型去总结。这条最重要：读错比不读糟得多，
+ *    因为错的内容会被当成事实讲给用户。
  */
 
-/** 能读的文件：纯文本 + Office 三类（都是 ZIP）+ PDF（自己解文字层）*/
-export type FileKind = 'text' | OfficeKind | 'pdf' | 'unsupported'
+/** 能读的文件：纯文本 + Office 三类（ZIP）+ PDF（文字层）+ 老式 .doc/.xls（OLE）*/
+export type FileKind = 'text' | OfficeKind | 'pdf' | 'doc' | 'xls' | 'unsupported'
 
 const OFFICE_EXT: Record<string, OfficeKind> = {
   '.docx': 'docx',
@@ -73,6 +75,8 @@ export function fileKindOf(filePath: string): FileKind {
   const ext = path.extname(filePath).toLowerCase()
   if (OFFICE_EXT[ext]) return OFFICE_EXT[ext]
   if (ext === '.pdf') return 'pdf'
+  if (ext === '.doc') return 'doc'
+  if (ext === '.xls') return 'xls'
   if (TEXT_EXT.has(ext)) return 'text'
   // 没有后缀的文本（README、Makefile 之类）：common case，按文本试一次
   if (!ext) return 'text'
@@ -84,8 +88,8 @@ export function unsupportedReason(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
   const name = path.basename(filePath)
   const what =
-    ext === '.doc' || ext === '.xls' || ext === '.ppt'
-      ? '这是 2003 那种老格式（OLE 二进制），不是新版的压缩包结构'
+    ext === '.ppt'
+      ? '这是 2003 那种老格式的幻灯片（OLE 二进制），这一版只做得了 .doc 和 .xls'
       : /\.(jpg|jpeg|png|gif|webp|bmp|heic|tiff?|svg)$/i.test(ext)
         ? '这是一张图片，里面没有可以直接读的文字'
         : /\.(zip|rar|7z|tar|gz|bz2|xz)$/i.test(ext)
@@ -95,7 +99,7 @@ export function unsupportedReason(filePath: string): string {
             : ext === '.exe' || ext === '.dll'
               ? '这是程序文件，不是文档'
               : '这个格式没有可提取的文字'
-  return `读不了「${name}」：${what}。能读的是纯文本（txt/md/csv/代码等）、.docx/.xlsx/.pptx 和 PDF。要看内容我可以帮你用系统默认程序打开它`
+  return `读不了「${name}」：${what}。能读的是纯文本（txt/md/csv/代码等）、.docx/.xlsx/.pptx、PDF 和老的 .doc/.xls。要看内容我可以帮你用系统默认程序打开它`
 }
 
 export type FileReject = { ok: false; reason: string }
@@ -461,6 +465,18 @@ export function readFileSlice(
       // 缺字、扫描页这些必须跟着结论一起说出去，所以塞进 encoding 这一栏——
       // describeRead 会把它原样念给模型听
       encoding = `PDF 文字层（共 ${pdf.pages} 页${pdfWarningsNote(pdf.warnings)}）`
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `读不了「${path.basename(target)}」：${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+  } else if (kind === 'doc' || kind === 'xls') {
+    try {
+      const legacy = legacyOfficeText(kind, buffer)
+      full = legacy.text
+      const what = kind === 'doc' ? 'Word 97 格式（OLE 二进制）' : 'Excel 97 格式（OLE 二进制）'
+      encoding = `${what}${legacy.warnings.length > 0 ? `；注意：${legacy.warnings.join('；')}` : ''}`
     } catch (err) {
       return {
         ok: false,
