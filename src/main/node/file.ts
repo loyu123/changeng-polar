@@ -25,13 +25,13 @@ import { legacyOfficeText } from './legacy-office'
  * 2. **不认 UNC 路径**，理由和打开文件夹一样：连共享目录是一次 SMB 登录，
  *    会把本机凭据交出去，而"看一个文件"用不着付这个代价。
  * 3. **读不了就说读不了**。加密文档、图片、压缩包一律如实拒绝；
- *    PDF 的扫描件、老式 .doc/.xls 里加密的文件也会明说读不出——
+ *    PDF 的扫描件、老式 .doc/.xls/.ppt 里加密的文件也会明说读不出——
  *    绝不吐一段乱码让模型去总结。这条最重要：读错比不读糟得多，
  *    因为错的内容会被当成事实讲给用户。
  */
 
-/** 能读的文件：纯文本 + Office 三类（ZIP）+ PDF（文字层）+ 老式 .doc/.xls（OLE）*/
-export type FileKind = 'text' | OfficeKind | 'pdf' | 'doc' | 'xls' | 'unsupported'
+/** 能读的文件：纯文本 + Office 三类（ZIP）+ PDF（文字层）+ 老式 .doc/.xls/.ppt（OLE）*/
+export type FileKind = 'text' | OfficeKind | 'pdf' | 'doc' | 'xls' | 'ppt' | 'unsupported'
 
 const OFFICE_EXT: Record<string, OfficeKind> = {
   '.docx': 'docx',
@@ -77,6 +77,7 @@ export function fileKindOf(filePath: string): FileKind {
   if (ext === '.pdf') return 'pdf'
   if (ext === '.doc') return 'doc'
   if (ext === '.xls') return 'xls'
+  if (ext === '.ppt') return 'ppt'
   if (TEXT_EXT.has(ext)) return 'text'
   // 没有后缀的文本（README、Makefile 之类）：common case，按文本试一次
   if (!ext) return 'text'
@@ -88,18 +89,16 @@ export function unsupportedReason(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
   const name = path.basename(filePath)
   const what =
-    ext === '.ppt'
-      ? '这是 2003 那种老格式的幻灯片（OLE 二进制），这一版只做得了 .doc 和 .xls'
-      : /\.(jpg|jpeg|png|gif|webp|bmp|heic|tiff?|svg)$/i.test(ext)
-        ? '这是一张图片，里面没有可以直接读的文字'
-        : /\.(zip|rar|7z|tar|gz|bz2|xz)$/i.test(ext)
-          ? '这是个压缩包，得先解开才知道里面有什么'
-          : /\.(mp3|wav|flac|m4a|mp4|mkv|avi|mov|wmv)$/i.test(ext)
-            ? '这是音视频文件，里面没有文字'
-            : ext === '.exe' || ext === '.dll'
-              ? '这是程序文件，不是文档'
-              : '这个格式没有可提取的文字'
-  return `读不了「${name}」：${what}。能读的是纯文本（txt/md/csv/代码等）、.docx/.xlsx/.pptx、PDF 和老的 .doc/.xls。要看内容我可以帮你用系统默认程序打开它`
+    /\.(jpg|jpeg|png|gif|webp|bmp|heic|tiff?|svg)$/i.test(ext)
+      ? '这是一张图片，里面没有可以直接读的文字'
+      : /\.(zip|rar|7z|tar|gz|bz2|xz)$/i.test(ext)
+        ? '这是个压缩包，得先解开才知道里面有什么'
+        : /\.(mp3|wav|flac|m4a|mp4|mkv|avi|mov|wmv)$/i.test(ext)
+          ? '这是音视频文件，里面没有文字'
+          : ext === '.exe' || ext === '.dll'
+            ? '这是程序文件，不是文档'
+            : '这个格式没有可提取的文字'
+  return `读不了「${name}」：${what}。能读的是纯文本（txt/md/csv/代码等）、.docx/.xlsx/.pptx、PDF 和老的 .doc/.xls/.ppt。要看内容我可以帮你用系统默认程序打开它`
 }
 
 export type FileReject = { ok: false; reason: string }
@@ -471,11 +470,16 @@ export function readFileSlice(
         reason: `读不了「${path.basename(target)}」：${err instanceof Error ? err.message : String(err)}`
       }
     }
-  } else if (kind === 'doc' || kind === 'xls') {
+  } else if (kind === 'doc' || kind === 'xls' || kind === 'ppt') {
     try {
       const legacy = legacyOfficeText(kind, buffer)
       full = legacy.text
-      const what = kind === 'doc' ? 'Word 97 格式（OLE 二进制）' : 'Excel 97 格式（OLE 二进制）'
+      const what =
+        kind === 'doc'
+          ? 'Word 97 格式（OLE 二进制）'
+          : kind === 'xls'
+            ? 'Excel 97 格式（OLE 二进制）'
+            : 'PowerPoint 97 格式（OLE 二进制）'
       encoding = `${what}${legacy.warnings.length > 0 ? `；注意：${legacy.warnings.join('；')}` : ''}`
     } catch (err) {
       return {

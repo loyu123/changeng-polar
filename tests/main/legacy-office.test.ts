@@ -1,14 +1,21 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { isOle, oleStream, readOle } from '../../src/main/node/ole'
 import { docText, legacyOfficeText, xlsText } from '../../src/main/node/legacy-office'
+import { readFileSlice } from '../../src/main/node/file'
 import {
   buildDocFile,
   buildOle,
+  buildPptDocument,
+  buildPptFile,
   buildWorkbook,
   buildXlsFile,
   eof,
   labelsst,
   numberCell,
+  pptTextList,
   rec,
   rkCell,
   rkInt,
@@ -231,10 +238,25 @@ describe('统一入口', () => {
   it('不是 OLE 就直接拒绝，不往下猜', () => {
     expect(() => legacyOfficeText('doc', Buffer.from('PK\u0003\u0004'))).toThrow(/OLE/)
     expect(() => legacyOfficeText('xls', Buffer.alloc(1024))).toThrow(/OLE/)
+    expect(() => legacyOfficeText('ppt', Buffer.alloc(1024))).toThrow(/OLE/)
   })
 
   it('后缀说是 .doc 但里面装的是工作簿 → 明确拒绝，而不是吐空字符串', () => {
     const xls = buildXlsFile(buildWorkbook([{ name: 'S', body: [numberCell(0, 0, 1)] }]))
     expect(() => legacyOfficeText('doc', xls)).toThrow(/没有正文流/)
+  })
+
+  it('走 read_file 那条路：.ppt 和 .doc/.xls 一样能读出字，并且标出老格式', () => {
+    // 单独测解析器只证明函数能跑；这里要证明的是"用户点开一份 .ppt 能看到内容"
+    const dir = mkdtempSync(path.join(tmpdir(), 'changeng-ppt-'))
+    const target = path.join(dir, '汇报.ppt')
+    const stream = buildPptDocument([pptTextList([['季度汇报', '第三季度营收 20 万']])])
+    writeFileSync(target, buildPptFile([stream]))
+
+    const outcome = readFileSlice(target)
+    if (!outcome.ok) throw new Error(outcome.reason)
+    expect(outcome.read.kind).toBe('ppt')
+    expect(outcome.read.encoding).toContain('PowerPoint 97')
+    expect(outcome.read.text).toContain('第三季度营收 20 万')
   })
 })

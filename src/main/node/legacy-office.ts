@@ -1,16 +1,18 @@
 import { isOle, oleStream, readOle, type OleFile } from './ole'
 
 /**
- * 从老式 `.doc` / `.xls`（Word 97–2003 / Excel 97–2003）里把文字抠出来。
+ * 从老式 `.doc` / `.xls` / `.ppt`（Word / Excel / PowerPoint 97–2003）里把文字抠出来。
  *
- * 这两种不是 ZIP，所以 office.ts 那套解不开；它们是 OLE 容器里的一条流，
+ * 这几种不是 ZIP，所以 office.ts 那套解不开；它们是 OLE 容器里的一条流，
  * 流里面又是一层二进制记录表。这里的做法是：
  *   .doc → 读 `WordDocument` 流的 FIB，从 `0Table`/`1Table` 里取"片段表"（piece table），
  *          片段表告诉你正文的每一段在哪、是单字节还是 UTF-16
  *   .xls → 读 `Workbook` 流里的 BIFF 记录，共享字符串表 + 每格的数值
+ *   .ppt → 读 `PowerPoint Document` 流里的记录树，文字在有页分隔的
+ *          `SlideListWithText` 容器里（见下面 .ppt 那一节）
  *
  * 边界写在代码里，不靠调用方记得：
- * - 加密过的老文件读不了（`fEncrypted` 位），要如实说，不试密码
+ * - 加密过的老文件读不了（`fEncrypted` 位 / `EncryptedSummary` 流），要如实说，不试密码
  * - 中文老文件里单字节片段的编码按 FIB 的语言 ID 判（中文走 GB18030），
  *   判错时得到的是错字而不是乱码——所以这一点写进返回的 warnings
  * - 只读文字，不还原格式、公式和批注
@@ -451,13 +453,264 @@ export function xlsText(file: OleFile): LegacyText {
 }
 
 /* ------------------------------------------------------------------ *
+ * .ppt（PowerPoint 97–2003）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 记录类型号。这些数不是猜的，也不会变——它们是格式规范里冻结的常量。
+ * 只列这里真用到的几个，剩下的（画布、形状、配色）跟"读出文字"无关。
+ */
+const RT_DOCUMENT = 1000
+const RT_SLIDE = 1006
+const RT_SLIDE_PERSIST_ATOM = 1011
+const RT_TEXT_CHARS_ATOM = 4000
+const RT_TEXT_BYTES_ATOM = 4008
+const RT_SLIDE_LIST_WITH_TEXT = 4080
+const RT_USER_EDIT_ATOM = 4085
+const RT_PERSIST_DIRECTORY = 6002
+
+/** 记录树只有容器套容器那么深（文档→形状→文字），留足余量，防坏文件把栈打穿 */
+const MAX_PPT_DEPTH = 24
+
+interface PptRecord {
+  type: number
+  /** 容器的 instance 用来区分"这份列表装的是幻灯片 / 母版 / 备注" */
+  instance: number
+  /** 在流里的起始位置（顶层记录的偏移是绝对的，用来按 persist 目录找页） */
+  start: number
+  /** 原子记录的内容；容器为空 */
+  data: Buffer
+  children: PptRecord[]
+}
+
+/**
+ * 把一段字节读成记录树。
+ *
+ * 记录头 8 字节：低 4 位是版本（`0xF` = 这条是容器，后面跟着子记录），
+ * 高 12 位是 instance，然后是 2 字节类型和 4 字节长度。
+ *
+ * 长度越界就停：这类文件被下载截断过很常见，继续按偏移往后读只会读出
+ * 一段看着像记录、其实是别的东西的字节，然后吐出一些"像字但不是"的结果。
+ */
+function readPptRecords(buf: Buffer, depth = 0): PptRecord[] {
+  const out: PptRecord[] = []
+  let pos = 0
+  while (pos + 8 <= buf.length) {
+    const verInst = buf.readUInt16LE(pos)
+    const type = buf.readUInt16LE(pos + 2)
+    const len = buf.readUInt32LE(pos + 4)
+    const start = pos + 8
+    if (len > buf.length - start) break
+    const body = buf.subarray(start, start + len)
+    const ver = verInst & 0x000f
+    const instance = verInst >>> 4
+    if (ver === 0x0f && depth < MAX_PPT_DEPTH) {
+      out.push({ type, instance, start: pos, data: Buffer.alloc(0), children: readPptRecords(body, depth + 1) })
+    } else {
+      // 版本不是容器的都当原子读。深度用尽时也走这条：读到的是一段读不懂的字节，
+      // 但至少不会无限往下钻
+      out.push({ type, instance, start: pos, data: body, children: [] })
+    }
+    pos = start + len
+  }
+  return out
+}
+
+/** 一条记录是不是文本原子 */
+const isTextAtom = (rec: PptRecord): boolean =>
+  rec.type === RT_TEXT_CHARS_ATOM || rec.type === RT_TEXT_BYTES_ATOM
+
+/**
+ * 一个文本原子的内容。
+ *
+ * `TextCharsAtom` 是 UTF-16LE，一眼就懂。`TextBytesAtom` 容易被当成"某种代码页"，
+ * 其实不是：它每个字节就是一个字符（码位等于字节值，即压缩过的 Unicode），
+ * 所以按 latin1 一一对应地读。当成 GBK 去解会把一串正常字符配成别字。
+ */
+function pptAtomText(rec: PptRecord): string {
+  if (rec.type === RT_TEXT_CHARS_ATOM) return rec.data.toString('utf16le')
+  return rec.data.toString('latin1')
+}
+
+/** 把一棵记录树里所有文本原子按出现顺序收上来 */
+function collectText(records: PptRecord[], out: string[] = []): string[] {
+  for (const rec of records) {
+    if (isTextAtom(rec)) out.push(pptAtomText(rec))
+    if (rec.children.length > 0) collectText(rec.children, out)
+  }
+  return out
+}
+
+/** PowerPoint 的段落符是 \r，软换行是 \x0b，和 Word 那套不是一回事 */
+function cleanPptText(text: string): string {
+  return text
+    .replace(/\x0b/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\x00-\x08\x0e-\x1f]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
+ * 持久化目录：把"某个对象在第几号"翻成"它在流的哪个偏移"。
+ *
+ * 这是老 PPT 里最绕的一处，但没有它就只能按字节顺序猜页——猜错了页码会串。
+ * 记录 6002 里是一串 (起始编号, 条数, 若干偏移) 的组；偏移是**相对当前这一段
+ * 增量编辑的起点**，而那个起点由最近一次保存（记录 4085 里的 offsetToCurrentEdit）
+ * 给出来。所以顺序走一遍：先看到目录就按当前基准算，看到保存记录就更新基准。
+ *
+ * 同一个编号被写了两次时后写的赢——这正是"改过之后以最后一次为准"。
+ */
+function persistOffsets(records: PptRecord[]): Map<number, number> {
+  const map = new Map<number, number>()
+  let base = 0
+  for (const rec of records) {
+    if (rec.type === RT_USER_EDIT_ATOM && rec.data.length >= 16) {
+      base = rec.data.readUInt32LE(12)
+      continue
+    }
+    if (rec.type !== RT_PERSIST_DIRECTORY) continue
+    let pos = 0
+    while (pos + 4 <= rec.data.length) {
+      const head = rec.data.readUInt32LE(pos)
+      const first = head & 0xfffff
+      const count = head >>> 20
+      pos += 4
+      for (let i = 0; i < count && pos + 4 <= rec.data.length; i++) {
+        map.set(first + i, base + rec.data.readUInt32LE(pos))
+        pos += 4
+      }
+    }
+  }
+  return map
+}
+
+interface PptPage {
+  /** 这一页的文字（已经清掉控制字符，可能是空串） */
+  text: string
+}
+
+export function pptText(file: OleFile): LegacyText {
+  const warnings: string[] = []
+  /**
+   * 加密的老 PPT 不是靠哪一位标志位认的：它会另外写两条 `Encrypted*` 流，
+   * 正文流本身被 RC4 加密过。所以看到这两条流就直接说读不了，
+   * 不去试着解一段密文——解出来一定是一堆乱码，而乱码会被当成内容总结。
+   */
+  if (oleStream(file, 'EncryptedSummary') || oleStream(file, 'EncryptedDocument')) {
+    throw new Error('这份 .ppt 加了密（需要密码才能打开），里面的字读不了')
+  }
+  const stream = oleStream(file, 'PowerPoint Document')
+  if (!stream || stream.length < 8) throw new Error('这个 .ppt 里没有正文流（可能不是 PowerPoint 文件）')
+
+  const top = readPptRecords(stream)
+  if (top.length === 0) throw new Error('这份 .ppt 的记录结构读不出来，文件可能损坏或被截断了')
+
+  /**
+   * 一个文档容器就是一版完整的文档，改一次追加一份（增量保存）。
+   * 所以**取最后一份**：前面那些是旧版本，把它们也读出来会让同一页文字出现好几遍。
+   */
+  const documents = top.filter((r) => r.type === RT_DOCUMENT)
+  const current = documents[documents.length - 1]
+  if (!current) throw new Error('这份 .ppt 的结构里没有文档容器，文件可能损坏了')
+  if (documents.length > 1) {
+    warnings.push(`这份 .ppt 存过 ${documents.length} 版（增量保存），只读了最后那一版`)
+  }
+
+  const persist = persistOffsets(top)
+
+  /**
+   * 从流里某个偏移处读**那一页**，把里面的文字收上来。
+   *
+   * 只取第一条记录：`readPptRecords` 会一路读到流尾，而偏移后面紧跟着的
+   * 是别的页——不截断的话每一页都会把后面所有页的文字也算成自己的，
+   * 于是"第 1 页"里出现第 2 页的内容（而且顺序还看着挺合理，很难发现）。
+   */
+  const textAtOffset = (offset: number): string[] => {
+    if (offset <= 0 || offset >= stream.length) return []
+    const [page] = readPptRecords(stream.subarray(offset))
+    return page ? collectText([page]) : []
+  }
+
+  /** 按"页"分组取文字：先把一页的文字收齐，再清控制字符 */
+  const toPage = (parts: string[]): PptPage => ({ text: cleanPptText(parts.join('\n')) })
+
+  /**
+   * 文字到底存在哪，老 PPT 有两种写法：
+   *   a) 存在文档里那份「带文字的分页表」（4080）里，页序天然就是放映顺序
+   *   b) 存在每一页自己的容器（1006 / 1008）里，这时候页序要靠列表里的编号
+   *      去 persist 目录查偏移——按字节顺序排会在改过页序的文件上串页
+   * 这里两种都走：列表里只要有字就用列表的，没有就去翻页容器。
+   */
+  const pagesOf = (instance: 0 | 2): PptPage[] => {
+    const list = current.children.find(
+      (r) => r.type === RT_SLIDE_LIST_WITH_TEXT && r.instance === instance
+    )
+    if (!list) return []
+
+    const inline: Array<{ persistIdRef: number; parts: string[] }> = []
+    for (const child of list.children) {
+      if (child.type === RT_SLIDE_PERSIST_ATOM) {
+        inline.push({ persistIdRef: child.data.length >= 4 ? child.data.readUInt32LE(0) : -1, parts: [] })
+        continue
+      }
+      if (isTextAtom(child)) inline[inline.length - 1]?.parts.push(pptAtomText(child))
+    }
+
+    if (inline.some((p) => p.parts.length > 0)) return inline.map((p) => toPage(p.parts))
+
+    return inline.map((p) => {
+      const offset = persist.get(p.persistIdRef)
+      return toPage(offset === undefined ? [] : textAtOffset(offset))
+    })
+  }
+
+  const sections: string[] = []
+  const slides = pagesOf(0)
+  const notes = pagesOf(2)
+
+  /**
+   * 页容器那一路要是也没找到（更早的 PowerPoint 结构，或者编号对不上），
+   * 退到最后一步：把顶层每一页容器里的字按文件顺序收上来。
+   * 这时页码只能按文件顺序给，并且必须说明——否则用户会以为第 1 段就是第 1 页。
+   */
+  if (slides.length === 0) {
+    const fallback = top.filter((r) => r.type === RT_SLIDE)
+    if (fallback.length > 0) {
+      for (const rec of fallback) slides.push(toPage(collectText(rec.children)))
+      warnings.push('这份 .ppt 的分页表对不上，页码是按文件里的顺序给的，页与页的先后可能不准')
+    }
+  }
+
+  slides.forEach((page, index) => {
+    // 空白页不输出：一页只有图片时没有字，但它占的页码不能因此往前挤
+    if (!page.text) return
+    sections.push(`[第 ${index + 1} 张幻灯片]\n${page.text}`)
+  })
+  notes.forEach((page, index) => {
+    if (!page.text) return
+    sections.push(`[备注 ${index + 1}]\n${page.text}`)
+  })
+
+  const text = sections.join('\n\n').trim()
+  if (!text) {
+    throw new Error(
+      `这份 .ppt 里没有可提取的文字：找到 ${slides.length} 张幻灯片，但里面一个字都没有（多半每一页都只有图片和图形，或者标题框是空的）`
+    )
+  }
+  return { text, warnings }
+}
+
+/* ------------------------------------------------------------------ *
  * 统一入口
  * ------------------------------------------------------------------ */
 
-export function legacyOfficeText(kind: 'doc' | 'xls', buffer: Buffer): LegacyText {
+export function legacyOfficeText(kind: 'doc' | 'xls' | 'ppt', buffer: Buffer): LegacyText {
   if (!isOle(buffer)) throw new Error('这不是老式 Office 文件（找不到 OLE 文件头）')
   const file = readOle(buffer)
-  return kind === 'doc' ? docText(file) : xlsText(file)
+  if (kind === 'doc') return docText(file)
+  if (kind === 'xls') return xlsText(file)
+  return pptText(file)
 }
 
 export type { OleFile }

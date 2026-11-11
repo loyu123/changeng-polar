@@ -156,12 +156,12 @@ describe('read_file · 把字读出来', () => {
 
   it('读不了的格式在读之前就判掉，不留一条"读失败"的审计', async () => {
     const dir = sandbox()
-    const old = path.join(dir, '旧片.ppt')
-    writeFileSync(old, 'not really a presentation')
+    const image = path.join(dir, '旧照.jpg')
+    writeFileSync(image, 'not really an image')
     const def = find('read_file')
-    const result = await executeThroughGate(def, { path: old }, ctx, gate())
+    const result = await executeThroughGate(def, { path: image }, ctx, gate())
     expect(result.ok).toBe(false)
-    expect(result.summary).toContain('老格式')
+    expect(result.summary).toContain('图片')
   })
 
   it('后缀是 .xls 但内容不是 OLE：如实说这不是老式 Office 文件', async () => {

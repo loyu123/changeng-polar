@@ -322,3 +322,102 @@ export function buildDocFile(body: Buffer, options: DocOptions = {}): Buffer {
 export function buildXlsFile(workbook: Buffer): Buffer {
   return buildOle([{ name: 'Workbook', data: workbook }])
 }
+
+/* ---------------- .ppt ---------------- */
+
+/**
+ * 一条 PPT 记录：2 字节（低 4 位版本、高 12 位 instance）+ 2 字节类型 + 4 字节长度。
+ * `container` 置位时版本写成 0xF，长度是里面所有子记录拼起来的长度。
+ */
+export function pptRecord(type: number, instance: number, body: Buffer, container = false): Buffer {
+  const head = Buffer.alloc(8)
+  head.writeUInt16LE(((instance & 0x0fff) << 4) | (container ? 0x0f : 0x00), 0)
+  head.writeUInt16LE(type, 2)
+  head.writeUInt32LE(body.length, 4)
+  return Buffer.concat([head, body])
+}
+
+/** UTF-16 文本原子（中文都走这条） */
+export const pptChars = (text: string): Buffer => pptRecord(4000, 0, Buffer.from(text, 'utf16le'))
+/** 单字节文本原子（每个字节就是一个字符，不是代码页） */
+export const pptBytes = (text: string): Buffer => pptRecord(4008, 0, Buffer.from(text, 'latin1'))
+/** 文本头原子：instance 说明这是标题 / 正文 / 备注的文字 */
+export const pptTextHeader = (kind = 0): Buffer => pptRecord(3999, 0, u32(kind))
+
+/**
+ * 分页表里的一条：`persistIdRef` 是这个对象的编号，后面靠持久化目录查它落在流里的哪。
+ * 真实文件里这条是 20 字节（编号 + 标志 + 文字数 + 页号 + 保留），照抄长度。
+ */
+export const pptSlidePersist = (persistIdRef: number, slideId = 256): Buffer =>
+  pptRecord(1011, 0, Buffer.concat([u32(persistIdRef), u32(0), u32(0), u32(slideId), u32(0)]))
+
+/**
+ * 文档容器里的「带文字的分页表」。
+ *
+ * 两种存法真实文件里都有，测试两条都要走到：
+ * - 传 `pages` → 文字直接写在表里（老一点的 PowerPoint 这么存）
+ * - 传 `persistIds` → 表里只有页的编号，文字在各自的页容器里（97–2003 常见）
+ */
+export function pptTextList(pages: string[][], instance = 0): Buffer {
+  const body: Buffer[] = []
+  pages.forEach((paragraphs, index) => {
+    body.push(pptSlidePersist(index + 1))
+    for (const text of paragraphs) {
+      body.push(pptTextHeader(0))
+      body.push(pptChars(text))
+    }
+  })
+  return pptRecord(4080, instance, Buffer.concat(body), true)
+}
+
+/** 表里只放页的编号（文字在页容器里时用这个） */
+export function pptIndexList(persistIds: number[], instance = 0): Buffer {
+  return pptRecord(4080, instance, Buffer.concat(persistIds.map((id) => pptSlidePersist(id))), true)
+}
+
+/** 拼一个 PowerPoint 文档容器（顶层记录 1000，里面装着若干子记录） */
+export function buildPptDocument(children: Buffer[]): Buffer {
+  return pptRecord(1000, 0, Buffer.concat(children), true)
+}
+
+/** 一页（或一份备注）自己的容器：记录 1006 = 幻灯片，1008 = 备注 */
+export function pptPageContainer(type: 1006 | 1008, paragraphs: string[]): Buffer {
+  return pptRecord(type, 0, Buffer.concat(paragraphs.map((text) => Buffer.concat([pptTextHeader(0), pptChars(text)]))), true)
+}
+
+/** 持久化目录：把编号翻成流里的偏移 */
+export function pptPersistDirectory(entries: Array<[persistId: number, offset: number]>): Buffer {
+  const body: Buffer[] = []
+  for (const [id, offset] of entries) body.push(u32(((1 << 20) | id) >>> 0), u32(offset))
+  return pptRecord(6002, 0, Buffer.concat(body))
+}
+
+/** 保存记录：`offsetToCurrentEdit` 是下一段增量编辑的基准 */
+export function pptUserEdit(offsetToCurrentEdit: number): Buffer {
+  return pptRecord(4085, 0, Buffer.concat([u32(0), u16(0), u16(0), u32(0), u32(offsetToCurrentEdit)]))
+}
+
+/**
+ * 拼一份 .ppt 文件（OLE 里一条 `PowerPoint Document` 流）。
+ *
+ * `parts` 按顺序拼成流；要造"文字在页容器里"的文件，得先算好每个容器在流里的偏移，
+ * 所以这里接受一个回调：给它"算出偏移"的能力，由调用方把目录写进去。
+ */
+export function buildPptFile(parts: Buffer[] | ((at: (index: number) => number) => Buffer[])): Buffer {
+  let resolved: Buffer[]
+  if (typeof parts === 'function') {
+    // 先按占位长度排一遍，拿到每段的偏移，再让调用方按真实偏移重排一次。
+    // 目录里的偏移是 4 字节定长，所以第一次排出来的偏移就是最终的偏移。
+    const probe = parts(() => 0)
+    const offsets: number[] = []
+    let cursor = 0
+    for (const part of probe) {
+      offsets.push(cursor)
+      cursor += part.length
+    }
+    resolved = parts((index) => offsets[index])
+  } else {
+    resolved = parts
+  }
+  return buildOle([{ name: 'PowerPoint Document', data: Buffer.concat(resolved) }])
+}
