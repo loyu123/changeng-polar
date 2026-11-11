@@ -10,6 +10,7 @@ import type {
 } from '../../../shared/types'
 import { InstallStrip } from '../components/InstallStrip'
 import { MarkdownText } from '../components/MarkdownText'
+import { visibleSources } from '../utils/sources'
 import { conclusionOf, speak, stopSpeaking } from '../utils/speech'
 
 interface Msg {
@@ -353,8 +354,17 @@ function trustOf(evidence: Evidence[]): { level: 'high' | 'mid' | 'low'; text: s
   }
 }
 
+/**
+ * 来源列表。
+ *
+ * 收起时一行，展开时也**先给前几条**：一条检索型回答常带十几条出处，
+ * 全展开会把上面的结论挤出屏幕。折掉的条数写在按钮上，点一下看全——
+ * 悄悄少显示几条是这一栏最容易犯的错。
+ */
 function SourceBox({ evidence }: { evidence: Evidence[] }) {
   const [open, setOpen] = useState(evidence.length <= 3)
+  const [showAll, setShowAll] = useState(false)
+  const { shown, hidden } = visibleSources(evidence, showAll)
   return (
     <div className="srcbox">
       <div className="srcbox-h" onClick={() => setOpen(!open)}>
@@ -366,37 +376,45 @@ function SourceBox({ evidence }: { evidence: Evidence[] }) {
           </svg>
         </span>
       </div>
-      {open &&
-        evidence.map((item) => (
-          <div className="src-row" key={item.id}>
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#8A8A8A" strokeWidth="1.5">
-              {item.type === 'web' ? (
-                <>
-                  <path d="M6.6 9.4a3 3 0 004.2 0l1.8-1.8a3 3 0 00-4.2-4.2l-1 1" />
-                  <path d="M9.4 6.6a3 3 0 00-4.2 0L3.4 8.4a3 3 0 004.2 4.2l1-1" />
-                </>
+      {open && (
+        <>
+          {shown.map((item) => (
+            <div className="src-row" key={item.id}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#8A8A8A" strokeWidth="1.5">
+                {item.type === 'web' ? (
+                  <>
+                    <path d="M6.6 9.4a3 3 0 004.2 0l1.8-1.8a3 3 0 00-4.2-4.2l-1 1" />
+                    <path d="M9.4 6.6a3 3 0 00-4.2 0L3.4 8.4a3 3 0 004.2 4.2l1-1" />
+                  </>
+                ) : (
+                  <>
+                    <rect x="2" y="2.6" width="12" height="10.8" rx="1.6" />
+                    <path d="M5.2 8h5.6" />
+                  </>
+                )}
+              </svg>
+              <b>{item.title}</b>
+              {item.url ? (
+                <span className="dom" onClick={() => void window.butler.shell.open(item.url!)}>
+                  {hostOf(item.url)}
+                </span>
               ) : (
-                <>
-                  <rect x="2" y="2.6" width="12" height="10.8" rx="1.6" />
-                  <path d="M5.2 8h5.6" />
-                </>
+                <span className="dom" style={{ color: '#7A7A7A', cursor: 'default' }}>
+                  {item.detail}
+                </span>
               )}
-            </svg>
-            <b>{item.title}</b>
-            {item.url ? (
-              <span className="dom" onClick={() => void window.butler.shell.open(item.url!)}>
-                {hostOf(item.url)}
+              <span className="k">
+                {item.url ? item.detail?.split(' · ')[0] : new Date(item.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </span>
-            ) : (
-              <span className="dom" style={{ color: '#7A7A7A', cursor: 'default' }}>
-                {item.detail}
-              </span>
-            )}
-            <span className="k">
-              {item.url ? item.detail?.split(' · ')[0] : new Date(item.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-        ))}
+            </div>
+          ))}
+          {hidden > 0 && (
+            <button className="src-more" onClick={() => setShowAll(true)}>
+              还有 {hidden} 条
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }

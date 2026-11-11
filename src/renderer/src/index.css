@@ -921,6 +921,23 @@ textarea {
 .srcbox-h .chev.closed {
   transform: rotate(180deg);
 }
+/* 折在「还有 N 条」后面的出处：一个整行的按钮，不做成小链接——
+   点不准会以为来源就这么几条 */
+.src-more {
+  display: block;
+  width: 100%;
+  padding: 7px 11px;
+  font-size: 11.5px;
+  color: var(--ink3);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.src-more:hover {
+  color: var(--ink);
+  background: #f4f4f0;
+}
 .src-row {
   display: flex;
   align-items: center;
