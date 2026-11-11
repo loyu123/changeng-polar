@@ -10,6 +10,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "eval": "tsx scripts/eval.ts",
+    "rejudge": "tsx scripts/rejudge.ts",
     "smoke": "tsx scripts/smoke.ts",
     "gate": "tsx scripts/gate-check.ts",
     "orchestrate": "tsx scripts/orchestrator-demo.ts",

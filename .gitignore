@@ -4,6 +4,8 @@ out/
 dist/
 *.log
 evals/report.json
+# 复判产物：回答原文是从 report.json 搬过来的，同样含本机 IP 与已装软件清单
+evals/rejudge.json
 .DS_Store
 
 # 打包产物
