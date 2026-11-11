@@ -316,7 +316,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
           ok: true,
           text: `检索可用 · ${result.provider} · ${result.count} 条 · ${result.latencyMs} ms${
             first ? ` · 首条：${first.title}` : ''
-          }`
+          }${result.note ? ` · ${result.note}` : ''}`
         })
       } else {
         setStatus({ ok: false, text: `检索失败 · ${result.provider} · ${result.error ?? '原因未知'}` })
@@ -715,8 +715,8 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <option value="serper">Serper（Google 结果，需 Key，中文最准）</option>
                 <option value="tavily">Tavily（需 Key，正文摘要较全）</option>
                 <option value="bingapi">Bing 官方 API v7（需 Azure Key）</option>
-                <option value="duckduckgo">DuckDuckGo（免费抓取，常被反爬）</option>
-                <option value="bing">Bing 网页抓取（免费，噪声大）</option>
+                <option value="bing">Bing 网页抓取（免费，国内可用，默认）</option>
+                <option value="duckduckgo">DuckDuckGo（免费，国内常被人机验证拦下）</option>
                 <option value="none">关闭联网（用来验证“查不到”降级）</option>
               </select>
             </div>
@@ -940,7 +940,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <FieldHelp label="可写范围到底有多大">
                   两条，都不由模型定：<br />
                   · <b>删</b>：只有演示沙箱（<code>%TEMP%\butler-sandbox</code>）里的文件，走回收站可还原<br />
-                  · <b>写</b>：只有 <code>write_document</code> 往「文档\长庚产出」新建文件——落点写死在代码里，
+                  · <b>写</b>：只有 <code>write_document</code> 往桌面上的「长庚产出」新建文件——落点写死在代码里，
                   同名不覆盖，也<b>不能改或删已有文件</b>
                 </FieldHelp>
               </div>
@@ -989,7 +989,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 「始终允许」只对安装开放。
               </li>
               <li>
-                <b>能写进真实文件夹的只有一条路</b>：<code>write_document</code> 只能落在「文档\长庚产出」，
+                <b>能写进真实文件夹的只有一条路</b>：<code>write_document</code> 只能落在<b>桌面上的「长庚产出」</b>，
                 落点由代码写死、模型指定不了；只写文本类后缀，同名文件不覆盖（换个名字）。
                 能读的是你在对话里点名的任意路径文件（只读）；执行任意命令、写任意路径仍然没有通路。
               </li>

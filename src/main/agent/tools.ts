@@ -31,7 +31,15 @@ import {
   type FileRead
 } from '../node/file'
 import { fetchPage, searchWeb } from '../node/web'
-import { inspectDocument, MAX_DOC_CHARS, OUTPUT_FOLDER, resolveDocument, writeDocumentOnce } from '../node/document'
+import {
+  buildDocument,
+  inspectDocument,
+  MAX_DOC_CHARS,
+  OUTPUT_FOLDER,
+  resolveDocument,
+  writeDocumentOnce,
+  type BuiltDocument
+} from '../node/document'
 import { MEMORY_MAX_TEXT, mergeMemory, removeMemory, sameMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
 import { runDelegation, workerConfigFrom } from '../orchestrator/delegate'
@@ -182,12 +190,13 @@ export interface ToolDeps {
    */
   listSnapshots?: () => Promise<AppSnapshot[]>
   /**
-   * 系统「文档」目录（主进程注入 `app.getPath('documents')`）。
+   * 用户的桌面目录（主进程注入 `app.getPath('desktop')` —— 走这个 API 而不是拼
+   * `%USERPROFILE%\Desktop`，因为桌面被重定向到 OneDrive 时拼出来的路径是错的）。
    *
    * 只给这一个根，产出目录名在 node/document.ts 里写死。不注入 = 当前环境不写文件
    * （评测、离线验收），而不是"写到当前目录"——后者会把文件丢在进程的 cwd 里。
    */
-  documentsDir?: string
+  outputRoot?: string
   /** 跨会话记忆的读写（主进程注入 Store） */
   memory?: {
     list: () => Promise<MemoryEntry[]>
@@ -1150,9 +1159,10 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         }
       }
       const hits = outcome.hits.slice(0, max)
+      const sourceNote = outcome.note ? `（${outcome.note}）` : ''
       return {
         ok: true,
-        summary: `检索到 ${outcome.hits.length} 条结果（来源：${outcome.provider}）。摘要可能不完整，结论前建议对关键页面调用 web_fetch 核对。`,
+        summary: `检索到 ${outcome.hits.length} 条结果（来源：${outcome.provider}）${sourceNote}。摘要可能不完整，结论前建议对关键页面调用 web_fetch 核对。`,
         data: hits.map((h: SearchHit) => ({ title: h.title, url: h.url, snippet: h.snippet.slice(0, 260) })),
         evidence: hits.slice(0, 3).map((h) =>
           ev({
@@ -1190,10 +1200,26 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       if (!/^https?:\/\//i.test(url)) return { ok: false, summary: '地址无效，只支持 http/https' }
       try {
         const page = await fetchPage(url, ctx.signal)
+        if (page.caveat) {
+          // 读到了字但没读到正文：必须说清楚，否则模型会拿站点口号或排版碎片当内容总结
+          return {
+            ok: true,
+            summary: `打开了 ${new URL(page.finalUrl).host}，但没读到正文：${page.caveat}。抓到的是这 ${page.text.length} 字：${page.text.slice(0, 120)}……此时应当告诉用户「这页我读不到正文」，不要拿这些字当页面内容回答。`,
+            data: { title: page.title, url: page.finalUrl, text: page.text, caveat: page.caveat, readable: false },
+            evidence: [
+              ev({
+                type: 'web',
+                title: page.title,
+                url: page.finalUrl,
+                detail: `未读到正文 · ${page.caveat}`
+              })
+            ]
+          }
+        }
         return {
           ok: true,
           summary: `已读取 ${new URL(page.finalUrl).host} 的正文 ${page.text.length} 字（标题：${page.title}）`,
-          data: { title: page.title, url: page.finalUrl, text: page.text },
+          data: { title: page.title, url: page.finalUrl, text: page.text, readable: true },
           evidence: [
             ev({
               type: 'web',
@@ -1788,16 +1814,24 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
    * "把刚才那份整理成 md 存下来"只能靠委派给外部工作体，而那条路是要跑一整个智能体的。
    *
    * 三条边界都在 node/document.ts 里由代码定死，不靠提示词：
-   * 落点只有「文档\长庚产出」、只写文本类后缀、永不覆盖同名文件。
+   * 落点只有「桌面\长庚产出」、只写看得懂的格式、永不覆盖同名文件。
    * 再加 requiresConfirmation：写进用户真实目录的文件，必须让他看见路径和内容预览再点头。
+   *
+   * 内容一律按 Markdown 理解，`.docx/.pptx` 由 Markdown **生成**（`node/docx.ts` /
+   * `node/pptx.ts`，自己拼 OOXML，不装 Office、不拉起窗口）。用户要 `.doc/.ppt` 时
+   * 落盘成 `.docx/.pptx` 并在结果里如实说明——那两代格式差着整整一代，
+   * 换个后缀不会让它变成另一种文件。
    */
   const writeDocumentTool: ToolDef = {
     name: 'write_document',
-    label: '写一份文件到「文档」（需授权）',
+    label: '写一份文件到桌面（需授权）',
     description:
-      '把一段文字写成一个文件，存到用户的「文档\\' +
+      '把内容写成一个文件，存到用户桌面上的「' +
       OUTPUT_FOLDER +
-      '」目录里。**只能写这一个目录**，不能让模型指定别的路径；支持 .md/.txt/.csv/.json/.html，不写会执行的文件（.bat/.ps1/.lnk 之类）。同名文件已存在时**不会覆盖**，会换一个名字（如「周报 (2).md」），结果里给的是最终路径。用户说「存成文件」「导出」「保存下来」「整理成一份 md」「写到文档里」时用它。用户没有明确要求写文件前不要调用。',
+      '」文件夹里。**只能写这一个目录**，不能让模型指定别的路径。支持的格式：文本类 .md/.txt/.csv/.json/.html（照原文写），以及 .docx（Word 文档）和 .pptx（PowerPoint 幻灯片）——后两种由 **Markdown 生成**，所以 content 要用 Markdown 写。同名文件已存在时**不会覆盖**，会换一个名字（如「周报 (2).docx」），结果里给的是最终路径。\n' +
+      '**要 Word 就用 .docx，要幻灯片就用 .pptx**：用户说".doc / .ppt"时，落盘的会是 .docx / .pptx（老格式写不了），这时结果里会说明，你如实转告即可。\n' +
+      '**写幻灯片（.pptx）的约定**：一行 `# 一级标题` 就是新的一页、标题就是它；`##` 是页内小标题；`- ` 是要点；`---` 也能分页。\n' +
+      '用户说「存成文件」「导出」「保存下来」「做个 Word / PPT」「写到文档里」时用它。用户没有明确要求写文件前不要调用。',
     effect: 'write',
     requiresConfirmation: true,
     // 每次写的都是不同内容：没有"以后都自动写"这回事
@@ -1807,15 +1841,19 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       properties: {
         name: {
           type: 'string',
-          description: '文件名，可带后缀（不给后缀按 .md 存）。不能带目录，不能含「..」'
+          description:
+            '文件名，可带后缀（不给后缀按 .md 存）。支持 .md/.txt/.csv/.json/.html/.docx/.pptx；写 .doc/.ppt 会存成 .docx/.pptx。不能带目录，不能含「..」'
         },
-        content: { type: 'string', description: `文件内容，纯文本，最长 ${MAX_DOC_CHARS} 字` }
+        content: {
+          type: 'string',
+          description: `文件内容，Markdown 格式（.docx/.pptx 会按它生成标题层级与列表）。最长 ${MAX_DOC_CHARS} 字`
+        }
       },
       required: ['name', 'content']
     },
     plan: async (args): Promise<ToolPlan> => {
-      if (!deps.documentsDir) {
-        return { ok: false, reason: '当前环境没有可写的文档目录（没有注入「文档」路径）' }
+      if (!deps.outputRoot) {
+        return { ok: false, reason: '当前环境没有可写的位置（没有注入桌面路径）' }
       }
       const content = typeof args.content === 'string' ? args.content : ''
       if (!content.trim()) return { ok: false, reason: '内容是空的，没有可写的东西' }
@@ -1826,32 +1864,58 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         }
       }
       // 解析只做一次：卡片上写的路径，就是下面真正写下的那个（K7）
-      const planned = await resolveDocument(deps.documentsDir, args.name)
+      const planned = await resolveDocument(deps.outputRoot, args.name)
       if (!planned.ok) return { ok: false, reason: planned.reason }
+
+      // 生成也在 plan 阶段做完：生成不出来（比如幻灯片超过上限）就不该弹卡，
+      // 而"共几页"这种信息卡片上就得有，点完才发现是 200 页也来不及了
+      const ext = path.extname(planned.name).toLowerCase()
+      const title = planned.name.slice(0, planned.name.length - ext.length)
+      let built: BuiltDocument
+      try {
+        built = buildDocument(planned.format, content, title)
+      } catch (err) {
+        return {
+          ok: false,
+          reason: `生成 ${planned.name} 失败：${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+
+      const swapped = planned.swappedFrom
+        ? `你要的是 ${planned.swappedFrom}，但那是 1997 年的老二进制格式，长庚写不了；这次生成的是 ${path.extname(planned.name)}，Word / PowerPoint / WPS 都能直接打开。`
+        : ''
+      const kind = planned.format === 'text' ? '这份文件' : `这份 ${path.extname(planned.name)}`
       return {
         ok: true,
         target: {
           title: `写文件：${planned.name}`,
           target: planned.path,
-          impact: planned.renamed
-            ? '会在「文档\\长庚产出」里新建这个文件。**同名文件已存在，所以换了新名字**，原来那份不动'
-            : '会在「文档\\长庚产出」里新建这个文件；不覆盖任何已有文件，内容只写在这台机器上',
+          impact: `${swapped}会在「桌面\\长庚产出」里新建${kind}${built.detail ? `（${built.detail}）` : ''}。${
+            planned.renamed ? '**同名文件已存在，所以换了新名字**，原来那份不动' : '不覆盖任何已有文件'
+          }，内容只写在这台机器上`,
           undoHint: '在资源管理器里删掉这个文件'
         },
         execute: async (): Promise<ToolResult> => {
-          const outcome = await writeDocumentOnce(planned, content)
+          const outcome = await writeDocumentOnce(planned, built.buffer)
           if (!outcome.ok) return { ok: false, summary: `没有写成：${outcome.reason}` }
           const kb = Math.max(1, Math.round(outcome.bytes / 102.4) / 10)
+          const summary =
+            `已写入「${outcome.name}」（${kb} KB${built.detail ? `，${built.detail}` : ''}）：${outcome.path}` +
+            (planned.swappedFrom
+              ? `　⚠ 你要的是 ${planned.swappedFrom}，那是老二进制格式、长庚写不了，存的是 ${path.extname(planned.name)}，Word / PowerPoint 能直接打开`
+              : '')
           return {
             ok: true,
-            summary: `已写入「${outcome.name}」（${kb} KB）：${outcome.path}`,
+            summary,
             undo: '在资源管理器里删掉这个文件',
             data: {
               path: outcome.path,
               name: outcome.name,
               bytes: outcome.bytes,
               sha256: outcome.sha256,
-              renamed: planned.renamed
+              renamed: planned.renamed,
+              format: planned.name.slice(planned.name.lastIndexOf('.') + 1),
+              ...(planned.swappedFrom ? { requestedFormat: planned.swappedFrom.slice(1) } : {})
             },
             evidence: [
               ev({

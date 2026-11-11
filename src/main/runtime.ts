@@ -239,12 +239,13 @@ export class TurnRuntime {
       // 「卸干净了没」：模型得能在之后就自己读到那份快照，不然只能让用户去记录页点按钮
       listSnapshots: () => store.listSnapshots(),
       /**
-       * 产出目录的根：系统「文档」（不是 userData）。
+       * 产出目录的根：用户桌面（不是 userData，也不是「文档」）。
        *
-       * 写在这里的东西是给用户看的，放在 %APPDATA% 里等于让他去翻隐藏目录。
-       * 目录名「长庚产出」由 node/document.ts 拼，主进程只给这一个根。
+       * 写在这里的东西是给用户当场用的，放在 %APPDATA% 里等于让他去翻隐藏目录，
+       * 放在「文档」里他得先想起来去那儿找。目录名「长庚产出」由 node/document.ts 拼，
+       * 主进程只给这一个根；桌面被重定向到 OneDrive 时 getPath 会给出真实位置。
        */
-      documentsDir: app.getPath('documents'),
+      outputRoot: app.getPath('desktop'),
       memory: {
         list: () => store.listMemory(),
         save: (list) => store.saveMemory(list)

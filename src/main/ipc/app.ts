@@ -175,7 +175,7 @@ export function registerAppIpc(ctx: IpcContext): void {
    */
   ipcMain.handle('shell:reveal', async (_e, p: string) => {
     if (typeof p !== 'string' || !p.trim()) return false
-    if (!isInsideOutput(app.getPath('documents'), p)) return false
+    if (!isInsideOutput(app.getPath('desktop'), p)) return false
     // 文件已经不在（用户自己删了/移了）：不假装定位成功
     try {
       await fs.access(p)

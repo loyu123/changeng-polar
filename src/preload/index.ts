@@ -53,6 +53,7 @@ const api = {
         count: number
         latencyMs: number
         error?: string
+        note?: string
         sample: Array<{ title: string; url: string }>
       }>
   },
@@ -257,7 +258,7 @@ const api = {
     /** 打开本机文件夹（仅限 userData 内的路径） */
     openPath: (p: string) => ipcRenderer.invoke('shell:openPath', p) as Promise<boolean>,
     /**
-     * 在资源管理器里指出长庚写出的那个文件（仅限「文档\长庚产出」内）。
+     * 在资源管理器里指出长庚写出的那个文件（仅限桌面上「长庚产出」文件夹内）。
      * 返回 false = 不在这个目录里，或者文件已经不在了。
      */
     reveal: (p: string) => ipcRenderer.invoke('shell:reveal', p) as Promise<boolean>

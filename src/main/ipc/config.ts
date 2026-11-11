@@ -34,6 +34,7 @@ export function registerConfigIpc(ctx: IpcContext): void {
       count: outcome.hits.length,
       latencyMs: outcome.durationMs || Date.now() - started,
       error: outcome.error,
+      note: outcome.note,
       sample: outcome.hits.slice(0, 3).map((hit) => ({ title: hit.title, url: hit.url }))
     }
   })

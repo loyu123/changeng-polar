@@ -65,7 +65,8 @@ export interface ModelConfig {
 
 /**
  * 检索来源：
- * - duckduckgo / bing   免费 HTML 抓取（易被反爬，只作兜底）
+ * - bing                免费 HTML 抓取，走 cn.bing.com——国内网络下唯一稳的免费源，也是默认值
+ * - duckduckgo          免费 HTML 抓取，结果干净，但国内经常直接回人机验证页
  * - tavily / serper     带 Key 的检索 API（结果质量好，中文友好）
  * - bingapi             Bing Web Search v7（Azure 订阅 Key）
  * - none                关闭联网，用来验证"查不到"降级
@@ -245,6 +246,11 @@ export interface PageContent {
   title: string
   text: string
   fetchedAt: string
+  /**
+   * 这页其实没读到正文时，用一句人话说明原因（JS 渲染 / 登录墙 / 错误页）。
+   * 缺省表示读到的就是正文。
+   */
+  caveat?: string
 }
 
 /**

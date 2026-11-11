@@ -18,7 +18,9 @@ export const DEFAULT_CONFIG: ButlerConfig = {
   model: 'gpt-4o-mini',
   stream: true,
   temperature: 0.2,
-  searchProvider: 'duckduckgo',
+  // 默认 Bing（抓 cn.bing.com）而不是 DuckDuckGo：国内网络下 DDG 基本直接回人机验证页，
+  // 拿它当默认等于每次检索都先失败一次。Bing 实测 150–300ms 且中英文都出得来
+  searchProvider: 'bing',
   searchKey: '',
   mail: { address: '', authCode: '', host: 'imap.qq.com', port: 993 },
   mailAccounts: [],

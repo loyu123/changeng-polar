@@ -828,11 +828,11 @@ async function main(): Promise<void> {
   /**
    * ---- 21 写文件：唯一一处往用户真实目录里的写入，四条边界逐条钉住 ----
    *
-   * 落点由 node/document.ts 定死（<文档>\长庚产出），模型给的只有文件名；
+   * 落点由 node/document.ts 定死（<桌面>\长庚产出），模型给的只有文件名；
    * 同名不覆盖；卡片上的路径就是真正写下的那个（K7）；写完回读比对内容。
    */
-  const docsRoot = mkdtempSync(path.join(os.tmpdir(), 'butler-docs-'))
-  const docTool = createTools({ documentsDir: docsRoot }).find((t) => t.name === 'write_document')!
+  const desktopRoot = mkdtempSync(path.join(os.tmpdir(), 'butler-desktop-'))
+  const docTool = createTools({ outputRoot: desktopRoot }).find((t) => t.name === 'write_document')!
 
   const escapeTry = makeGate('once')
   const escaped = await executeThroughGate(docTool, { name: '..\\..\\evil.md', content: 'x' }, ctx, escapeTry.gate)
@@ -845,14 +845,14 @@ async function main(): Promise<void> {
   const docNoDir = createTools().find((t) => t.name === 'write_document')!
   const noDir = await executeThroughGate(docNoDir, { name: '甲.md', content: 'x' }, ctx, makeGate('once').gate)
   check(
-    '写文件：没有注入文档目录时不写（不退回进程当前目录）',
+    '写文件：没有注入桌面路径时不写（不退回进程当前目录）',
     noDir.ok === false && noDir.blocked === true,
     noDir.summary
   )
 
   const docDenied = makeGate('deny')
   const docDenyResult = await executeThroughGate(docTool, { name: '拒绝的.md', content: 'x' }, ctx, docDenied.gate)
-  const docFolder = path.join(docsRoot, '长庚产出')
+  const docFolder = path.join(desktopRoot, '长庚产出')
   check(
     '写文件：用户拒绝 → 一个文件都不建',
     docDenyResult.ok === false && docDenied.records[0]?.result === 'rejected' && !existsSync(path.join(docFolder, '拒绝的.md')),
@@ -863,7 +863,7 @@ async function main(): Promise<void> {
   const docResult = await executeThroughGate(docTool, { name: '周会纪要', content: '结论：先做完闸门。\n' }, ctx, docOnce.gate)
   const docData = docResult.data as { path?: string; name?: string; bytes?: number } | null
   check(
-    '写文件：落到「文档\\长庚产出」，卡片上写的路径就是写下的路径（K7）',
+    '写文件：落到「桌面\\长庚产出」，卡片上写的路径就是写下的路径（K7）',
     docResult.ok === true &&
       docData?.path === path.join(docFolder, '周会纪要.md') &&
       docOnce.seen.length === 1 &&
@@ -895,12 +895,12 @@ async function main(): Promise<void> {
   )
   check(
     '「打开所在位置」只认产出目录里的文件（渲染层拿不到任意路径的定位能力）',
-    isInsideOutput(docsRoot, docData?.path ?? '') === true &&
-      isInsideOutput(docsRoot, path.join(docsRoot, '别处.md')) === false &&
-      isInsideOutput(docsRoot, path.join(docsRoot, '长庚产出2', 'x.md')) === false,
-    `产出内=${isInsideOutput(docsRoot, docData?.path ?? '')}`
+    isInsideOutput(desktopRoot, docData?.path ?? '') === true &&
+      isInsideOutput(desktopRoot, path.join(desktopRoot, '别处.md')) === false &&
+      isInsideOutput(desktopRoot, path.join(desktopRoot, '长庚产出2', 'x.md')) === false,
+    `产出内=${isInsideOutput(desktopRoot, docData?.path ?? '')}`
   )
-  await fs.rm(docsRoot, { recursive: true, force: true })
+  await fs.rm(desktopRoot, { recursive: true, force: true })
 
   // 把演示文件补回来，方便现场验收
   const restored = await prepareSandbox()
