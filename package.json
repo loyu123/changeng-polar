@@ -32,6 +32,19 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
+  "//overrides": "minimatch 强推到 11.x：9.0.9（@electron/universal）与 10.2.6（app-builder-lib）都落在 GHSA-g3hv-75wg-m249 的受影响区间（>=7.0.0 <11.0.1）。electron-builder 26.18.0 已是当前最新，上游还没升；npm audit 给的办法是把它降级到 25.1.0——更旧、牵扯更多，不能听。改这里必须跑一次 npm run pack:dir。",
+  "//overrides-dir-compare": "例外：dir-compare 要的是 minimatch ^3 的老 API（它只做目录比对，不碰打包文件列表）。@electron/universal 那条会连子树一起压，所以这里把 dir-compare 单独放回去——不这么做 npm ls 会直接报 invalid。",
+  "overrides": {
+    "app-builder-lib": {
+      "minimatch": "^11.0.7"
+    },
+    "@electron/universal": {
+      "minimatch": "^11.0.7"
+    },
+    "dir-compare": {
+      "minimatch": "^3.1.2"
+    }
+  },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
@@ -43,7 +56,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12"
   },
   "build": {
     "appId": "com.loyu123.changengpolar",
