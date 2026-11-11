@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { OrchestrationProjectView } from '../../../shared/orchestration'
 
 /**
  * 编排项目进度页。
@@ -8,45 +9,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
  *
  * 「重新核对」按钮也不改状态：它只是把磁盘上的验收再查一遍给你看，
  * 免得"上次通过了"变成一句无从复核的自述。
+ *
+ * 项目默认落在应用自己的编排目录，但脚本派发的会落在别处（桌面等）。
+ * 那些目录要点「打开项目目录…」由用户自己挑进来——挑这个动作本身就是授权，
+ * 页面不会因为某个路径字符串长得像就去看它。
  */
 
-interface TaskView {
-  id: string
-  title: string
-  status: string
-  dependsOn: string[]
-  attempts: number
-  failureReason?: string
-  startedAt?: string
-  endedAt?: string
-  acceptance: string[]
-  artifacts: string[]
-}
-
-interface ProgressView {
-  total: number
-  done: number
-  failed: number
-  running: number
-  pending: number
-  blocked: number
-  unknown: number
-  ratio: number
-}
-
-interface ProjectView {
-  dirKey: string
-  id: string
-  name: string
-  status: string
-  createdAt: string
-  updatedAt: string
-  rootDir: string
-  progress: ProgressView
-  tasks: TaskView[]
-  lastRunAt?: string
-  runCount: number
-}
+type ProjectView = OrchestrationProjectView
 
 /** 状态的中文与人话说明。unknown 单独标出来——它既不是成功也不是失败 */
 const STATUS: Record<string, { text: string; cls: string; why: string }> = {
@@ -79,18 +48,26 @@ function errorText(err: unknown): string {
 
 export default function OrchestrationPage(): React.JSX.Element {
   const [projects, setProjects] = useState<ProjectView[]>([])
+  const [roots, setRoots] = useState<string[]>([])
+  const [appRoot, setAppRoot] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rechecking, setRechecking] = useState(false)
   const [recheck, setRecheck] = useState<{ taskId: string; passed: boolean; detail: string }[] | null>(null)
   const [openTask, setOpenTask] = useState<string | null>(null)
+  /** 挑目录 / 移除目录时的提示：挑错了要当场说，不能只是"什么都没发生" */
+  const [rootNote, setRootNote] = useState<string | null>(null)
+  const [rootBusy, setRootBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
-      const list = (await window.butler.orchestration.list()) as ProjectView[]
-      setProjects(list)
+      const r = await window.butler.orchestration.list()
+      setProjects(r.projects)
+      setRoots(r.roots)
+      setAppRoot(r.appRoot)
       setError(null)
-      setSelected((cur) => cur ?? list[0]?.dirKey ?? null)
+      // 用 projectDir 当身份：选中的项目可能在别处的根里，不能退回"列表第一个"
+      setSelected((cur) => (cur && r.projects.some((p) => p.projectDir === cur) ? cur : (r.projects[0]?.projectDir ?? null)))
     } catch (err) {
       setError(errorText(err))
     }
@@ -105,15 +82,55 @@ export default function OrchestrationPage(): React.JSX.Element {
   }, [load])
 
   const current = useMemo(
-    () => projects.find((p) => p.dirKey === selected) ?? projects[0] ?? null,
+    () => projects.find((p) => p.projectDir === selected) ?? projects[0] ?? null,
     [projects, selected]
   )
+
+  const pickRoot = async (): Promise<void> => {
+    setRootBusy(true)
+    setRootNote(null)
+    try {
+      const r = await window.butler.orchestration.pickRoot()
+      if (r.canceled) return
+      if (!r.ok) {
+        setRootNote(r.reason)
+        return
+      }
+      setProjects(r.projects)
+      setRoots(r.roots)
+      setAppRoot(r.appRoot)
+      setSelected(r.projects[0]?.projectDir ?? null)
+      setRootNote(`已打开 ${r.root}，在里面找到 ${r.projectCount} 个项目`)
+    } catch (err) {
+      setRootNote(errorText(err))
+    } finally {
+      setRootBusy(false)
+    }
+  }
+
+  const removeRoot = async (dir: string): Promise<void> => {
+    setRootBusy(true)
+    setRootNote(null)
+    try {
+      const r = await window.butler.orchestration.removeRoot(dir)
+      setProjects(r.projects)
+      setRoots(r.roots)
+      setAppRoot(r.appRoot)
+      // 移除的是正看着的那个目录时，选中的项目要跟着失效
+      setSelected((cur) => (cur && r.projects.some((p) => p.projectDir === cur) ? cur : (r.projects[0]?.projectDir ?? null)))
+      setRootNote(r.ok ? `不再扫描 ${dir}（磁盘上的文件一个字节都没动）` : (r.reason ?? '没能移除'))
+    } catch (err) {
+      setRootNote(errorText(err))
+    } finally {
+      setRootBusy(false)
+    }
+  }
 
   const doRecheck = async (): Promise<void> => {
     if (!current) return
     setRechecking(true)
     try {
-      const r = (await window.butler.orchestration.recheck(current.dirKey)) as typeof recheck
+      const r = (await window.butler.orchestration.recheck(current.projectDir)) as typeof recheck
       setRecheck(r)
     } catch (err) {
       setError(errorText(err))
@@ -130,6 +147,20 @@ export default function OrchestrationPage(): React.JSX.Element {
       <aside className="mid">
         <div className="mid-h">
           <h2>编排</h2>
+          <span
+            className="icobtn"
+            role="button"
+            title="打开项目目录…"
+            aria-disabled={rootBusy}
+            onClick={() => {
+              if (!rootBusy) void pickRoot()
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+              <path d="M3 7h6l2 2h10v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7z" />
+              <path d="M12 12.5v4M10 14.5h4" />
+            </svg>
+          </span>
           <span className="icobtn" role="button" title="刷新" onClick={() => void load()}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
               <path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4" />
@@ -141,18 +172,27 @@ export default function OrchestrationPage(): React.JSX.Element {
           已派发的项目<span className="cnt">{projects.length}</span>
         </div>
 
+        {rootNote && (
+          <div className="sub" style={{ padding: '0 14px 8px', lineHeight: 1.5 }}>
+            {rootNote}
+          </div>
+        )}
+
         {projects.length === 0 ? (
           <div className="empty-mid">
             <b>还没有派发过项目</b>
-            在对话里说「把这个拆成几步派出去」，长庚会先让你选派发方式
+            在对话里说「把这个拆成几步派出去」，长庚会先让你选派发方式。
+            <br />
+            项目不在应用目录里的话，点右上角文件夹图标，自己把那个目录挑进来。
           </div>
         ) : (
           projects.map((p) => (
             <button
-              key={p.dirKey}
-              className={`item two${current?.dirKey === p.dirKey ? ' sel' : ''}`}
+              key={p.projectDir}
+              className={`item two${current?.projectDir === p.projectDir ? ' sel' : ''}`}
+              title={p.projectDir}
               onClick={() => {
-                setSelected(p.dirKey)
+                setSelected(p.projectDir)
                 setRecheck(null)
                 setOpenTask(null)
               }}
@@ -165,6 +205,49 @@ export default function OrchestrationPage(): React.JSX.Element {
               </span>
             </button>
           ))
+        )}
+
+        {/* 正在扫描的目录：用户能看见"页面到底在看哪几处"，也能撤掉自己加的那个 */}
+        {roots.length > 0 && (
+          <>
+            <div className="seclabel" style={{ marginTop: 12 }}>
+              扫描的目录<span className="cnt">{roots.length}</span>
+            </div>
+            <div style={{ padding: '0 14px 14px', display: 'grid', gap: 6 }}>
+              {roots.map((r) => {
+                const isApp = r === appRoot
+                return (
+                  <div key={r} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span
+                      className="sub"
+                      title={r}
+                      style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {r}
+                    </span>
+                    {isApp ? (
+                      <span className="sub" style={{ flexShrink: 0 }}>
+                        应用目录
+                      </span>
+                    ) : (
+                      <span
+                        className="icobtn"
+                        role="button"
+                        title="不再扫描这个目录（磁盘上的文件不动）"
+                        onClick={() => {
+                          if (!rootBusy) void removeRoot(r)
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+                          <path d="M6 6l12 12M18 6L6 18" />
+                        </svg>
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </>
         )}
       </aside>
 
@@ -313,6 +396,12 @@ export default function OrchestrationPage(): React.JSX.Element {
                         <div className="sub" title={current.rootDir}>
                           目录：{current.rootDir}
                         </div>
+                        {/* 项目是从哪个根里找到的：不在应用目录时，用户需要知道"这是我自己打开的那个目录里的" */}
+                        {appRoot && current.scanRoot !== appRoot && (
+                          <div className="sub" title={current.scanRoot}>
+                            来自你打开的目录：{current.scanRoot}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

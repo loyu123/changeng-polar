@@ -1,103 +1,111 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { projectProgress, type ProjectProgress } from './plan'
+import { projectProgress } from './plan'
 import type { OrchestrationProject } from './types'
 import { runAcceptance, taskWorkDir } from './acceptance'
+import type {
+  OrchestrationProjectView,
+  OrchestrationTaskView
+} from '../../shared/orchestration'
+
+export type { OrchestrationProjectView, OrchestrationTaskView }
 
 /**
- * 给界面用的只读视图：列出 userData/orchestrator 下所有编排项目。
+ * 给界面用的只读视图：列出编排项目。只读、不改任何状态。
  *
- * 只读、不改任何状态。界面上"重跑验收"也不改任务状态——它只是把当前磁盘上的
- * 事实重新核对一遍给你看，免得"上次通过"变成一句无从复核的自述。
+ * 界面上"重新核对"也不改任务状态——它只是把当前磁盘上的事实再核对一遍给你看，
+ * 免得"上次通过"变成一句无从复核的自述。
+ *
+ * **身份是项目目录的绝对路径**，不是某一个根下的目录名。
+ * 之前只有一个根（userData/orchestrator），`dirKey` 是那下面的子目录名；
+ * 现在用户可以另外打开别处的目录（桌面、D 盘），两个根里出现同名子目录时，
+ * 目录名就不再唯一了——拿它当键会选错项目、核对错项目。
+ *
+ * 每个根认两种形状：
+ * - 根本身就是一个项目（用户直接把 `project-xxx` 那个目录选进来了）
+ * - 根下面还有若干项目（选的是 `长庚测试项目` 这类上层目录）
+ *
+ * 两种都认是因为人挑目录时不会先想清楚自己站在哪一层——而选错一层就被判成
+ * 「这里没有项目」，比报错更让人没法查。
  */
+export async function listProjects(roots: string[]): Promise<OrchestrationProjectView[]> {
+  const out: OrchestrationProjectView[] = []
+  const seen = new Set<string>()
 
-export interface OrchestrationTaskView {
-  id: string
-  title: string
-  status: string
-  dependsOn: string[]
-  attempts: number
-  failureReason?: string
-  startedAt?: string
-  endedAt?: string
-  /** 验收项的原始描述，展开时显示 */
-  acceptance: string[]
-  /** 产出文件（绝对路径），只列真实存在的 */
-  artifacts: string[]
-}
-
-export interface OrchestrationProjectView {
-  /** 目录名，界面上用它当唯一标识 */
-  dirKey: string
-  id: string
-  name: string
-  status: string
-  createdAt: string
-  updatedAt: string
-  rootDir: string
-  progress: ProjectProgress
-  tasks: OrchestrationTaskView[]
-  /** 最近一次派发时间（runs.jsonl 最后一条） */
-  lastRunAt?: string
-  /** 派发次数 */
-  runCount: number
-}
-
-/** 列出所有项目，最近更新的在前 */
-export async function listProjects(rootDir: string): Promise<OrchestrationProjectView[]> {
-  let entries: string[]
-  try {
-    entries = await fs.readdir(rootDir)
-  } catch {
-    return [] // 还没派发过任何东西
+  const add = async (projectDir: string, scanRoot: string): Promise<void> => {
+    const key = path.resolve(projectDir)
+    if (seen.has(key)) return
+    const view = await readProject(key, scanRoot)
+    if (!view) return
+    seen.add(key)
+    out.push(view)
   }
 
-  const out: OrchestrationProjectView[] = []
-  for (const key of entries) {
-    const metaDir = path.join(rootDir, key, '.orchestrator')
-    let raw: string
-    try {
-      raw = await fs.readFile(path.join(metaDir, 'project.json'), 'utf8')
-    } catch {
-      continue // 不是项目目录
-    }
-    let project: OrchestrationProject
-    try {
-      project = JSON.parse(raw.replace(/^﻿/, '')) as OrchestrationProject
-    } catch {
-      continue // 写坏的文件跳过，不因为一个坏项目让整页打不开
-    }
+  for (const root of roots) {
+    const scanRoot = path.resolve(String(root ?? ''))
+    if (!scanRoot) continue
+    // 根本身就是项目
+    await add(scanRoot, scanRoot)
 
-    const runs = await readRuns(metaDir)
-    out.push({
-      dirKey: key,
-      id: project.id,
-      name: project.name,
-      status: project.status,
-      createdAt: project.createdAt,
-      updatedAt: project.updatedAt,
-      rootDir: path.join(rootDir, key),
-      progress: projectProgress(project),
-      runCount: runs.count,
-      lastRunAt: runs.lastAt,
-      tasks: await Promise.all(
-        project.tasks.map(async (t) => ({
-          id: t.id,
-          title: t.title,
-          status: t.status,
-          dependsOn: t.dependsOn,
-          attempts: t.attempts,
-          failureReason: t.failureReason,
-          startedAt: t.startedAt,
-          endedAt: t.endedAt,
-          acceptance: t.acceptance.map(describeCheck),
-          artifacts: await existingArtifacts(path.join(rootDir, key), t)
-        }))
-      )
-    })
+    let entries: string[]
+    try {
+      entries = await fs.readdir(scanRoot)
+    } catch {
+      continue // 目录还没建，或者不在了
+    }
+    for (const key of entries) await add(path.join(scanRoot, key), scanRoot)
   }
 
   return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+}
+
+/** 读一个项目目录；目录里没有 `.orchestrator/project.json` 就返回 null */
+export async function readProject(
+  projectDir: string,
+  scanRoot = projectDir
+): Promise<OrchestrationProjectView | null> {
+  const metaDir = path.join(projectDir, '.orchestrator')
+  let raw: string
+  try {
+    raw = await fs.readFile(path.join(metaDir, 'project.json'), 'utf8')
+  } catch {
+    return null // 不是项目目录
+  }
+  let project: OrchestrationProject
+  try {
+    project = JSON.parse(raw.replace(/^﻿/, '')) as OrchestrationProject
+  } catch {
+    return null // 写坏的文件跳过，不因为一个坏项目让整页打不开
+  }
+
+  const runs = await readRuns(metaDir)
+  return {
+    projectDir,
+    id: project.id,
+    name: project.name,
+    status: project.status,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    rootDir: projectDir,
+    progress: projectProgress(project),
+    runCount: runs.count,
+    lastRunAt: runs.lastAt,
+    scanRoot,
+    tasks: await Promise.all(
+      project.tasks.map(async (t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        dependsOn: t.dependsOn,
+        attempts: t.attempts,
+        failureReason: t.failureReason,
+        startedAt: t.startedAt,
+        endedAt: t.endedAt,
+        acceptance: t.acceptance.map(describeCheck),
+        artifacts: await existingArtifacts(projectDir, t)
+      }))
+    )
+  }
 }
 
 interface RunTally {
@@ -127,14 +135,15 @@ async function readRuns(metaDir: string): Promise<RunTally> {
   return { count, lastAt }
 }
 
-/** 复核一个项目的全部验收，返回逐条结果（不改状态） */
-export async function recheckProject(
-  rootDir: string,
-  dirKey: string
-): Promise<{ taskId: string; passed: boolean; detail: string }[]> {
+/**
+ * 复核一个项目的全部验收，返回逐条结果（不改状态）。
+ *
+ * 参数是**项目目录本身**，不是「根 + 子目录名」：见文件头的说明。
+ */
+export async function recheckProject(projectDir: string): Promise<{ taskId: string; passed: boolean; detail: string }[]> {
   let project: OrchestrationProject
   try {
-    const raw = await fs.readFile(path.join(rootDir, dirKey, '.orchestrator', 'project.json'), 'utf8')
+    const raw = await fs.readFile(path.join(projectDir, '.orchestrator', 'project.json'), 'utf8')
     project = JSON.parse(raw.replace(/^﻿/, '')) as OrchestrationProject
   } catch {
     return []
@@ -145,7 +154,7 @@ export async function recheckProject(
       results.push({ taskId: t.id, passed: t.status === 'done', detail: '没有验收项：只能按状态判断' })
       continue
     }
-    const r = await runAcceptance(t.acceptance, taskWorkDir(path.join(rootDir, dirKey), t))
+    const r = await runAcceptance(t.acceptance, taskWorkDir(projectDir, t))
     results.push({
       taskId: t.id,
       passed: r.passed,

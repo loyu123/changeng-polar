@@ -14,6 +14,7 @@ import type {
   TaskDef,
   TurnResult
 } from '../shared/types'
+import type { OrchestrationListView } from '../shared/orchestration'
 import type { DesktopState } from '../shared/desktop'
 
 const api = {
@@ -146,9 +147,25 @@ const api = {
    * 想改就回对话里重新派一次——那样每次改动都有授权卡和审计记录。
    */
   orchestration: {
-    list: () => ipcRenderer.invoke('orchestration:list'),
+    /** 列出所有项目 + 当前允许扫描的根 + 应用自己的那个根 */
+    list: () => ipcRenderer.invoke('orchestration:list') as Promise<OrchestrationListView>,
+    /** 弹系统目录选择框，让用户自己挑一个项目目录打开 */
+    pickRoot: () =>
+      ipcRenderer.invoke('orchestration:pickRoot') as Promise<
+        | { ok: false; canceled: true }
+        | { ok: false; canceled: false; reason: string }
+        | ({ ok: true; canceled: false; root: string; projectCount: number } & OrchestrationListView)
+      >,
+    /** 不再扫描某个目录（磁盘上一个字节都不动） */
+    removeRoot: (dir: string) =>
+      ipcRenderer.invoke('orchestration:removeRoot', dir) as Promise<
+        { ok: boolean; reason?: string } & OrchestrationListView
+      >,
     /** 重新核对全部验收（不改状态，只把磁盘上的事实再查一遍） */
-    recheck: (dirKey: string) => ipcRenderer.invoke('orchestration:recheck', dirKey),
+    recheck: (projectDir: string) =>
+      ipcRenderer.invoke('orchestration:recheck', projectDir) as Promise<
+        Array<{ taskId: string; passed: boolean; detail: string }>
+      >,
     /** 在资源管理器里定位产出文件 */
     reveal: (filePath: string) => ipcRenderer.invoke('orchestration:reveal', filePath) as Promise<boolean>
   },

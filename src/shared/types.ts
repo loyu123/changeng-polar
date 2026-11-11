@@ -102,6 +102,19 @@ export interface ButlerConfig extends ModelConfig {
   /** 桌面悬浮助手（球与面板），缺省按 DEFAULT_ORB_PREFS */
   orb?: OrbPrefs
   /**
+   * 用户额外打开的编排项目目录（编排页「打开项目目录…」）。
+   *
+   * 为什么要有：项目默认只落在 `%APPDATA%\changeng-polar\orchestrator`，
+   * 页面上也只扫那一个目录。但脚本派发的项目落在别处（比如桌面，见
+   * `scripts/desktop-project.ts`），那些项目在界面上就成了不存在的——
+   * 而这一页存在的全部意义就是回答「派出去的活现在到哪了」。
+   *
+   * 记的是**用户亲手在系统目录选择框里挑的**目录。页面据此放开两件事：
+   * 列出其中的项目、以及在资源管理器里定位其产出文件。
+   * 不记的话，「传一个路径就能让系统去定位它」等于把本机文件系统打开给他看。
+   */
+  orchestrationRoots?: string[]
+  /**
    * 委派工作体（pi）用哪个模型。
    *
    * 为什么单独一份、且没有默认值：pi 自己的默认模型解析到 anthropic，

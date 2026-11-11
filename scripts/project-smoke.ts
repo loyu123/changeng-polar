@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   console.log(`并发：${result.concurrency} · 目录：${result.projectRoot}`)
 
   // 界面读的是这一套
-  const listed = await listProjects(root)
+  const listed = await listProjects([root])
   console.log('\n=== 界面上会显示 ===')
   for (const p of listed) {
     const g = p.progress

@@ -7,13 +7,14 @@ async function main(): Promise<void> {
     console.log('用法：npx tsx scripts/view-check.ts <orchestrator 目录>')
     process.exit(1)
   }
-  const list = await listProjects(dir)
+  const list = await listProjects([dir])
   console.log('项目数:', list.length)
   for (const p of list) {
     const g = p.progress
     console.log(
       `${p.name} | 任务 ${g.total} | 完成 ${g.done} | 派发 ${p.runCount} 次 | 最后 ${p.lastRunAt ?? '—'}`
     )
+    console.log(`   目录 ${p.projectDir}（从 ${p.scanRoot} 扫到）`)
     for (const t of p.tasks) console.log(`   [${t.status}] ${t.title} 产出=${t.artifacts.length}`)
   }
 }
