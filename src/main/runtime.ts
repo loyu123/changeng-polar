@@ -230,7 +230,6 @@ export class TurnRuntime {
       saveSnapshot: (snapshot) => store.saveSnapshot(snapshot),
       // 「卸干净了没」：模型得能在之后就自己读到那份快照，不然只能让用户去记录页点按钮
       listSnapshots: () => store.listSnapshots(),
-      appNotes: () => store.getNotes(),
       /**
        * 产出目录的根：系统「文档」（不是 userData）。
        *

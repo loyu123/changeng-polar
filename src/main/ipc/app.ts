@@ -117,7 +117,6 @@ export function registerAppIpc(ctx: IpcContext): void {
       'tasks.json',
       'sessions.json',
       'auth-memory.json',
-      'notes.json',
       'snapshots.json'
     ]
     const files: Array<{ file: string; bytes: number }> = []
@@ -141,8 +140,7 @@ export function registerAppIpc(ctx: IpcContext): void {
     const tools = createTools({
       openSettings: async () => {},
       saveSnapshot: async () => {},
-      listSnapshots: async () => [],
-      appNotes: async () => ({})
+      listSnapshots: async () => []
     })
     // 和对话里用的是同一个过滤函数：插件页显示的状态必须和实际能调到的工具一致
     const allowed = new Set(filterTools(tools, { toggles, readOnly }).map((t) => t.name))

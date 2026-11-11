@@ -3,7 +3,6 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type {
   AlwaysAllowedEntry,
-  AppNote,
   AppSnapshot,
   ButlerConfig,
   ChatSession,
@@ -218,38 +217,6 @@ export class Store {
   async listSnapshots(): Promise<AppSnapshot[]> {
     const map = await this.readSnapshots()
     return Object.values(map).sort((a, b) => String(b.takenAt).localeCompare(String(a.takenAt)))
-  }
-
-  /** 应用功能说明的手写备注：空文本视为删除该条 */
-  private async readNotes(): Promise<Record<string, AppNote>> {
-    try {
-      const raw = await fs.readFile(this.p('notes.json'), 'utf8')
-      return JSON.parse(stripBom(raw)) as Record<string, AppNote>
-    } catch {
-      return {}
-    }
-  }
-
-  async getNotes(): Promise<Record<string, AppNote>> {
-    return this.readNotes()
-  }
-
-  async saveNote(appName: string, text: string): Promise<AppNote | null> {
-    return this.enqueue('notes.json', async () => {
-      const notes = await this.readNotes()
-      const trimmed = text.trim()
-      if (!trimmed) {
-        delete notes[appName]
-        await fs.mkdir(this.dir, { recursive: true })
-        await this.writeAtomic('notes.json', JSON.stringify(notes, null, 2))
-        return null
-      }
-      const note: AppNote = { appName, text: trimmed.slice(0, 120), updatedAt: new Date().toISOString() }
-      notes[appName] = note
-      await fs.mkdir(this.dir, { recursive: true })
-      await this.writeAtomic('notes.json', JSON.stringify(notes, null, 2))
-      return note
-    })
   }
 
   /** 「始终允许」的记忆：持久化，才能在设置页看见并撤销 */

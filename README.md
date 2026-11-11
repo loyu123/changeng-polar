@@ -45,7 +45,7 @@ $env:BUTLER_MAIL_AUTHCODE="..."         # mail auth code (M1 group cases)
 npm run eval
 ```
 
-All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks / sessions / app notes.
+All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks and sessions.
 The one place it writes outside that folder is the user's own Documents: `write_document` only ever lands in `长庚产出\` under the system Documents directory (it follows Documents if that is redirected to OneDrive). The folder name is hard-coded in `node/document.ts`; the model cannot choose it.
 
 ---
@@ -238,10 +238,11 @@ Per-tool constraints:
 - Read-only actions show "—" in the undo column on the records page — there is nothing to undo, and it doesn't pretend otherwise.
 - Auth cards are fully keyboard-operable (focus the primary button / Tab cycles / Enter confirms / Esc refuses); a "Stop" button during a run aborts both the request and any pending auth card.
 - "Always allow" is persisted to `%APPDATA%\changeng-polar\auth-memory.json` and survives restart; Settings can list and revoke it. **Only `install_app` enters this table** (the key includes package name + version, so a different package or version doesn't match); delete and uninstall always require a card.
+- **There is no per-app "notes" feature** (there used to be one; it has been removed entirely). `notes.json` and a save handler existed, but the page that wrote them was deleted long ago, so the `note` field in `list_installed_apps` was always empty — while the tool description still told the model to "prefer the user's note when one exists". That is a promise nothing could keep. What a program does now comes from three places only: registry fields (publisher, install location, product URL), web search, and the user asking the butler to `save_memory` a line about it (memories are visible and deletable in Settings → Memory, easier to find than something buried in an app ledger, and no second write path has to be invented).
 
 ## Deliberately not built
 
-Real MCP connections, GitHub upload, full-text indexing, speech recognition, sending mail (mail is read-only).
+Real MCP connections, repository operations beyond GitHub search/upload, full-text indexing, speech recognition, sending mail (mail is read-only).
 
 Packaging and distribution are wired up (`npm run pack` produces an NSIS installer + portable build), but **builds are unsigned**.
 

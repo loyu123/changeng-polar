@@ -249,18 +249,6 @@ export interface AlwaysAllowedEntry {
 }
 
 /**
- * 应用功能说明的手写备注。
- *
- * 用户写过的以人写为准，来源标记随行展示，不冒充官网出处。
- * （早先还有一份「官网查证」的结果与之并列，那条链路已整体移除，见 git 历史。）
- */
-export interface AppNote {
-  appName: string
-  text: string
-  updatedAt: string
-}
-
-/**
  * 跨会话记忆的一条。
  *
  * 存的是"以后还用得上的事实"，不是聊天记录：聊天记录在 sessions.json 里，

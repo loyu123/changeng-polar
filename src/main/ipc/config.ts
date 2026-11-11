@@ -38,14 +38,6 @@ export function registerConfigIpc(ctx: IpcContext): void {
     }
   })
 
-  // 应用功能说明的手写备注：覆盖查证生成的句子；空文本 = 删除该条
-  ipcMain.handle('notes:list', () => ctx.store.getNotes())
-  ipcMain.handle('notes:save', (_e, payload: { appName: string; text: string }) => {
-    const appName = String(payload?.appName ?? '').trim()
-    if (!appName) return null
-    return ctx.store.saveNote(appName, String(payload?.text ?? ''))
-  })
-
   // 「始终允许」的记忆：设置页列出、可单条撤销、可全部撤销
   ipcMain.handle('auth:memory:list', () => ctx.store.listAlwaysAllowed())
   ipcMain.handle('auth:memory:revoke', async (_e, key: string) => {

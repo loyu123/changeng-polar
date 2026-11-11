@@ -1,7 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AlwaysAllowedEntry,
-  AppNote,
   AuthAnswer,
   ButlerConfig,
   ChatEvent,

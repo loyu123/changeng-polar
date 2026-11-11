@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { AppInfo, AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit } from '../../shared/types'
+import type { AppInfo, AppSnapshot, Evidence, MemoryEntry, SearchHit } from '../../shared/types'
 import { diffStartupNames, listInstalledApps, listStartupItems, type StartupDiff } from '../node/registry'
 import { deleteToRecycle, listSandbox, SANDBOX_ROOT } from '../node/sandbox'
 import { captureSnapshot, diffSnapshot, pickSnapshot } from '../node/snapshot'
@@ -172,8 +172,6 @@ export interface ToolDeps {
    * 得有一个能在事后自己找到那份快照的入口，而不是让用户去记录页点按钮。
    */
   listSnapshots?: () => Promise<AppSnapshot[]>
-  /** 应用功能说明的手写备注（主进程注入 Store；没有就只报注册表字段） */
-  appNotes?: () => Promise<Record<string, AppNote>>
   /**
    * 系统「文档」目录（主进程注入 `app.getPath('documents')`）。
    *
@@ -817,7 +815,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     name: 'list_installed_apps',
     label: '读取已安装程序清单',
     description:
-      '读取本机已安装程序清单（来自注册表 Uninstall 键，只读）。可回答"装了什么、版本、发布者、装在哪、什么时候装的"。用户给程序写过功能备注时，行里会带 note 字段——那是用户自己的记录，回答"这个程序是干什么的"时优先引用它；没有 note 就如实说没有登记说明，**不要自己从目录名或图标去猜它是干嘛的**。installedByButler 非空表示这个程序是管家装的，值就是当时的安装时间。',
+      '读取本机已安装程序清单（来自注册表 Uninstall 键，只读）。可回答"装了什么、版本、发布者、装在哪、什么时候装的"。**回答"这个程序是干什么的"时，只能用这些注册表字段**（发布者、安装位置、注册表里的产品网址）；字段说明不了就如实说没有登记说明，不要自己从目录名或图标去猜它是干嘛的——要查它是什么软件，用 web_search 或 github_search。installedByButler 非空表示这个程序是管家装的，值就是当时的安装时间。',
     effect: 'read',
     parameters: {
       type: 'object',
@@ -837,13 +835,6 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     },
     run: async (args): Promise<ToolResult> => {
       const { apps, durationMs } = await listInstalledApps()
-      // 手写备注并入结果行：模型答"这个程序是干什么的/能不能删"时才有台账依据
-      let notes: Record<string, AppNote> = {}
-      try {
-        notes = (await deps.appNotes?.()) ?? {}
-      } catch {
-        notes = {}
-      }
       // 管家装过的程序（显示名 → 安装时间）：台账据此回答"这个是管家装的吗"
       let installs: Record<string, string> = {}
       try {
@@ -869,8 +860,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
           installLocation: a.installLocation,
           installDate: formatInstallDate(a.installDate),
           installedByButler: installs[a.name] ?? null,
-          sizeMB: a.sizeKB ? Math.round((a.sizeKB / 1024) * 10) / 10 : null,
-          note: notes[a.name]?.text ?? null
+          sizeMB: a.sizeKB ? Math.round((a.sizeKB / 1024) * 10) / 10 : null
         })),
         evidence: [
           ev({
