@@ -50,10 +50,8 @@ export function registerOrbIpc(ctx: IpcContext): void {
   })
 
   // ---- 球与面板的交互 ----
-  ipcMain.handle('orb:open', () => {
-    showPanel()
-    return true
-  })
+  // 「展开」没有 IPC：球上那一下走 toggle，托盘菜单在主进程里直接调 showPanel，
+  // 渲染层从不需要「不管现在什么状态都展开」。留着它只是多一个没人调的通路。
   ipcMain.handle('orb:close', () => {
     hidePanel()
     return true

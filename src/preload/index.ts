@@ -241,7 +241,6 @@ const api = {
       ipcRenderer.invoke('orb:state') as Promise<{ prefs: OrbPrefs; hotkeyOk: boolean }>,
     set: (patch: Partial<OrbPrefs>) =>
       ipcRenderer.invoke('orb:set', patch) as Promise<{ prefs: OrbPrefs; hotkeyOk: boolean }>,
-    open: () => ipcRenderer.invoke('orb:open') as Promise<boolean>,
     close: () => ipcRenderer.invoke('orb:close') as Promise<boolean>,
     toggle: () => ipcRenderer.invoke('orb:toggle') as Promise<boolean>,
 
