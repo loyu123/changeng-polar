@@ -141,6 +141,7 @@ export function registerAppIpc(ctx: IpcContext): void {
     const tools = createTools({
       openSettings: async () => {},
       saveSnapshot: async () => {},
+      listSnapshots: async () => [],
       appNotes: async () => ({})
     })
     // 和对话里用的是同一个过滤函数：插件页显示的状态必须和实际能调到的工具一致

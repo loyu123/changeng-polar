@@ -228,6 +228,8 @@ export class TurnRuntime {
       // 「把那个 Word 打开」：会执行的后缀在 node/file.ts 就拒了
       openFile: (filePath) => openFile(filePath),
       saveSnapshot: (snapshot) => store.saveSnapshot(snapshot),
+      // 「卸干净了没」：模型得能在之后就自己读到那份快照，不然只能让用户去记录页点按钮
+      listSnapshots: () => store.listSnapshots(),
       appNotes: () => store.getNotes(),
       memory: {
         list: () => store.listMemory(),

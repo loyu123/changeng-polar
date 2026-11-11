@@ -220,6 +220,27 @@ export async function captureSnapshot(appName: string, options: CaptureOptions =
   }
 }
 
+/**
+ * 从一堆卸载前快照里挑出这次要核对的那一份。
+ *
+ * 规则刻意简单，因为它服务于一句人话（"卸干净了没"）：
+ * - 没给名字 → 最近一次卸载（用户通常就是在问刚刚那一次）
+ * - 给了名字 → 先找完全同名的，再退回唯一一条包含匹配；
+ *   包含匹配命中多条时**不挑**，返回 null 让调用方去问是哪一个——
+ *   挑错了就会拿 A 的快照去核对 B，报出来的"卸干净了"是别人的
+ */
+export function pickSnapshot(list: AppSnapshot[], query?: string): AppSnapshot | null {
+  const sorted = [...list].sort((a, b) => String(b.takenAt).localeCompare(String(a.takenAt)))
+  const name = String(query ?? '')
+    .trim()
+    .toLowerCase()
+  if (!name) return sorted[0] ?? null
+  const exact = sorted.find((s) => s.appName.trim().toLowerCase() === name)
+  if (exact) return exact
+  const loose = sorted.filter((s) => s.appName.toLowerCase().includes(name))
+  return loose.length === 1 ? loose[0] : null
+}
+
 /** 拿快照里的关键事实跟"现在"比一次；只陈述现状 */
 export async function diffSnapshot(snapshot: AppSnapshot): Promise<SnapshotDiff> {
   const entries = await resolveUninstallEntries(snapshot.appName)

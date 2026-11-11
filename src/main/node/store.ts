@@ -208,6 +208,18 @@ export class Store {
     return (await this.readSnapshots())[id] ?? null
   }
 
+  /**
+   * 所有卸载前快照，最近的在前。
+   *
+   * 存在的理由：卸载类工具当场核对不了（要等用户点完它自己的卸载窗口），
+   * 于是那句 unavailable 承诺了"点完再问我"。要兑现这个承诺，
+   * 模型得能在之后自己找到刚才那一份快照——而不是让用户去记录页点按钮。
+   */
+  async listSnapshots(): Promise<AppSnapshot[]> {
+    const map = await this.readSnapshots()
+    return Object.values(map).sort((a, b) => String(b.takenAt).localeCompare(String(a.takenAt)))
+  }
+
   /** 应用功能说明的手写备注：空文本视为删除该条 */
   private async readNotes(): Promise<Record<string, AppNote>> {
     try {

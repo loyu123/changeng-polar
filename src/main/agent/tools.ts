@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { AppInfo, AppNote, AppSnapshot, Evidence, MemoryEntry, SearchHit } from '../../shared/types'
 import { diffStartupNames, listInstalledApps, listStartupItems, type StartupDiff } from '../node/registry'
 import { deleteToRecycle, listSandbox, SANDBOX_ROOT } from '../node/sandbox'
-import { captureSnapshot } from '../node/snapshot'
+import { captureSnapshot, diffSnapshot, pickSnapshot } from '../node/snapshot'
 import { listRecentMail, readMailBody } from '../node/mail'
 import {
   checkInstalled,
@@ -164,6 +164,13 @@ export interface ToolDeps {
   openFile?: (filePath: string) => Promise<string>
   /** 卸载前的快照落盘（主进程注入 Store；评测脚本可不注入，只跳过存档） */
   saveSnapshot?: (snapshot: AppSnapshot) => Promise<void>
+  /**
+   * 读回卸载前快照（最近的在前）。
+   *
+   * 卸载当场核对不了，那句 unavailable 承诺了"点完再问我"——要兑现它，
+   * 得有一个能在事后自己找到那份快照的入口，而不是让用户去记录页点按钮。
+   */
+  listSnapshots?: () => Promise<AppSnapshot[]>
   /** 应用功能说明的手写备注（主进程注入 Store；没有就只报注册表字段） */
   appNotes?: () => Promise<Record<string, AppNote>>
   /** 跨会话记忆的读写（主进程注入 Store） */
@@ -904,6 +911,107 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
             type: 'local',
             title: `本机启动项清单（${items.length} 条）`,
             detail: `注册表 Run 键 + 启动文件夹 + 计划任务 · 只读 · 耗时 ${durationMs || '<1'} ms`
+          })
+        ]
+      }
+    }
+  }
+
+  /**
+   * 卸载结果的核对：读一次卸载前的快照，跟"现在"比一遍。
+   *
+   * 为什么要单独有这个工具：`uninstall_app` 当场只能标 unavailable——卸载是用户在
+   * 那个窗口里点完的，我们拉起它就交出去了。可"我无法确认"不该是终点：
+   * 快照已经存下来了，缺的只是让模型之后能自己去读。没有这个工具，
+   * 用户问"卸干净了没"时它只能回答"去记录页点按钮"，那句话是把活推回给人。
+   */
+  const checkUninstallTool: ToolDef = {
+    name: 'check_uninstall_state',
+    label: '核对卸载结果（只读）',
+    description:
+      '拿卸载前的快照跟现在的机器比一遍，回答"卸干净了没、还剩什么"。只读，不改动任何东西。只能核对**管家启动过卸载程序**的那些程序——没走过这一趟的没有快照，如实说不知道。不传参数就是最近一次卸载；要查别的程序就传程序名。',
+    effect: 'read',
+    parameters: {
+      type: 'object',
+      properties: {
+        appName: { type: 'string', description: '程序名（显示名或其中一段），留空=最近一次卸载' },
+        snapshotId: { type: 'string', description: '直接指定某次卸载的快照 id（一般用不到）' }
+      }
+    },
+    describeTarget: (args) => {
+      const name = String(args.appName ?? '').trim()
+      return {
+        title: name ? `核对卸载结果（${name}）` : '核对最近一次卸载',
+        target: name || '最近一次卸载',
+        impact: '只读快照与注册表，不改动任何东西'
+      }
+    },
+    run: async (args): Promise<ToolResult> => {
+      if (!deps.listSnapshots) return { ok: false, summary: '当前环境读不到卸载快照' }
+
+      let snapshots: AppSnapshot[]
+      try {
+        snapshots = await deps.listSnapshots()
+      } catch (err) {
+        return { ok: false, summary: `读取卸载快照失败：${err instanceof Error ? err.message : String(err)}` }
+      }
+
+      const wanted = String(args.appName ?? '').trim()
+      const byId = String(args.snapshotId ?? '').trim()
+      const picked = byId ? snapshots.find((item) => item.id === byId) ?? null : pickSnapshot(snapshots, wanted)
+
+      if (!picked) {
+        // 三种"查不到"，说清是哪种：没卸过 / 名字对不上多条 / 指定的 id 不存在
+        if (snapshots.length === 0) {
+          return {
+            ok: false,
+            summary:
+              '还没有任何卸载前的快照，所以核对不了。只有管家启动过程序自己的卸载程序，才会有这份快照；没走过这一趟的，我只能说不知道'
+          }
+        }
+        const names = [...new Set(snapshots.map((item) => item.appName))].slice(0, 8).join('、')
+        return {
+          ok: false,
+          summary: byId
+            ? `没有 id 为 ${byId} 的快照。手上有这些程序的快照：${names}`
+            : `「${wanted}」对不上唯一一份快照（可能是同名多份，或者名字不一样）。手上有这些程序的快照：${names}——要查哪一个就按名字告诉我`
+        }
+      }
+
+      let diff
+      try {
+        diff = await diffSnapshot(picked)
+      } catch (err) {
+        return { ok: false, summary: `对比没能跑完：${err instanceof Error ? err.message : String(err)}` }
+      }
+
+      const leftover: string[] = []
+      if (diff.registryStillThere) leftover.push('注册表卸载项还在')
+      if (diff.installDirStillThere) leftover.push(`安装目录还在（${Math.round(diff.bytesNow / 1024 / 1024)} MB、${diff.filesNow} 个文件）`)
+      if (diff.startupStillThere.length > 0) leftover.push(`自启项还在 ${diff.startupStillThere.length} 个`)
+      if (diff.residualLeft.length > 0) leftover.push(`数据目录残留 ${diff.residualLeft.length} 处`)
+
+      return {
+        ok: true,
+        summary: `${picked.appName}（卸载前快照 ${picked.takenAt}）：${diff.verdict}`,
+        data: {
+          appName: diff.appName,
+          snapshotTakenAt: diff.takenAt,
+          registryStillThere: diff.registryStillThere,
+          installDirStillThere: diff.installDirStillThere,
+          filesBefore: diff.filesBefore,
+          filesNow: diff.filesNow,
+          startupGone: diff.startupGone,
+          startupStillThere: diff.startupStillThere,
+          residualLeft: diff.residualLeft,
+          leftover,
+          verdict: diff.verdict
+        },
+        evidence: [
+          ev({
+            type: 'local',
+            title: `卸载对比：${picked.appName}`,
+            detail: `快照 ${picked.takenAt} · 注册表 / 安装目录 / 开机自启项 · 只读`
           })
         ]
       }
@@ -2091,6 +2199,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     readFileTool,
     installAppTool,
     uninstallAppTool,
+    checkUninstallTool,
     githubSearchTool,
     githubUploadTool,
     delegateTool,

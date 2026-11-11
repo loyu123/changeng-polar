@@ -199,11 +199,11 @@ tests/                     unit tests (vitest, no network, no registry access)
 
 ## Boundaries (enforced in code, not left to the model's good intentions)
 
-**The main process registers 21 tools, tiered by effect:**
+**The main process registers 22 tools, tiered by effect:**
 
 | Tier | Tools | Gate behavior |
 |---|---|---|
-| `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `github_search`, `list_memory` | Auto-pass + audit trail |
+| `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `github_search`, `list_memory`, `check_uninstall_state` | Auto-pass + audit trail |
 | `ui` (opens a page / window only) | `open_settings_page`, `launch_app`, `open_folder`, `open_file` | Auto-pass + audit trail |
 | `write` (local data) | `github_upload`, `delegate_to_agent`, `run_project`, `save_memory`, `forget_memory` | Back up first; if the backup fails, nothing runs. `github_upload` / `delegate_to_agent` / `run_project` always raise a card (`requiresConfirmation`) |
 | `install` (changes the machine) | `install_app` | Card required; **the only tier allowed "always allow"** |

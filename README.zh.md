@@ -221,11 +221,11 @@ tests/                     单测（vitest，不连网、不读注册表）
 
 ## 边界（代码层，不靠模型自觉）
 
-**主进程注册 21 个工具，按效果分档：**
+**主进程注册 22 个工具，按效果分档：**
 
 | 档位 | 工具 | 闸门行为 |
 |---|---|---|
-| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`github_search`、`list_memory` | 自动放行 + 留痕 |
+| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`github_search`、`list_memory`、`check_uninstall_state` | 自动放行 + 留痕 |
 | `ui`（只打开页面 / 窗口） | `open_settings_page`、`launch_app`、`open_folder`、`open_file` | 自动放行 + 留痕 |
 | `write`（本地数据） | `github_upload`、`delegate_to_agent`、`run_project`、`save_memory`、`forget_memory` | 先备份，备份失败就不执行；`github_upload` / `delegate_to_agent` / `run_project` 一律要过卡（`requiresConfirmation`） |
 | `install`（改动机器） | `install_app` | 必须过卡；**全表唯一允许「始终允许」的档位** |
