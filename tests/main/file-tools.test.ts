@@ -7,6 +7,7 @@ import { executeThroughGate, type GateHooks } from '../../src/main/agent/gate'
 import { resetFileIndex, setFileIndexRoots } from '../../src/main/node/file'
 import { trimToolPayload } from '../../src/main/agent/agent'
 import type { ToolContext, ToolDef } from '../../src/main/agent/tool-types'
+import { SIMPLE_FONT, simplePdf } from './pdf-fixture'
 
 /**
  * 「打开文件」和「读文件」这两个工具的行为。
@@ -142,14 +143,25 @@ describe('read_file · 把字读出来', () => {
     expect(result.summary).toContain('只读到一部分')
   })
 
-  it('PDF 在读之前就拒绝，不留一条"读失败"的审计', async () => {
+  it('PDF 走同一条路读出来（不再是"读不了"的那一类）', async () => {
     const dir = sandbox()
-    const pdf = path.join(dir, '合同.pdf')
-    writeFileSync(pdf, '%PDF-1.7')
+    const pdf = path.join(dir, '简报.pdf')
+    writeFileSync(pdf, simplePdf('BT /F1 12 Tf 72 720 Td (Quarterly report) Tj ET', SIMPLE_FONT), 'latin1')
     const def = find('read_file')
     const result = await executeThroughGate(def, { path: pdf }, ctx, gate())
-    expect(result.ok).toBe(false)
+    expect(result.ok).toBe(true)
     expect(result.summary).toContain('PDF')
+    expect((result.data as { text: string }).text).toContain('Quarterly report')
+  })
+
+  it('读不了的格式在读之前就判掉，不留一条"读失败"的审计', async () => {
+    const dir = sandbox()
+    const old = path.join(dir, '旧表.xls')
+    writeFileSync(old, 'not really a workbook')
+    const def = find('read_file')
+    const result = await executeThroughGate(def, { path: old }, ctx, gate())
+    expect(result.ok).toBe(false)
+    expect(result.summary).toContain('老格式')
   })
 
   it('read_file 标了 readsPrivateData（读过之后外发要确认）', () => {
