@@ -31,6 +31,7 @@ import {
   type FileRead
 } from '../node/file'
 import { fetchPage, searchWeb } from '../node/web'
+import { inspectDocument, MAX_DOC_CHARS, OUTPUT_FOLDER, resolveDocument, writeDocumentOnce } from '../node/document'
 import { MEMORY_MAX_TEXT, mergeMemory, removeMemory, sameMemory } from '../node/memory'
 import type { ToolDef, ToolPlan, ToolResult } from './tool-types'
 import { runDelegation, workerConfigFrom } from '../orchestrator/delegate'
@@ -173,6 +174,13 @@ export interface ToolDeps {
   listSnapshots?: () => Promise<AppSnapshot[]>
   /** 应用功能说明的手写备注（主进程注入 Store；没有就只报注册表字段） */
   appNotes?: () => Promise<Record<string, AppNote>>
+  /**
+   * 系统「文档」目录（主进程注入 `app.getPath('documents')`）。
+   *
+   * 只给这一个根，产出目录名在 node/document.ts 里写死。不注入 = 当前环境不写文件
+   * （评测、离线验收），而不是"写到当前目录"——后者会把文件丢在进程的 cwd 里。
+   */
+  documentsDir?: string
   /** 跨会话记忆的读写（主进程注入 Store） */
   memory?: {
     list: () => Promise<MemoryEntry[]>
@@ -1682,6 +1690,117 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     }
   }
 
+  /**
+   * 写文件：长庚唯一的产出能力。
+   *
+   * 在此之前它能看（read_file）、能改系统（装卸删），却**没办法把结论交到用户手上**——
+   * "把刚才那份整理成 md 存下来"只能靠委派给外部工作体，而那条路是要跑一整个智能体的。
+   *
+   * 三条边界都在 node/document.ts 里由代码定死，不靠提示词：
+   * 落点只有「文档\长庚产出」、只写文本类后缀、永不覆盖同名文件。
+   * 再加 requiresConfirmation：写进用户真实目录的文件，必须让他看见路径和内容预览再点头。
+   */
+  const writeDocumentTool: ToolDef = {
+    name: 'write_document',
+    label: '写一份文件到「文档」（需授权）',
+    description:
+      '把一段文字写成一个文件，存到用户的「文档\\' +
+      OUTPUT_FOLDER +
+      '」目录里。**只能写这一个目录**，不能让模型指定别的路径；支持 .md/.txt/.csv/.json/.html，不写会执行的文件（.bat/.ps1/.lnk 之类）。同名文件已存在时**不会覆盖**，会换一个名字（如「周报 (2).md」），结果里给的是最终路径。用户说「存成文件」「导出」「保存下来」「整理成一份 md」「写到文档里」时用它。用户没有明确要求写文件前不要调用。',
+    effect: 'write',
+    requiresConfirmation: true,
+    // 每次写的都是不同内容：没有"以后都自动写"这回事
+    allowAlways: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: '文件名，可带后缀（不给后缀按 .md 存）。不能带目录，不能含「..」'
+        },
+        content: { type: 'string', description: `文件内容，纯文本，最长 ${MAX_DOC_CHARS} 字` }
+      },
+      required: ['name', 'content']
+    },
+    plan: async (args): Promise<ToolPlan> => {
+      if (!deps.documentsDir) {
+        return { ok: false, reason: '当前环境没有可写的文档目录（没有注入「文档」路径）' }
+      }
+      const content = typeof args.content === 'string' ? args.content : ''
+      if (!content.trim()) return { ok: false, reason: '内容是空的，没有可写的东西' }
+      if (content.length > MAX_DOC_CHARS) {
+        return {
+          ok: false,
+          reason: `内容有 ${content.length} 字，超过单次上限 ${MAX_DOC_CHARS} 字；拆成两份，或先精简`
+        }
+      }
+      // 解析只做一次：卡片上写的路径，就是下面真正写下的那个（K7）
+      const planned = await resolveDocument(deps.documentsDir, args.name)
+      if (!planned.ok) return { ok: false, reason: planned.reason }
+      return {
+        ok: true,
+        target: {
+          title: `写文件：${planned.name}`,
+          target: planned.path,
+          impact: planned.renamed
+            ? '会在「文档\\长庚产出」里新建这个文件。**同名文件已存在，所以换了新名字**，原来那份不动'
+            : '会在「文档\\长庚产出」里新建这个文件；不覆盖任何已有文件，内容只写在这台机器上',
+          undoHint: '在资源管理器里删掉这个文件'
+        },
+        execute: async (): Promise<ToolResult> => {
+          const outcome = await writeDocumentOnce(planned, content)
+          if (!outcome.ok) return { ok: false, summary: `没有写成：${outcome.reason}` }
+          const kb = Math.max(1, Math.round(outcome.bytes / 102.4) / 10)
+          return {
+            ok: true,
+            summary: `已写入「${outcome.name}」（${kb} KB）：${outcome.path}`,
+            undo: '在资源管理器里删掉这个文件',
+            data: {
+              path: outcome.path,
+              name: outcome.name,
+              bytes: outcome.bytes,
+              sha256: outcome.sha256,
+              renamed: planned.renamed
+            },
+            evidence: [
+              ev({
+                type: 'local',
+                title: `写出文件：${outcome.name}`,
+                detail: `${outcome.path} · ${outcome.bytes} 字节 · 用户授权后写入`
+              })
+            ]
+          }
+        }
+      }
+    },
+    /**
+     * 事后核对：把那个路径重新读回来，比 sha。
+     *
+     * 写文件是最容易"以为成了"的一种：目录被策略拦掉、磁盘满、杀软隔离，
+     * 都可能让前面那次写入只成功了一半，而回执里写着"已写入"。
+     * 只比字节数不够——同一个长度的另一份内容也会过；所以比的是内容摘要。
+     */
+    verify: async (_args, _ctx, result) => {
+      const data = result.data as { path?: string; bytes?: number; sha256?: string } | undefined
+      const target = String(data?.path ?? '').trim()
+      if (!target) return { state: 'unavailable', fact: '这次的结果里没有文件路径，没法回读' }
+      const now = await inspectDocument(target)
+      if (!now.ok) {
+        return { state: 'mismatch', fact: `回读 ${target} 失败（${now.reason}）——文件可能根本没落盘` }
+      }
+      if (data?.sha256 && now.sha256 === data.sha256) {
+        return { state: 'confirmed', fact: `回读了 ${target}：${now.bytes} 字节，内容与这次写进去的完全一致` }
+      }
+      return {
+        state: 'mismatch',
+        fact: `回读了 ${target}：现在是 ${now.bytes} 字节，与写进去的 ${data?.bytes ?? '?'} 字节对不上（内容被改动或写了一半）`
+      }
+    },
+    run: async (): Promise<ToolResult> => {
+      return { ok: false, summary: 'write_document 必须先解析出最终路径（plan），直接 run 不会被放行' }
+    }
+  }
+
   const installAppTool: ToolDef = {
     name: 'install_app',
     label: '安装软件（需授权）',
@@ -2197,6 +2316,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     openFolderTool,
     openFileTool,
     readFileTool,
+    writeDocumentTool,
     installAppTool,
     uninstallAppTool,
     checkUninstallTool,

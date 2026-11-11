@@ -22,7 +22,7 @@ npm run dev                      # 开发模式（热更新）
 npm run build                    # 产出 out/ 三端产物
 npm run typecheck                # 主进程 + 渲染层两份 tsconfig 各查一遍
 npm test                         # 单测（vitest，不连网、不读注册表）
-npm run gate                     # 授权闸门离线验收（不接模型，61 条）
+npm run gate                     # 授权闸门离线验收（不接模型，67 条）
 npm run smoke                    # 不依赖模型：验证注册表读取 + 联网检索
 npm run mock                     # 本地假模型（无 Key 时验证对话链路）
 npm run eval                     # 跑 36 条评测，结果写 evals/report.json
@@ -51,6 +51,8 @@ npm run eval
 数据都落在 `%APPDATA%\changeng-polar\`：`config.json`（模型/检索/邮箱凭据，落盘前经 safeStorage 加密）、
 `records.jsonl`（append-only 动作记录，5MB 轮转，只留最近三份）、`verify.json`（查证缓存）、
 `auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆），以及任务/会话/程序备注各一份 JSON。
+唯一写到外面的是用户自己的目录：`write_document` 的产出只落在系统「文档」下的 `长庚产出\` 里（「文档」被重定向到 OneDrive 时跟着走），
+目录名写死在 `node/document.ts`，模型指定不了。
 
 ---
 
@@ -185,6 +187,7 @@ src/
       mail.ts              多账号 IMAP 只读：列邮件 / 读正文 / 分型报错
       sandbox.ts           演示沙箱：作用域写死 %TEMP%\butler-sandbox，删除走回收站
       snapshot.ts          卸载前抓状态快照，卸载后做对比
+      document.ts          写文件：落点、文件名、格式、永不覆盖的规则都在这儿
       memory.ts            跨会话记忆的合并与去重
       search.ts            全局搜索（在主进程做，只把命中的几十条送到渲染层）
       secrets.ts           凭据落盘加解密（主进程注入 safeStorage/DPAPI）
@@ -207,7 +210,7 @@ scripts/
   lib/load-config.ts       脚本读配置：环境变量 > 解密后的明文 > 盘上明文
   lib/decrypt-config.cjs   Electron 子进程，用 <userData>\Local State 的密钥解密凭据
   smoke.ts                 本机读取 + 检索冒烟
-  gate-check.ts            授权闸门的离线验收（不接模型，61 条）
+  gate-check.ts            授权闸门的离线验收（不接模型，67 条）
   check-h1.ts / e3-check.ts / view-check.ts     单项核对脚本
   orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   编排总线冒烟
   backends-*.ts / mixed-backends.ts / github-smoke.ts       外部工作体后端核对
@@ -221,13 +224,13 @@ tests/                     单测（vitest，不连网、不读注册表）
 
 ## 边界（代码层，不靠模型自觉）
 
-**主进程注册 22 个工具，按效果分档：**
+**主进程注册 23 个工具，按效果分档：**
 
 | 档位 | 工具 | 闸门行为 |
 |---|---|---|
 | `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`github_search`、`list_memory`、`check_uninstall_state` | 自动放行 + 留痕 |
 | `ui`（只打开页面 / 窗口） | `open_settings_page`、`launch_app`、`open_folder`、`open_file` | 自动放行 + 留痕 |
-| `write`（本地数据） | `github_upload`、`delegate_to_agent`、`run_project`、`save_memory`、`forget_memory` | 先备份，备份失败就不执行；`github_upload` / `delegate_to_agent` / `run_project` 一律要过卡（`requiresConfirmation`） |
+| `write`（本地数据） | `write_document`、`github_upload`、`delegate_to_agent`、`run_project`、`save_memory`、`forget_memory` | 先备份，备份失败就不执行；`write_document` / `github_upload` / `delegate_to_agent` / `run_project` 一律要过卡（`requiresConfirmation`） |
 | `install`（改动机器） | `install_app` | 必须过卡；**全表唯一允许「始终允许」的档位** |
 | `destroy`（不可撤回） | `delete_to_recycle`、`uninstall_app` | 必须逐次过卡，`allowAlways` 固定 `false` |
 
@@ -241,7 +244,8 @@ tests/                     单测（vitest，不连网、不读注册表）
 
 逐条约束：
 
-- **`delete_to_recycle`**：作用域写死在 `%TEMP%\butler-sandbox`（沙箱外路径直接抛错），走系统回收站可还原。用户的真实文件仍然没有任何删除/写入能力。
+- **`write_document`**：长庚唯一一处往用户真实目录里的写入，规则全在 `node/document.ts` 里，不靠提示词。落点写死 `文档\长庚产出\`——模型给不了目录，带目录 / 带 `..` / 带盘符的名字在解析阶段直接拒绝（不切掉目录：切掉就成了「要写 A，落成 B」）；只写 `.md/.txt/.csv/.json/.html`，会执行的后缀（`.bat/.ps1/.lnk/.exe`）一律不给；**同名永不覆盖**，换成 `名称 (2).md` 并在结果里报出最终路径（覆盖不可撤回，多一个文件不是）。写入用 `wx` 独占创建，所以「解析时空着」与「点完卡真正写」之间冒出来的同名文件也不会被覆盖，只会如实失败。卡片上的路径与真正写下的路径出自同一次解析（K7）；事后核对是**回读那个文件比 sha256**——只比字节数不够，同长度的另一份内容也会过。
+- **`delete_to_recycle`**：作用域写死在 `%TEMP%\butler-sandbox`（沙箱外路径直接抛错），走系统回收站可还原。沙箱之外的删除仍然没有任何通路——`write_document` 给的是「新建一个文件」，不是「改或删已有文件」。
 - **`uninstall_app`**：名字必须与注册表 `DisplayName` 完全一致（不做模糊匹配），同名多条 / 系统组件 / 只有静默卸载命令 / 命令是脚本宿主（cmd、powershell、mshta…）一律拒绝；执行时只 `spawn` 那个 `.exe`，**不静默卸载、不删安装目录**，卸载要用户在程序自己的窗口里点完。卡片上的目标与实际执行的目标出自同一次解析（`ToolPlan`），不允许两处各算一遍。
 - **`install_app`**：只走 winget 官方仓库，包 Id 必须精确匹配。名字有歧义（多个候选）时**弹候选卡让用户点一个**，选完拿他选的那个值**重新解析一次**、再弹正常的安装授权卡——选候选不等于同意安装，静默安装的代价那一段他照样看得到；解析出的目标若不含他选的值，直接停下（防「批 A 装 B」）。`winget` 调用走 `execFile` + 独立 argv，**绝不经 shell**——这里曾经是 `shell: true` 拼字符串，`"恶意网页 → 模型生成软件名 → 任意命令"` 这条链是通的。装完会强制刷新缓存再核对一遍程序清单与新增的开机自启项；**winget 报成功但核对自己查不到时，工具按失败上报**（审计记 `partial`），也不往台账写「管家装的」。**装软件一律弹它自己的安装向导**（`--interactive`）：安装位置、桌面快捷方式、开机自启都在那个向导里由用户自己定，这一轮对话等他点完，点「取消」就等于什么都没装。这里曾经有个 `--silent` 静默模式，**已经删掉**——静默安装等于替他接受了安装器所有默认勾选，连装到哪个盘都替他决定了，而他批准时一个字都没看到。删掉而不是留个开关，是因为"让用户批准一张全程看不见的卡"本身就不该是一个可选项。
 - **`read_file`**：按后缀认定格式，**不靠"试着解一下"**——后者会把一张 jpg 解成几十 KB 的替换字符，然后模型拿着它编出"这张图看起来是…"。纯文本走一条有讲究的编码阶梯：BOM → UTF-16（无 BOM 时靠空字节奇偶位认）→ UTF-8 严格解 → GB18030。UTF-8 那一步必须 `fatal: true`，否则 GBK 文件会"解成功"成一串问号而调用方毫不知情。`.docx/.xlsx/.pptx` 是自己解 ZIP 里的 XML（`node/office.ts`），不依赖机器上装没装 Office。**读不了就说读不了**：PDF、老式 `.doc/.xls`、图片、压缩包、音视频一律如实拒绝并给出"用系统默认程序打开"这条出路，绝不吐一段乱码让模型去总结——读错比不读糟得多，因为错的内容会被当成事实讲给用户。后缀是 `.txt` 但内容是二进制的也拒。长文件分段读（默认 3200 字、硬上限 4000），返回 `totalChars` / `nextOffset`，让"只读到一部分"变成一个说得清的事实。标了 `readsPrivateData`：读过之后本轮视为被污染，后续 `sendsDataOut` 的工具要单独弹外发确认卡——合同、账单、密钥都可能在这条路上。

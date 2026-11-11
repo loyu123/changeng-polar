@@ -39,6 +39,7 @@ import type { AuthAnswer, RecordEntry } from '../src/shared/types'
  *  18. 授权记忆能持久化、重启后还在、且能撤销
  *  19. 候选卡：选完重新解析再弹授权卡；取消/无选择能力时不安装也不猜
  *  20. 写操作事后核对：删完自己再查一次；结论进审计；演练模式不核对
+ *  21. 写文件：落点被代码写死、同名不覆盖、卡片上的路径就是写下的路径、写完回读核对
  */
 
 const ctx: ToolContext = {
@@ -821,6 +822,71 @@ async function main(): Promise<void> {
     noChoiceHooks.ok === false && noChoiceHooks.blocked === true && offlineEval.seen.length === 0,
     `ok=${noChoiceHooks.ok} 弹卡=${offlineEval.seen.length}`
   )
+
+  /**
+   * ---- 21 写文件：唯一一处往用户真实目录里的写入，四条边界逐条钉住 ----
+   *
+   * 落点由 node/document.ts 定死（<文档>\长庚产出），模型给的只有文件名；
+   * 同名不覆盖；卡片上的路径就是真正写下的那个（K7）；写完回读比对内容。
+   */
+  const docsRoot = mkdtempSync(path.join(os.tmpdir(), 'butler-docs-'))
+  const docTool = createTools({ documentsDir: docsRoot }).find((t) => t.name === 'write_document')!
+
+  const escapeTry = makeGate('once')
+  const escaped = await executeThroughGate(docTool, { name: '..\\..\\evil.md', content: 'x' }, ctx, escapeTry.gate)
+  check(
+    '写文件：带目录的名字在解析阶段就拒绝，卡片不弹',
+    escaped.ok === false && escaped.blocked === true && escapeTry.seen.length === 0,
+    `ok=${escaped.ok} 弹卡=${escapeTry.seen.length} 原因=${escaped.summary.slice(0, 40)}`
+  )
+
+  const docNoDir = createTools().find((t) => t.name === 'write_document')!
+  const noDir = await executeThroughGate(docNoDir, { name: '甲.md', content: 'x' }, ctx, makeGate('once').gate)
+  check(
+    '写文件：没有注入文档目录时不写（不退回进程当前目录）',
+    noDir.ok === false && noDir.blocked === true,
+    noDir.summary
+  )
+
+  const docDenied = makeGate('deny')
+  const docDenyResult = await executeThroughGate(docTool, { name: '拒绝的.md', content: 'x' }, ctx, docDenied.gate)
+  const docFolder = path.join(docsRoot, '长庚产出')
+  check(
+    '写文件：用户拒绝 → 一个文件都不建',
+    docDenyResult.ok === false && docDenied.records[0]?.result === 'rejected' && !existsSync(path.join(docFolder, '拒绝的.md')),
+    `ok=${docDenyResult.ok} 留痕=${docDenied.records[0]?.result}`
+  )
+
+  const docOnce = makeGate('once')
+  const docResult = await executeThroughGate(docTool, { name: '周会纪要', content: '结论：先做完闸门。\n' }, ctx, docOnce.gate)
+  const docData = docResult.data as { path?: string; name?: string; bytes?: number } | null
+  check(
+    '写文件：落到「文档\\长庚产出」，卡片上写的路径就是写下的路径（K7）',
+    docResult.ok === true &&
+      docData?.path === path.join(docFolder, '周会纪要.md') &&
+      docOnce.seen.length === 1 &&
+      docOnce.seen[0].includes(docData?.path ?? '从不匹配'),
+    `路径=${docData?.path ?? '无'} 弹卡=${docOnce.seen.length}`
+  )
+  check(
+    '写文件：写完自己回读比对内容，结论进审计',
+    docResult.verify?.state === 'confirmed' &&
+      docOnce.records[0]?.verified === 'confirmed' &&
+      Boolean(docOnce.records[0]?.verifyFact) &&
+      existsSync(docData?.path ?? ''),
+    `verify=${docResult.verify?.state} 文件在=${existsSync(docData?.path ?? '')}`
+  )
+
+  const docAgain = makeGate('once')
+  const docSecond = await executeThroughGate(docTool, { name: '周会纪要', content: '第二份' }, ctx, docAgain.gate)
+  const secondData = docSecond.data as { name?: string; path?: string } | null
+  check(
+    '写文件：同名不覆盖，换一个新名字，原来那份内容不变',
+    secondData?.name === '周会纪要 (2).md' &&
+      (await fs.readFile(docData?.path ?? '', 'utf8')) === '结论：先做完闸门。\n',
+    `新名字=${secondData?.name ?? '无'}`
+  )
+  await fs.rm(docsRoot, { recursive: true, force: true })
 
   // 把演示文件补回来，方便现场验收
   const restored = await prepareSandbox()

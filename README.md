@@ -22,7 +22,7 @@ npm run dev                      # dev mode (hot reload)
 npm run build                    # produce the three out/ bundles
 npm run typecheck                # typecheck main + renderer against both tsconfigs
 npm test                         # unit tests (vitest, no network, no registry access)
-npm run gate                     # offline acceptance for the auth gate (no model, 61 assertions)
+npm run gate                     # offline acceptance for the auth gate (no model, 67 assertions)
 npm run smoke                    # model-free: verify registry reads + web search
 npm run mock                     # local fake model (exercise the chat path with no API key)
 npm run eval                     # run the 36 eval cases, writes evals/report.json
@@ -46,6 +46,7 @@ npm run eval
 ```
 
 All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks / sessions / app notes.
+The one place it writes outside that folder is the user's own Documents: `write_document` only ever lands in `长庚产出\` under the system Documents directory (it follows Documents if that is redirected to OneDrive). The folder name is hard-coded in `node/document.ts`; the model cannot choose it.
 
 ---
 
@@ -163,6 +164,7 @@ src/
       mail.ts              multi-account read-only IMAP: list / read body / typed errors
       sandbox.ts           demo sandbox: scope hard-coded to %TEMP%\butler-sandbox, deletion goes to the recycle bin
       snapshot.ts          capture state before uninstall, diff it after
+      document.ts          writing files: where it lands, name, format, never overwrite
       memory.ts            cross-session memory merge and dedupe
       search.ts            global search (done in the main process; only the few dozen hits reach the renderer)
       secrets.ts           credential encryption at rest (safeStorage/DPAPI injected by the main process)
@@ -185,7 +187,7 @@ scripts/
   lib/load-config.ts       script config loading: env vars > decrypted plaintext > on-disk plaintext
   lib/decrypt-config.cjs   Electron child process; decrypts credentials with the key from <userData>\Local State
   smoke.ts                 local reads + search smoke test
-  gate-check.ts            offline acceptance for the auth gate (no model, 61 assertions)
+  gate-check.ts            offline acceptance for the auth gate (no model, 67 assertions)
   check-h1.ts / e3-check.ts / view-check.ts     one-off verification scripts
   orchestrator-*.ts / delegate-smoke.ts / project-smoke.ts   orchestrator bus smoke tests
   backends-*.ts / mixed-backends.ts / github-smoke.ts       external worker backend checks
@@ -199,13 +201,13 @@ tests/                     unit tests (vitest, no network, no registry access)
 
 ## Boundaries (enforced in code, not left to the model's good intentions)
 
-**The main process registers 22 tools, tiered by effect:**
+**The main process registers 23 tools, tiered by effect:**
 
 | Tier | Tools | Gate behavior |
 |---|---|---|
 | `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `github_search`, `list_memory`, `check_uninstall_state` | Auto-pass + audit trail |
 | `ui` (opens a page / window only) | `open_settings_page`, `launch_app`, `open_folder`, `open_file` | Auto-pass + audit trail |
-| `write` (local data) | `github_upload`, `delegate_to_agent`, `run_project`, `save_memory`, `forget_memory` | Back up first; if the backup fails, nothing runs. `github_upload` / `delegate_to_agent` / `run_project` always raise a card (`requiresConfirmation`) |
+| `write` (local data) | `write_document`, `github_upload`, `delegate_to_agent`, `run_project`, `save_memory`, `forget_memory` | Back up first; if the backup fails, nothing runs. `write_document` / `github_upload` / `delegate_to_agent` / `run_project` always raise a card (`requiresConfirmation`) |
 | `install` (changes the machine) | `install_app` | Card required; **the only tier allowed "always allow"** |
 | `destroy` (irreversible) | `delete_to_recycle`, `uninstall_app` | Card required every time; `allowAlways` is fixed to `false` |
 
@@ -219,7 +221,8 @@ A tool either declares `verify` (the gate calls it) or fills the verdict itself 
 
 Per-tool constraints:
 
-- **`delete_to_recycle`**: scope is hard-coded to `%TEMP%\butler-sandbox` (paths outside it throw immediately), and deletion goes through the system recycle bin so it can be undone. The user's real files still have no delete or write path whatsoever.
+- **`write_document`**: the only write path into a real user folder, and every rule lives in `node/document.ts` rather than in the prompt. The destination is hard-coded to `Documents\长庚产出\` — the model cannot supply a directory, and names containing a separator, `..`, or a drive letter are refused at parse time (the directory is not stripped off: stripping turns "write A" into "write B"). Only `.md/.txt/.csv/.json/.html` are allowed; anything executable (`.bat/.ps1/.lnk/.exe`) is refused outright. **It never overwrites**: a taken name becomes `name (2).md` and the result reports the final path (overwriting is irreversible; one extra file is not). Writes use `wx` exclusive create, so a file that appears between "the name was free" and "the card was approved" is not overwritten either — the write fails honestly instead. The path on the card and the path actually written come from the same parse (K7), and the post-action check **reads the file back and compares sha256** — byte count alone is not enough, since a different document of the same length would pass.
+- **`delete_to_recycle`**: scope is hard-coded to `%TEMP%\butler-sandbox` (paths outside it throw immediately), and deletion goes through the system recycle bin so it can be undone. Deleting outside the sandbox still has no path at all — `write_document` creates a new file; it does not modify or delete an existing one.
 - **`uninstall_app`**: the name must match the registry `DisplayName` exactly (no fuzzy matching). Duplicate names, system components, silent-uninstall-only commands, and commands that are script hosts (cmd, powershell, mshta…) are all refused. Execution only `spawn`s that `.exe` — **no silent uninstall, no deleting the install directory**; the user must finish clicking through in the app's own window. The target shown on the card and the target actually executed come from the same parse (`ToolPlan`); the two are never computed separately.
 - **`install_app`**: winget official repository only, and the package Id must match exactly. When the name is ambiguous (multiple candidates) it **shows a candidate card for the user to pick one**, then **re-parses** using the value they picked and shows the normal install auth card again — picking a candidate is not consenting to install, and the paragraph about what interactive install costs is still shown. If the parsed target doesn't contain the value they picked, it stops (defends against "approve A, install B"). `winget` runs via `execFile` with an argv array, **never through a shell** — this used to be `shell: true` with string concatenation, and the chain `"malicious page → model generates a software name → arbitrary command"` was live. After installing it forces a cache refresh and re-checks both the program list and newly added startup items; **when winget reports success but the re-check can't find it, the tool reports failure** (audited as `partial`) and does not write "installed by the butler" into the ledger. **Installs always raise the app's own installer UI** (`--interactive`): install location, desktop shortcut, and autostart are all decided by the user in that wizard, this turn waits for them to finish, and clicking Cancel means nothing was installed. There used to be a `--silent` mode and **it has been deleted** — silent install means accepting every default checkbox on the user's behalf and even deciding which drive it goes on, while they saw not a single word of it when approving. It was deleted rather than kept behind a flag because "let the user approve a card they can't see" should not be an option at all.
 - **`read_file`**: format is determined by extension, **never by "just try parsing it"** — the latter turns a jpg into tens of KB of replacement characters, and the model then invents "this image appears to show…" from them. Plain text goes through a deliberate encoding ladder: BOM → UTF-16 (when there's no BOM, recognized by null-byte parity) → strict UTF-8 → GB18030. The UTF-8 step must use `fatal: true`, otherwise a GBK file "decodes successfully" into a string of question marks and the caller never knows. `.docx/.xlsx/.pptx` are read by parsing the XML inside the ZIP (`node/office.ts`) with no dependency on Office being installed. **If it can't be read, it says so**: PDF, legacy `.doc/.xls`, images, archives, and audio/video are all honestly refused with "open it with the system default app" as the way out. It never emits garbage for the model to summarize — reading wrong is far worse than not reading, because wrong content gets presented to the user as fact. A `.txt` file whose content is binary is refused too. Long files are read in slices (default 3200 chars, hard cap 4000) returning `totalChars` / `nextOffset`, which makes "only part of it was read" a fact that can be stated. It is marked `readsPrivateData`: once read, the turn is considered tainted and subsequent `sendsDataOut` tools must raise a separate egress confirmation card — contracts, bills, and keys all travel this path.
