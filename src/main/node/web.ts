@@ -6,11 +6,24 @@ export { decodeEntities, stripTags }
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
+/**
+ * 检索彻底失败时，属于哪一种。
+ *
+ * `no-results`     引擎正常回话了，只是确实没有相关内容——这时才该说"没有"
+ * `rate-limited`   返回了异常空页，很可能是被限流——这时要说"可能被限流了，等会儿再试"
+ * `blocked`        所有来源都被反爬拦下——这时要建议换网络或配 Key
+ *
+ * 三者分开的理由：说错会被用户当成"这个东西不存在"，然后放弃寻找。
+ */
+export type SearchFailureKind = 'no-results' | 'rate-limited' | 'blocked'
+
 export interface SearchOutcome {
   ok: boolean
   provider: string
   hits: SearchHit[]
   error?: string
+  /** 失败时说明是哪一类失败，调用方据此决定怎么说 */
+  failureKind?: SearchFailureKind
   /** 换了来源时说一句为什么：用户明确选了某个源，静默换掉等于骗他 */
   note?: string
   durationMs: number
@@ -322,9 +335,27 @@ export async function searchWeb(
 
   const errors: string[] = []
   const relevance = relevanceTokens(query)
+  /**
+   * 把"没拿到结果"的两种情形分开记。
+   *
+   * 这个区分是有实测依据的：Bing 从来不返回零结果——连 `zzqxkjvhbwq1234567890asdfgh`
+   * 这种乱码串都照样回 10 条 `b_algo`（内容无关，靠相关性过滤挡掉）。所以：
+   *   - 解析出 0 个结果块 = 页面结构不对 = 降级或被限流
+   *   - 解析出结果但全被过滤 = 引擎确实没有相关内容 = 真的查不到
+   * 原来两种都报"查不到"，用户会以为要查的东西不存在，其实只是被限流了几秒。
+   */
+  const sawGenuineMiss = { value: false } // 有来源正常返回了结果，只是都不相关
+  const degraded: string[] = [] // 返回了异常空页的来源
+  const blocked: string[] = [] // 被反爬拦下的来源
+
   for (const step of chain) {
     try {
       const raw = await withRetry(step.name, step.fn, signal)
+      if (raw.length === 0) {
+        degraded.push(step.name)
+        errors.push(`${step.name}: 返回了空页（没有解析到结果块）`)
+        continue
+      }
       // 免费源经常返回与检索词完全无关的页面：先把无关结果丢掉，宁可报"查不到"
       const hits = raw.filter((hit) => isRelevant(hit, relevance))
       if (hits.length > 0) {
@@ -332,16 +363,46 @@ export async function searchWeb(
         const note = errors.length > 0 ? `首选来源不可用（${errors.join('；')}），已改用 ${step.name}` : undefined
         return { ok: true, provider: step.name, hits, durationMs: Date.now() - started, note }
       }
-      errors.push(`${step.name}: ${raw.length > 0 ? `${raw.length} 条结果全部与检索词无关` : '无结果'}`)
+      sawGenuineMiss.value = true
+      errors.push(`${step.name}: ${raw.length} 条结果全部与检索词无关`)
     } catch (err) {
-      errors.push(`${step.name}: ${err instanceof Error ? err.message : String(err)}`)
+      const message = err instanceof Error ? err.message : String(err)
+      if (/反爬|人机验证|挑战页/.test(message)) blocked.push(step.name)
+      errors.push(`${step.name}: ${message}`)
     }
   }
+
+  const detail = errors.join('；')
+  // 只要有来源正常回话、只是内容不相关，那就是真的查不到；反过来说不定只是被限流
+  if (sawGenuineMiss.value) {
+    return {
+      ok: false,
+      provider,
+      hits: [],
+      error: `没有找到与「${query}」相关的结果（${detail}）。这是查过了、确实没有，不是被限流`,
+      failureKind: 'no-results',
+      durationMs: Date.now() - started
+    }
+  }
+  if (degraded.length > 0) {
+    return {
+      ok: false,
+      provider,
+      hits: [],
+      error:
+        `检索源返回了异常空页（${detail}），**很可能是被限流了，过一会儿再试一次**。` +
+        `这不代表「没有这个东西」——不要说它不存在`,
+      failureKind: 'rate-limited',
+      durationMs: Date.now() - started
+    }
+  }
+  const blockedNote = blocked.length > 0 ? `${blocked.join('、')} 是被反爬挡下的` : '全都是异常失败'
   return {
     ok: false,
     provider,
     hits: [],
-    error: `检索失败（${errors.join('；')}）`,
+    error: `检索源都被挡下了（${detail}；${blockedNote}）。换个网络环境，或在设置里配一个带 Key 的检索源`,
+    failureKind: 'blocked',
     durationMs: Date.now() - started
   }
 }

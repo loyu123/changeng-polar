@@ -1153,9 +1153,17 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       const max = Math.min(Math.max(Number(args.max ?? 5), 1), 8)
       const outcome = await searchWeb(query, ctx.config, ctx.signal)
       if (!outcome.ok) {
+        // 三种失败要说三种话：说成"不存在"会让用户放弃寻找，说成"被限流"要他去重试
+        const guidance =
+          outcome.failureKind === 'rate-limited'
+            ? '这时**不要说「查不到」或「没有这个东西」**——要告诉用户「检索可能被限流了，过一会儿再试」，并说明这不代表内容不存在。'
+            : outcome.failureKind === 'blocked'
+              ? '这时要说「检索被挡下了」，建议换网络环境或在设置里配一个带 Key 的检索源（Serper / Tavily）。不要凭记忆补全。'
+              : '这时应当向用户说明「查不到」，不要凭记忆补全。'
         return {
           ok: false,
-          summary: `检索失败，没有拿到任何结果：${outcome.error ?? '无结果'}。此时应当向用户说明「查不到」，不要凭记忆补全。`
+          summary: `${outcome.error ?? '检索失败'}。${guidance}`,
+          data: { failureKind: outcome.failureKind ?? 'no-results', retryable: outcome.failureKind === 'rate-limited' }
         }
       }
       const hits = outcome.hits.slice(0, max)

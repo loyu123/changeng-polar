@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { decodeEntities, stripTags } from '../../src/main/node/html'
 import {
   bingSearchUrl,
@@ -7,9 +7,12 @@ import {
   isCjkQuery,
   isTransientSearchError,
   relevanceTokens,
+  searchWeb,
   unwrapBing,
   unwrapDdg
 } from '../../src/main/node/web'
+import type { SearchOutcome } from '../../src/main/node/web'
+import type { ButlerConfig } from '../../src/shared/types'
 
 /**
  * 检索链路的纯函数部分。
@@ -223,5 +226,97 @@ describe('瞬时失败重试的判据', () => {
 
   it('403 是被拒，重试还是拒，不试', () => {
     expect(isTransientSearchError('Bing 403')).toBe(false)
+  })
+})
+
+/**
+ * 「查不到」要分三种说清楚。
+ *
+ * 实测依据：Bing 从不返回零结果页——连 `zzqxkjvhbwq1234567890asdfgh` 这种乱码串
+ * 都照样回 10 条 `b_algo`（内容无关，靠相关性过滤挡掉）。所以
+ * **解析出 0 个结果块** 和 **解析出结果但全不相关** 是两件完全不同的事：
+ * 前者是页面结构不对（降级/限流），后者才是真的没有。
+ *
+ * 这里锁住的是判定顺序，弄错了用户会被告知"这个东西不存在"，然后放弃寻找。
+ */
+describe('检索失败的三种报法', () => {
+  const BING_PAGE = (body: string): Response =>
+    new Response(`<html><body><ul id="b_results">${body}</ul></body></html>`, { status: 200 })
+  const BING_HIT = (keyword: string, url: string): string =>
+    `<li class="b_algo"><h2><a href="${url}">${keyword}的官网</a></h2><p>${keyword} 相关说明文字</p></li>`
+  const DDG_HIT = (keyword: string, url: string): string =>
+    `<a class="result__a" href="${url}">${keyword}的官网</a><a class="result__snippet">${keyword} 相关说明</a>`
+  const CHALLENGE = (): Response =>
+    new Response('<html><body><div id="challenge-platform"></div>人机验证</body></html>', { status: 202 })
+
+  async function run(
+    query: string,
+    pages: { bing: () => Response; ddg: () => Response }
+  ): Promise<SearchOutcome> {
+    vi.stubGlobal('fetch', async (input: unknown) => {
+      const url = typeof input === 'string' ? input : String((input as Request).url)
+      return url.includes('cn.bing.com') ? pages.bing() : pages.ddg()
+    })
+    vi.useFakeTimers()
+    try {
+      const pending = searchWeb(query, { searchProvider: 'bing', searchKey: '' } as ButlerConfig)
+      // 重试要等 400 + 1200ms，假时钟直接推过去，别让单测真等三秒
+      await vi.advanceTimersByTimeAsync(5_000)
+      return await pending
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  }
+
+  it('有来源正常回话、只是内容不相关 → 真的查不到', async () => {
+    const out = await run('微信', {
+      bing: () => BING_PAGE(BING_HIT('python', 'https://example.com/py')),
+      ddg: () => CHALLENGE()
+    })
+    expect(out.ok).toBe(false)
+    expect(out.failureKind).toBe('no-results')
+    expect(out.error).toContain('确实没有')
+    // 不许把"确实没有"说成"可能被限流"，反过来也不行
+    expect(out.error).not.toContain('可能被限流')
+  })
+
+  it('解析不出结果块（降级/限流）→ 说可能被限流，不说不存在', async () => {
+    const out = await run('微信', {
+      bing: () => BING_PAGE('<li class="b_ans">没有东西</li>'),
+      ddg: () => CHALLENGE()
+    })
+    expect(out.failureKind).toBe('rate-limited')
+    expect(out.error).toContain('很可能')
+    expect(out.error).toContain('被限流')
+    expect(out.error).toContain('不代表')
+  })
+
+  it('全被反爬挡下 → blocked，并点名是谁挡的', async () => {
+    const out = await run('微信', { bing: () => CHALLENGE(), ddg: () => CHALLENGE() })
+    expect(out.failureKind).toBe('blocked')
+    expect(out.error).toContain('挡下')
+    expect(out.error).toContain('bing')
+    expect(out.error).toContain('duckduckgo')
+  })
+
+  it('首选源降级、备用源成功 → 成功但必须带上"换了来源"的说明', async () => {
+    const out = await run('微信', {
+      bing: () => BING_PAGE('<li class="b_ans">降级页</li>'),
+      ddg: () => new Response(DDG_HIT('微信', 'https://example.com/wx'), { status: 200 })
+    })
+    expect(out.ok).toBe(true)
+    expect(out.provider).toBe('duckduckgo')
+    expect(out.note).toContain('已改用 duckduckgo')
+  })
+
+  it('首选源就成功时不带说明（没有值得报警的事）', async () => {
+    const out = await run('微信', {
+      bing: () => BING_PAGE(BING_HIT('微信', 'https://example.com/wx')),
+      ddg: () => CHALLENGE()
+    })
+    expect(out.ok).toBe(true)
+    expect(out.provider).toBe('bing')
+    expect(out.note).toBeUndefined()
   })
 })
