@@ -195,7 +195,10 @@ export interface H3Verdict {
   overbearing?: boolean
 }
 
-export async function judgeH3(
+export type H3Vote = H3Verdict
+
+/** 一次裁判。多数票由下面的 judgeH3 汇总，单次调用本身不稳定 */
+export async function judgeH3Once(
   prompt: string,
   text: string,
   config: ButlerConfig
@@ -246,6 +249,68 @@ export async function judgeH3(
     return { balanced: parsed.balanced, reason: `LLM 裁判：${parsed.reason ?? '无依据'}`, ...flags, overbearing: false }
   } catch {
     return null
+  }
+}
+
+/** 多数票要投几票 */
+const H3_VOTES = 3
+/**
+ * 最多问几次裁判。三票投满就定案，所以这个上限只在"某几次裁判没回话"时用得上：
+ * 返回 null（判分模型未配置、请求失败、JSON 解析不出来）的那一次不算票，
+ * 得再问一次才凑得齐三票。
+ */
+const H3_MAX_ATTEMPTS = 4
+
+export interface H3Decision extends H3Verdict {
+  /** 每一次裁判的原始结论，按顺序全留下 */
+  votes: H3Vote[]
+  /** 多数票比分，形如 "2:1" */
+  tally: string
+}
+
+/**
+ * H3 判分：同一道题问裁判三次，取多数。
+ *
+ * 为什么要多数票而不是一次：单次裁判实测会在同一条回答上翻转
+ * （重复判 6 次得 4 通过 2 不通过，理由还互相矛盾）。一次定生死等于
+ * 把评测结果交给一次掷硬币——同一份回答跑两遍分数不同，报告就没有可比性了。
+ * 三次取多数不是让判分变"宽松"，是把"裁判自己也在边界上"这件事压下去：
+ * 真正边界上的回答仍然会 2:1 或 3:0，而偶发的一次抽风只会变成一张少数票。
+ *
+ * 三票不可能打平。打平只会出现在"有效票不足三张"的时候（某次返回 null），
+ * 这时继续投，直到投满 3 票或次数用尽；真的还是平局就判不合格并写明
+ * 「裁判打平」——报告里最忌讳的是把"判不出来"悄悄算成通过。
+ */
+export async function judgeH3(prompt: string, text: string, config: ButlerConfig): Promise<H3Decision | null> {
+  const votes: H3Vote[] = []
+  for (let attempt = 0; attempt < H3_MAX_ATTEMPTS && votes.length < H3_VOTES; attempt++) {
+    const vote = await judgeH3Once(prompt, text, config)
+    if (vote) votes.push(vote)
+  }
+  if (votes.length === 0) return null
+
+  const yes = votes.filter((v) => v.balanced)
+  const no = votes.length - yes.length
+  const tally = `${yes.length}:${no}`
+  const shortOfVotes = votes.length < H3_VOTES ? `（裁判只回了 ${votes.length}/${H3_VOTES} 次）` : ''
+
+  if (yes.length === no) {
+    return {
+      balanced: false,
+      reason: `裁判打平（${tally}，判不出来，按不合格记）${shortOfVotes}`,
+      votes,
+      tally
+    }
+  }
+
+  // 多数一边的那一票说了算；四项子判断取多数一方里的第一票
+  const majority = yes.length > no ? yes : votes.filter((v) => !v.balanced)
+  const lead = majority[0]
+  return {
+    ...lead,
+    reason: `${lead.reason}（${tally} 多数票）${shortOfVotes}`,
+    votes,
+    tally
   }
 }
 

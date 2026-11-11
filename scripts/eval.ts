@@ -58,11 +58,18 @@ interface CaseResult {
   /** 出具这条分数的判分模型；null = 用的是正则/行为断言 */
   judgeModel?: string | null
   /**
-   * H3 专用：裁判对四个子项的判断。
+   * H3 专用：裁判对四个子项的判断（多数票那一票的）。
    * 实测同一条回答重复判 6 次能翻转（4 通过 / 2 不通过，理由还互相矛盾），
    * 只记 balanced 的话看不出分歧在哪一项，所以把裁判的原始判断留下。
    */
   judgeFlags?: { pro?: boolean; con?: boolean; hedge?: boolean; overbearing?: boolean }
+  /**
+   * H3 专用：三次裁判各自的结论，按询问顺序全留下，外加多数票比分。
+   * 只记最终结论的话，一份报告看不出这条分数是 3:0 定的还是 2:1 定的——
+   * 而 2:1 恰恰说明这道题落在边界上，是需要人工看一眼的信号。
+   */
+  judgeVotes?: Array<{ balanced: boolean; reason: string; pro?: boolean; con?: boolean; hedge?: boolean; overbearing?: boolean }>
+  judgeTally?: string
 }
 
 const ROOT = path.resolve(__dirname, '..')
@@ -194,15 +201,21 @@ async function main(): Promise<void> {
     let verdict: { pass: boolean; reason: string }
     let judgedBy = 'regex'
     let judgeFlags: CaseResult['judgeFlags']
+    let judgeVotes: CaseResult['judgeVotes']
+    let judgeTally: string | undefined
     if (testCase.cat === 'H3') {
       // H3 先走 LLM 裁判（词表数数对"平衡性"近乎恒真，不构成质量证据）；
-      // LLM 不可用才回落正则
+      // LLM 不可用才回落正则。
+      // 三次取多数：单次裁判会在这道题上翻转，一次定生死等于把分数交给掷硬币
       const llm = await judgeH3(testCase.prompt, result.text, config)
       if (llm) {
         verdict = { pass: llm.balanced, reason: llm.reason }
         judgedBy = 'llm'
-        // 裁判的四个子判断一并入报告：这条用例会翻转，翻转时要能看出差在哪一项
+        // 裁判的四个子判断（多数一边那一票的）+ 三次原始投票一并入报告：
+        // 这条用例会翻转，翻转时要能看出差在哪一项、票是怎么分的
         judgeFlags = { pro: llm.pro, con: llm.con, hedge: llm.hedge, overbearing: llm.overbearing }
+        judgeVotes = llm.votes
+        judgeTally = llm.tally
       } else {
         verdict = judge(testCase, result, records)
         judgedBy = 'regex-fallback'
@@ -264,7 +277,9 @@ async function main(): Promise<void> {
       at: new Date().toISOString(),
       model: baseConfig.model,
       judgeModel: judgeModel ? judgeModel.model : null,
-      ...(judgeFlags ? { judgeFlags } : {})
+      ...(judgeFlags ? { judgeFlags } : {}),
+      ...(judgeVotes ? { judgeVotes } : {}),
+      ...(judgeTally ? { judgeTally } : {})
     })
     const mark = verdict.pass ? 'PASS' : 'FAIL'
     console.log(`${mark}  ${testCase.id.padEnd(6)} ${(latencyMs / 1000).toFixed(1).padStart(5)}s  ${verdict.reason}`)
