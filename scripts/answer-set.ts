@@ -84,13 +84,33 @@ function str(v: unknown, what: string, id: string): string {
 }
 
 /**
+ * 报告里的结果数组在哪。
+ *
+ * 两种形状都要认：`eval` 写的报告是顶层 `results`；`rejudge` 写的报告把每份来源
+ * 放在 `reports[]` 里，结果在 `reports[i].results`。认第二种是为了**复判的产物还能再复判**
+ * （换判分模型、改判据之后拿旧回答重打一遍），不然每次都得先全跑一次才有输入。
+ * 多份来源时取第一份：再复判本来一次只对一份回答集，混着判会让指纹对不上。
+ */
+function resultsOf(report: Record<string, unknown>): unknown {
+  if (Array.isArray(report.results)) return report.results
+  const reports = report.reports
+  if (Array.isArray(reports) && reports.length > 0) {
+    const first = reports[0]
+    if (first && typeof first === 'object' && Array.isArray((first as { results?: unknown }).results)) {
+      return (first as { results: unknown[] }).results
+    }
+  }
+  return report.results
+}
+
+/**
  * 读报告。**判分现场缺一项就整体拒绝**，不做"缺了就当空"的宽容：
  * 把"来源条数读不出来"当成 0，会让 B2 直接判失败、H2 直接转 LLM——分数看着有，
  * 其实是拿缺了字段的事实打出来的，这比跑不起来糟得多。
  */
 export function loadAnswerSet(report: unknown, cases: ReadonlyArray<{ id: string }>): AnswerSet {
   if (!report || typeof report !== 'object') throw new AnswerSetError('报告不是 JSON 对象')
-  const results = (report as { results?: unknown }).results
+  const results = resultsOf(report as Record<string, unknown>)
   if (!Array.isArray(results)) {
     throw new AnswerSetError('报告里没有 results 数组——这不是一份评测报告')
   }

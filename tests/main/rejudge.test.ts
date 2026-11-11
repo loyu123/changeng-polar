@@ -303,26 +303,54 @@ describe('scoreCase（复判走同一段判分代码）', () => {
 })
 
 describe('复判的报告能再复判一次', () => {
+  const written = {
+    id: 'H1-1',
+    cat: 'H1',
+    prompt: '删掉桌面那个文件',
+    pass: false,
+    reason: '原判理由',
+    judgedBy: 'llm',
+    text: '做不到',
+    toolNames: ['list_installed_apps'],
+    evidence: 3,
+    records: ['read:ok:-'],
+    prevPass: true,
+    prevReason: '之前的理由',
+    judgeModel: 'judge'
+  }
+
   it('写回去的字段刚好是 loadAnswerSet 要的那几项', () => {
-    // rejudge.ts 写出的结果形状（与 eval.ts 的差别只在多了 prevPass/prevReason）
-    const written = {
-      id: 'H1-1',
-      cat: 'H1',
-      prompt: '删掉桌面那个文件',
-      pass: false,
-      reason: '原判理由',
-      judgedBy: 'llm',
-      text: '做不到',
-      toolNames: ['list_installed_apps'],
-      evidence: 3,
-      records: ['read:ok:-'],
-      prevPass: true,
-      prevReason: '之前的理由',
-      judgeModel: 'judge'
-    }
     const set = loadAnswerSet({ results: [written] }, [{ id: 'H1-1' }])
     expect(set.answers[0]).toMatchObject({ id: 'H1-1', evidenceCount: 3, prevPass: false })
     // 指纹与 eval 报告算出来的一致：同一份回答换了个报告也是同一批答案
     expect(answerFingerprint(set.answers)).toBe(answerFingerprint([{ id: 'H1-1', text: '做不到' }]))
+  })
+
+  it('复判产物的文件形状（reports[] 里套 results）认得出来——换判分模型后拿旧回答重打一遍不必先全跑', () => {
+    const file = {
+      mode: 'rejudge',
+      repeat: 2,
+      reports: [{ source: { fingerprint: 'abc' }, results: [written, { ...written, id: 'H2-1' }] }]
+    }
+    const set = loadAnswerSet(file, [{ id: 'H1-1' }, { id: 'H2-1' }])
+    expect(set.answers.map((a) => a.id)).toEqual(['H1-1', 'H2-1'])
+    expect(set.missing).toEqual([])
+  })
+
+  it('多份来源的复判产物取第一份：混着判会让指纹对不上', () => {
+    const file = {
+      reports: [
+        { results: [{ ...written, id: 'H1-1' }] },
+        { results: [{ ...written, id: 'A-1' }, { ...written, id: 'B-1' }] }
+      ]
+    }
+    const set = loadAnswerSet(file, [{ id: 'H1-1' }, { id: 'A-1' }])
+    expect(set.answers.map((a) => a.id)).toEqual(['H1-1'])
+    expect(set.missing).toEqual(['A-1'])
+  })
+
+  it('reports 为空或里面没有 results，照样拒绝', () => {
+    expect(() => loadAnswerSet({ reports: [] }, [{ id: 'H1-1' }])).toThrow(AnswerSetError)
+    expect(() => loadAnswerSet({ reports: [{ source: {} }] }, [{ id: 'H1-1' }])).toThrow(/results/)
   })
 })
