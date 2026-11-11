@@ -256,6 +256,15 @@ export interface AlwaysAllowedEntry {
  */
 export type MemoryKind = 'user' | 'preference' | 'project' | 'fact'
 
+/**
+ * 一条记忆最多多少字。
+ *
+ * 放在 shared 而不是 node/memory.ts：主进程用它截断，渲染层用 maxLength 把上限
+ * **提前摆在输入框上**——不摆的话，用户打了两百多字，程序悄悄截断，他看到的
+ * 是记下来了，实际留下的是前半句。工具的参数描述里也引用同一个数。
+ */
+export const MEMORY_MAX_TEXT = 200
+
 export const MEMORY_KIND_LABEL: Record<MemoryKind, string> = {
   user: '关于我',
   preference: '偏好',

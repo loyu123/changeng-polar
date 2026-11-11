@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { MEMORY_KIND_LABEL, type MemoryEntry, type MemoryKind } from '../../shared/types'
+import { MEMORY_KIND_LABEL, MEMORY_MAX_TEXT, type MemoryEntry, type MemoryKind } from '../../shared/types'
 
 /**
  * 跨会话记忆。
@@ -17,7 +17,8 @@ import { MEMORY_KIND_LABEL, type MemoryEntry, type MemoryKind } from '../../shar
  */
 
 export const MEMORY_MAX_ENTRIES = 200
-export const MEMORY_MAX_TEXT = 200
+/** 单条字数上限定义在 shared/types.ts（渲染层输入框也要用），这里转出去给主进程调用方 */
+export { MEMORY_MAX_TEXT }
 /** 注入提示词的条数上限：太多会挤占预算，也会让模型抓不住重点 */
 export const MEMORY_INJECT_LIMIT = 40
 /** 注入提示词的总字数上限 */

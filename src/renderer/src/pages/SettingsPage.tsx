@@ -8,7 +8,7 @@ import type {
   OrbPrefs
 } from '../../../shared/types'
 import type { DesktopState } from '../../../shared/desktop'
-import { MEMORY_KIND_LABEL } from '../../../shared/types'
+import { MEMORY_KIND_LABEL, MEMORY_MAX_TEXT } from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
 import RecordsPage from './RecordsPage'
 import { FieldHelp } from '../components/FieldHelp'
@@ -177,6 +177,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const [memory, setMemory] = useState<AlwaysAllowedEntry[]>([])
   /** 跨会话记忆（与上面的授权记忆不是一回事：那是"始终允许"，这是"记住的事"） */
   const [memories, setMemories] = useState<MemoryEntry[]>([])
+  /** 手动加一条记忆：输入框内容、提交中、以及加不进去时的原因 */
+  const [newMemory, setNewMemory] = useState('')
+  const [addingMemory, setAddingMemory] = useState(false)
+  const [memoryError, setMemoryError] = useState('')
 
   useEffect(() => {
     void window.butler.config.get().then((loaded) => {
@@ -199,6 +203,27 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const clearMemory = async (): Promise<void> => {
     if (!window.confirm('清除全部记忆？这不会删除对话记录，只是让长庚忘掉这些事。')) return
     setMemories(await window.butler.memory.clear())
+  }
+  /**
+   * 自己加一条记忆。
+   *
+   * 这里不走授权卡，和对话里 `save_memory` 不一样——那张卡是给"模型想记什么"用的，
+   * 而这一条是你自己打的字，你已经在看着它落进去了。判据（长度上限、去重）
+   * 仍然走同一个 mergeMemory，不在这里另写一份。
+   */
+  const addMemory = async (): Promise<void> => {
+    if (!newMemory.trim() || addingMemory) return
+    setAddingMemory(true)
+    try {
+      const result = await window.butler.memory.save({ text: newMemory })
+      setMemories(result.list)
+      if (result.ok) setNewMemory('')
+      else setMemoryError(result.reason)
+    } catch (err) {
+      setMemoryError(`没写成：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setAddingMemory(false)
+    }
   }
 
   /** 只读模式：写进配置并立即生效，下一轮对话就会按新状态装配工具 */
@@ -941,12 +966,13 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <br />
                 它会出现在每次对话的系统提示里，但<b>只是线索</b>——涉及本机事实仍然要现查。
                 <br />
-                写入和删除都会弹授权卡：它改的是“长庚以后怎么看你”。
+                对话里让长庚记，写入会弹授权卡（它改的是“长庚以后怎么看你”）。
+                在下面自己写一条则不用弹卡——字是你打的，你正看着它落进去。
                 </FieldHelp>
             </div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>
               {memories.length === 0 ? (
-                <div style={{ color: '#8E8E86', fontSize: 12 }}>还没有记下任何东西。对话里说「记住…」即可。</div>
+                <div style={{ color: '#8E8E86', fontSize: 12 }}>还没有记下任何东西。对话里说「记住…」，或者在下面自己写一条。</div>
               ) : (
                 <>
                   {memories.map((item) => (
@@ -978,6 +1004,33 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                     全部清除
                   </button>
                 </>
+              )}
+              {/* 自己写一条：和对话里「记住…」写进同一份 memory.json，去重与长度上限也是同一套 */}
+              <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center' }}>
+                <input
+                  className="input"
+                  style={{ flex: 1 }}
+                  value={newMemory}
+                  maxLength={MEMORY_MAX_TEXT}
+                  placeholder="自己写一条，一句话就够"
+                  onChange={(e) => {
+                    setNewMemory(e.target.value)
+                    if (memoryError) setMemoryError('')
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void addMemory()
+                  }}
+                />
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={!newMemory.trim() || addingMemory}
+                  onClick={() => void addMemory()}
+                >
+                  {addingMemory ? '记…' : '记住'}
+                </button>
+              </div>
+              {memoryError && (
+                <div style={{ fontSize: 11, color: '#C42B1C', marginTop: 6 }}>{memoryError}</div>
               )}
             </div>
           </div>
