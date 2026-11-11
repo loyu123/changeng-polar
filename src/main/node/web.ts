@@ -233,6 +233,55 @@ function isRelevant(hit: SearchHit, tokens: string[]): boolean {
   return tokens.some((token) => haystack.includes(token))
 }
 
+/**
+ * 免费源失败后自己再试一次。
+ *
+ * 为什么需要：实测撞到过一整段降级窗口——连续 12 次全部 0 条、单次 700–1800ms，
+ * 隔几分钟又恢复成 8 条。那种时候它不报错、也不回验证页，只是解析不出 `b_algo`，
+ * 链路于是报"查不到"。用户看到的就成了"这个东西不存在"，而其实只是被限流了几秒。
+ *
+ * 只重试**瞬时故障**。反爬页不重试（一定还是拦）、已经 abort 不重试（用户不等了）；
+ * 空结果只给一次机会——第二次还是空，那就是真的没有，再试只是让用户多等两秒。
+ * 重试之间要停一下：连着猛打反而更容易持续被限流。
+ */
+const RETRY_DELAYS_MS = [400, 1200] as const
+
+/** 这个错误值不值得再试一次 */
+export function isTransientSearchError(message: string): boolean {
+  // 反爬/挑战页：重试没有意义
+  if (/反爬|人机验证|挑战页/.test(message)) return false
+  if (/\b429\b/.test(message) || /\b5\d\d\b/.test(message)) return true
+  return /abort|timeout|超时|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|network/i.test(message)
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * 跑一档来源，瞬时失败按 RETRY_DELAYS_MS 重试。
+ * 注意 Bing 降级时是**成功返回零条**而不是抛错，所以"空"也要当成一次失败来试。
+ */
+async function withRetry(name: string, fn: () => Promise<SearchHit[]>, signal?: AbortSignal): Promise<SearchHit[]> {
+  let lastError: string | undefined
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      if (signal?.aborted) break
+      await sleep(RETRY_DELAYS_MS[attempt - 1]!)
+    }
+    try {
+      const hits = await fn()
+      if (hits.length > 0) return hits
+      lastError = `${name}: 无结果`
+      if (attempt === RETRY_DELAYS_MS.length) return hits
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      lastError = `${name}: ${message}`
+      // 不是瞬时故障就别浪费时间：反爬页再来一次还是反爬页
+      if (!isTransientSearchError(message) || attempt === RETRY_DELAYS_MS.length) throw err
+    }
+  }
+  throw new Error(lastError ?? `${name}: 重试后仍无结果`)
+}
+
 export async function searchWeb(
   query: string,
   config: ButlerConfig,
@@ -275,7 +324,7 @@ export async function searchWeb(
   const relevance = relevanceTokens(query)
   for (const step of chain) {
     try {
-      const raw = await step.fn()
+      const raw = await withRetry(step.name, step.fn, signal)
       // 免费源经常返回与检索词完全无关的页面：先把无关结果丢掉，宁可报"查不到"
       const hits = raw.filter((hit) => isRelevant(hit, relevance))
       if (hits.length > 0) {

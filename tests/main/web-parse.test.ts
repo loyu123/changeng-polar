@@ -5,6 +5,7 @@ import {
   detectChallenge,
   diagnosePage,
   isCjkQuery,
+  isTransientSearchError,
   relevanceTokens,
   unwrapBing,
   unwrapDdg
@@ -193,5 +194,34 @@ describe('正文诊断：读到了字但没读到正文', () => {
 
   it('有标题的正常短页面不误报（短本身不是证据）', () => {
     expect(page({ text: '这是一个只有几句话的说明页面。', titleMissing: false })).toBeUndefined()
+  })
+})
+
+/**
+ * 免费源的瞬时失败重试。
+ *
+ * 起因是一次实测：连续 12 次检索全部 0 条，单次 700–1800ms，隔几分钟又恢复成 8 条。
+ * Bing 降级时不报错、不回验证页，只是解析不出结果——调用方于是报"查不到"，
+ * 用户以为那个东西不存在，其实只是被限流了几秒。
+ *
+ * 这里锁住的是**什么时候不该重试**，那才是容易做错的一半：
+ * 对反爬页重试等于明知被拦还硬打；对真的零结果重试等于让用户白等两秒。
+ */
+describe('瞬时失败重试的判据', () => {
+  it('网络层抖动值得再试', () => {
+    expect(isTransientSearchError('Bing fetch failed')).toBe(true)
+    expect(isTransientSearchError('Bing timeout')).toBe(true)
+    expect(isTransientSearchError('ECONNRESET')).toBe(true)
+    expect(isTransientSearchError('Bing 503')).toBe(true)
+    expect(isTransientSearchError('Bing 429')).toBe(true)
+  })
+
+  it('被反爬拦下不重试（再打一次还是拦）', () => {
+    expect(isTransientSearchError('DuckDuckGo 取回的是人机验证页，被反爬拦下了')).toBe(false)
+    expect(isTransientSearchError('Bing 取回的是 HTTP 202 挑战页，被反爬拦下了')).toBe(false)
+  })
+
+  it('403 是被拒，重试还是拒，不试', () => {
+    expect(isTransientSearchError('Bing 403')).toBe(false)
   })
 })
