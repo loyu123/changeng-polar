@@ -89,6 +89,42 @@ const RESULT_LABEL: Record<RecordEntry['result'], { tag: string; note: string }>
 }
 
 /**
+ * 查不到就用兜底，**绝不能返回 undefined 让渲染崩掉**。
+ *
+ * 真机踩到过：63 条 11 月 3 日的旧记录 `kind` 是 `verify`——那个「官网查证」功能
+ * 后来被删了，`RecordKind` 里也就没有它了，但历史数据还在盘上。
+ * `KIND_ICON[record.kind]` 拿到 undefined，`.bg` 一读就抛，
+ * 结果是**整个记录页白屏**（React 的渲染错误会带走整棵子树）。
+ *
+ * 这里的选择是"显示得丑一点"，不是"整页打不开"：历史数据是真实发生过的动作，
+ * 删掉或跳过它都是在抹掉审计。图标认不出来就画个通用图标，记录本身照常显示。
+ */
+const FALLBACK_ICON = {
+  bg: '#F2F2F2',
+  stroke: '#8E8E86',
+  path: (
+    <>
+      <circle cx="8" cy="8" r="5.6" />
+      <path d="M8 5.4v3.2M8 10.8h.01" />
+    </>
+  )
+}
+
+export function iconOf(kind: string): { bg: string; stroke: string; path: ReactNode } {
+  return (KIND_ICON as Record<string, { bg: string; stroke: string; path: ReactNode }>)[kind] ?? FALLBACK_ICON
+}
+
+/** 结果文案同理：认不出来就说"已记录"，不猜也崩不了 */
+export function labelOf(record: RecordEntry): { tag: string; note: string } {
+  // 超时的卡在审计里 result=rejected + authz=expired，单独标出与主动拒绝区分
+  if (record.authz === 'expired') return { tag: 'tag-gray', note: '超时未响应' }
+  return (RESULT_LABEL as Record<string, { tag: string; note: string }>)[record.result] ?? {
+    tag: 'tag-gray',
+    note: '已记录'
+  }
+}
+
+/**
  * 事后核对的三态。
  *
  * 只给"重新查过"和"查了对不上"上标签：unavailable 是"这类动作当场查不到"
@@ -199,10 +235,8 @@ export default function RecordsPage({ active }: { active: boolean }) {
         <div className="lwrap">
           {shown.length === 0 && <div className="empty">还没有记录。去对话里问一句试试。</div>}
           {shown.map((record) => {
-            const icon = KIND_ICON[record.kind]
-            // 超时的卡在审计里 result=rejected + authz=expired，单独标出与主动拒绝区分
-            const label =
-              record.authz === 'expired' ? { tag: 'tag-gray', note: '超时未响应' } : RESULT_LABEL[record.result]
+            const icon = iconOf(record.kind)
+            const label = labelOf(record)
             const hasDiff = Boolean(record.snapshot) && record.result !== 'rejected'
             return (
               <Fragment key={record.id}>
