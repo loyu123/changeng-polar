@@ -119,7 +119,23 @@ const remote = new RemoteService(
     },
     inflight,
     // 设备白名单落盘（只存 token 的哈希）
-    onPaired: () => remote.persistDevices()
+    onPaired: () => remote.persistDevices(),
+    /**
+     * 手机上的每一轮都存进主会话列表，标记来源。
+     *
+     * 走的是与桌面同一个 sessions.json，所以回电脑打开对话页就能接着看、接着聊。
+     * 标记 origin 是为了让用户一眼分清"这句是我在外面说的"——
+     * 和动作记录里的 origin: remote 是同一件事的两个面。
+     */
+    onSession: async (session) => {
+      await store.mutateSessions((current) => {
+        const list = [
+          { ...session, origin: 'remote' as const },
+          ...current.filter((s) => s.id !== session.id)
+        ].sort((a, b) => b.ts - a.ts)
+        return { list, result: list }
+      })
+    }
   },
   app.getPath('userData')
 )

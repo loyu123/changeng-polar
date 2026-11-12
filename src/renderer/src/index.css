@@ -2155,6 +2155,21 @@ select.input {
   color: #adada5;
   flex: 0 0 auto;
 }
+/* 会话来源标签：手机 / 悬浮球。
+   合并显示之后，"这句是在哪儿说的"只能靠这一枚小标签区分——
+   没有它，用户看到一段陌生上下文会以为是程序出错了。 */
+.item .origin-tag {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+  border-radius: 4px;
+  background: #EEF3F8;
+  color: #3F6E9C;
+  vertical-align: 1px;
+  flex: 0 0 auto;
+}
 .item.sel {
   background: #fff;
   border: 1px solid var(--line);

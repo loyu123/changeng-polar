@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AuthAnswer,
   AuthRequest,
@@ -283,6 +283,13 @@ interface Session {
   ts: number
   title: string
   messages: Msg[]
+  /**
+   * 这段对话从哪来的。缺省 = 主窗口。
+   *
+   * 进来的渠道有三个（主窗口、桌面悬浮球、手机），三边都不该"看不见"——
+   * 用户问过的话找不到，比界面不整齐难受得多。所以合并显示，用标签区分。
+   */
+  origin?: 'orb' | 'remote'
 }
 /** 旧版把会话塞在 localStorage（只留 20 条），首次启动搬到磁盘 */
 const LEGACY_KEY = 'polar-chat-sessions'
@@ -301,8 +308,41 @@ function readLegacySessions(): Session[] {
 /** 主进程只负责存取，消息结构在这里还原成渲染层类型 */
 function toSession(raw: ChatSession): Session {
   // 旧版本没存 ts：用会话时间补上，否则回看历史时每条都显示"现在"
-  const messages = (raw.messages as Msg[]).map((m) => (typeof m?.ts === 'number' ? m : { ...m, ts: raw.ts }))
-  return { id: raw.id, ts: raw.ts, title: raw.title, messages }
+  const messages = (raw.messages as Msg[]).map((m) => {
+    const withTs = typeof m?.ts === 'number' ? m : { ...m, ts: raw.ts }
+    /**
+     * 磁盘上的老消息字段不全，渲染层却直接读 `m.tools.length`、`m.evidence.length`。
+     *
+     * 真机踩到过：悬浮球的旧会话里 assistant 消息只有 evidence、**没有 tools**，
+     * 合并显示之后一渲染就抛 `Cannot read properties of undefined (reading 'length')`，
+     * 整个对话页白屏。盘上的数据是不可信形状——少了就补空数组，
+     * 而不是让"打开一条旧会话"这种只读操作把界面弄崩。
+     */
+    if (!Array.isArray(withTs.tools)) withTs.tools = []
+    if (!Array.isArray(withTs.evidence)) withTs.evidence = []
+    return withTs
+  })
+  return { id: raw.id, ts: raw.ts, title: raw.title, messages, ...(raw.origin ? { origin: raw.origin } : {}) }
+}
+
+/**
+ * 主窗口会话 + 悬浮球会话，合成一张列表。
+ *
+ * 三边（主窗口 / 悬浮球 / 手机）聊过的话都该在同一个「最近」里找得到——
+ * 分开存是内部实现，用户不该为此付出"我明明问过却找不到"的代价。
+ * 打上 origin 标签是为了让人能分清哪句是在哪儿说的，不是为了把它们藏起来。
+ *
+ * 去重按 id：悬浮球「移到主窗口」之后，sessions.json 和 orb-sessions.json
+ * 里可能是同一条，只留一份（优先留主窗口那份，它带着后续的上下文）。
+ */
+function mergeSessions(main: ChatSession[], orb: ChatSession[]): Session[] {
+  const out = new Map<string, Session>()
+  for (const raw of main) out.set(raw.id, toSession(raw))
+  for (const raw of orb) {
+    if (out.has(raw.id)) continue
+    out.set(raw.id, { ...toSession(raw), origin: raw.origin ?? 'orb' })
+  }
+  return [...out.values()].sort((a, b) => b.ts - a.ts)
 }
 
 /** 一条消息的时间：取消息自己的 ts，没有就退回当前时间 */
@@ -454,6 +494,21 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
     void window.butler.config.get().then((cfg) => setModelName(cfg.model ?? ''))
   }, [])
 
+  /**
+   * 重拉会话列表：主窗口 + 悬浮球，合并成一张。
+   *
+   * 三个地方会用到（首次挂载、悬浮球「移到主窗口」后、删完一条之后），
+   * 抽出来是为了不让哪一处忘了带上悬浮球那份——那样用户就会觉得
+   * "球里的对话有时候在、有时候不在"，比一直看不到更难查。
+   */
+  const reloadSessions = useCallback(async (): Promise<void> => {
+    const [main, orb] = await Promise.all([
+      window.butler.sessions.list(),
+      window.butler.orb.sessions.list().catch(() => [] as ChatSession[])
+    ])
+    setSessions(mergeSessions(main, orb))
+  }, [])
+
   // 会话从磁盘读；磁盘为空且本地还留着旧记录时，搬迁一次
   useEffect(() => {
     void (async () => {
@@ -463,11 +518,11 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
         for (const item of legacy) await window.butler.sessions.save(item)
         if (legacy.length > 0) {
           localStorage.removeItem(LEGACY_KEY)
-          list = await window.butler.sessions.list()
         }
       }
-      setSessions(list.map(toSession))
+      await reloadSessions()
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // 全局搜索或桌面悬浮窗「移到主窗口」：打开这条会话，滚到那条回答并闪一下
@@ -480,7 +535,7 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
       // 让这个 effect 再跑一遍，不记住「已经拉过」就会无限循环。
       if (refetchRef.current === focusChat.nonce) return
       refetchRef.current = focusChat.nonce
-      void window.butler.sessions.list().then((list) => setSessions(list.map(toSession)))
+      void reloadSessions()
       return
     }
     lastFocusRef.current = focusChat.nonce
@@ -514,10 +569,17 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, messages])
 
-  /** 删掉一条历史会话（磁盘 + 列表） */
+  /**
+   * 删掉一条历史会话（磁盘 + 列表）。
+   *
+   * 两边都删同一个 id：列表是合并过的，用户看到的这条可能来自主窗口也可能来自
+   * 悬浮球，而界面上并没有"它在哪个文件里"这个概念。哪边没有就是一次空操作。
+   * 只删一边的话会出现「点了删除、它还在」——合并显示之后这种情况更明显。
+   */
   const removeSession = async (id: string): Promise<void> => {
-    const list = await window.butler.sessions.delete(id)
-    setSessions(list.map(toSession))
+    await window.butler.sessions.delete(id)
+    await window.butler.orb.sessions.delete(id).catch(() => [])
+    await reloadSessions()
     if (activeSession === id) {
       setMessages([])
       setActiveSession(null)
@@ -827,7 +889,19 @@ export default function ChatPage({ prefill, info, onOpenSettings, focusChat }: P
         recent.map((s) => (
           <div key={s.id} className={`item item-act${activeSession === s.id ? ' sel' : ''}`}>
             <button className="item-main" onClick={() => openSession(s)} title={s.title}>
-              <span className="t">{s.title}</span>
+              <span className="t">
+                {s.origin === 'remote' && (
+                  <span className="origin-tag" title="这段对话是在手机上说的">
+                    手机
+                  </span>
+                )}
+                {s.origin === 'orb' && (
+                  <span className="origin-tag" title="这段对话是在桌面悬浮球里说的">
+                    悬浮球
+                  </span>
+                )}
+                {s.title}
+              </span>
               <span className="tm">{dayLabel(s.ts)}</span>
             </button>
             <button className="item-del" title="删除这条会话" onClick={() => void removeSession(s.id)}>

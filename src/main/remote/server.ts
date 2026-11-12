@@ -42,6 +42,16 @@ export interface RemoteDeps {
   inflight: Map<string, AbortController>
   /** 配对成功后通知调用方把设备白名单落盘 */
   onPaired?: () => void | Promise<void>
+  /**
+   * 一轮结束后落一条会话，标记来源为手机。
+   *
+   * 不这么做的话手机就是"一问一答、刷新即忘"：用户在外面说过的话，
+   * 回到电脑上完全看不到。而远程这个场景恰恰是"我不在现场"——
+   * 事后回看比现场更重要。
+   *
+   * 落盘失败不影响这一轮的结果：回答已经送到手机上了，不能因为存历史失败就报错。
+   */
+  onSession?: (session: { id: string; ts: number; title: string; messages: unknown[] }) => void | Promise<void>
 }
 
 interface JsonBody {
@@ -368,6 +378,7 @@ export class RemoteServer {
       })
       .then((result) => {
         emit({ type: 'done', result })
+        this.saveSession(text, result)
       })
       .catch((err) => {
         emit({ type: 'error', message: err instanceof Error ? err.message : String(err) })
@@ -377,5 +388,38 @@ export class RemoteServer {
         this.deps.auth.settleRequest(requestId, 'deny')
         this.deps.inflight.delete(requestId)
       })
+  }
+
+  /**
+   * 把这一轮存成一条会话，好让电脑的对话页能回看。
+   *
+   * 标题取用户那句话的前 40 字：手机发的话通常很短，不需要额外摘要。
+   * 存失败只忽略——回答已经送到手机上了，"存历史失败"不该让用户看到报错。
+   *
+   * **字段名必须和渲染层的 Msg 一致（`text` 而不是 `content`）**：真机踩到过，
+   * 按 ChatMessage 的写法存成 `{role, content}`，对话页读 `m.text` 全是空——
+   * 会话在列表里，点进去却是一片空白，比"没有这条会话"更让人困惑。
+   * 这里存的是**会话**（给人回看的历史），不是发给模型的请求。
+   */
+  private saveSession(text: string, result: unknown): void {
+    if (!this.deps.onSession) return
+    try {
+      const answer = (result as { text?: string } | null)?.text ?? ''
+      const now = Date.now()
+      const messages: unknown[] = [
+        { id: randomUUID(), role: 'user', text, ts: now, tools: [], evidence: [] }
+      ]
+      if (answer) {
+        messages.push({ id: randomUUID(), role: 'assistant', text: answer, ts: now, tools: [], evidence: [] })
+      }
+      void this.deps.onSession({
+        id: randomUUID(),
+        ts: now,
+        title: text.slice(0, 40) || '（手机上的一轮对话）',
+        messages
+      })
+    } catch {
+      /* 存历史失败不影响这一轮 */
+    }
   }
 }
