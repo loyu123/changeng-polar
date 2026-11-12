@@ -298,7 +298,7 @@ src/
       budget.ts            请求前的上下文预算：system 不裁、成对保留 tool_calls、单条截断
       llm.ts               OpenAI 兼容客户端（流式 / 非流式 / SSE 兼容）
       prompt.ts            系统提示词：H1–H4 的行为化表述；能力段由注册表生成
-      tools.ts             23 个工具（见下「边界」一节的完整清单与约束）
+      tools.ts             27 个工具（见下「边界」一节的完整清单与约束）
       tool-types.ts        工具定义、ToolPlan、ToolResult 的类型
     ipc/                   IPC 按领域拆：app / chat / config / work / orb
     node/
@@ -354,15 +354,15 @@ tests/                     单测（vitest，不连网、不读注册表）
 
 ## 边界（代码层，不靠模型自觉）
 
-**主进程注册 23 个工具，按效果分档：**
+**主进程注册 27 个工具，按效果分档：**
 
 | 档位 | 工具 | 闸门行为 |
 |---|---|---|
-| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`github_search`、`list_memory`、`check_uninstall_state` | 自动放行 + 留痕 |
+| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`read_email`、`read_file`、`github_search`、`list_memory`、`check_uninstall_state`、`screen_capture` | 自动放行 + 留痕（`screen_capture` 标为读取私密内容）|
 | `ui`（只打开页面 / 窗口） | `open_settings_page`、`launch_app`、`open_folder`、`open_file` | 自动放行 + 留痕 |
 | `write`（本地数据） | `write_document`、`github_upload`、`delegate_to_agent`、`run_project`、`save_memory`、`forget_memory` | 先备份，备份失败就不执行；`write_document` / `github_upload` / `delegate_to_agent` / `run_project` 一律要过卡（`requiresConfirmation`） |
 | `install`（改动机器） | `install_app` | 必须过卡；**全表唯一允许「始终允许」的档位** |
-| `destroy`（不可撤回） | `delete_to_recycle`、`uninstall_app` | 必须逐次过卡，`allowAlways` 固定 `false` |
+| `destroy`（不可撤回） | `delete_to_recycle`、`uninstall_app`、`click_screen`、`type_text`、`press_keys` | 必须逐次过卡，`allowAlways` 固定 `false`；三个输入类工具还要求目标进程在白名单里 |
 
 **任何 `write` / `destroy` / `install` 动作成功之后，闸门会重新查一遍机器，报的是事实而不是回执。** 结论跟着工具结果一起回去（`verify: { state, fact }`），同时进审计（`verified` / `verifyFact`）：
 

@@ -230,7 +230,7 @@ src/
       budget.ts            pre-request context budget: system uncut, tool_calls kept in pairs, per-item truncation
       llm.ts               OpenAI-compatible client (streaming / non-streaming / SSE compatible)
       prompt.ts            system prompt: behavioral phrasing of H1–H4; the capability section is generated from the registry
-      tools.ts             23 tools (full list and per-tool constraints under "Boundaries")
+      tools.ts             27 tools (full list and per-tool constraints under "Boundaries")
       tool-types.ts        tool definition, ToolPlan, ToolResult types
     ipc/                   IPC split by domain: app / chat / config / work / orb
     node/
@@ -286,15 +286,15 @@ tests/                     unit tests (vitest, no network, no registry access)
 
 ## Boundaries (enforced in code, not left to the model's good intentions)
 
-**The main process registers 23 tools, tiered by effect:**
+**The main process registers 27 tools, tiered by effect:**
 
 | Tier | Tools | Gate behavior |
 |---|---|---|
-| `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `github_search`, `list_memory`, `check_uninstall_state` | Auto-pass + audit trail |
+| `read` (read-only) | `list_installed_apps`, `list_startup_items`, `web_search`, `web_fetch`, `list_sandbox_files`, `read_email`, `read_file`, `github_search`, `list_memory`, `check_uninstall_state`, `screen_capture` | Auto-pass + audit trail (`screen_capture` is marked as reading private data) |
 | `ui` (opens a page / window only) | `open_settings_page`, `launch_app`, `open_folder`, `open_file` | Auto-pass + audit trail |
 | `write` (local data) | `write_document`, `github_upload`, `delegate_to_agent`, `run_project`, `save_memory`, `forget_memory` | Back up first; if the backup fails, nothing runs. `write_document` / `github_upload` / `delegate_to_agent` / `run_project` always raise a card (`requiresConfirmation`) |
 | `install` (changes the machine) | `install_app` | Card required; **the only tier allowed "always allow"** |
-| `destroy` (irreversible) | `delete_to_recycle`, `uninstall_app` | Card required every time; `allowAlways` is fixed to `false` |
+| `destroy` (irreversible) | `delete_to_recycle`, `uninstall_app`, `click_screen`, `type_text`, `press_keys` | Card required every time; `allowAlways` is fixed to `false`. The three input tools also require the target to be whitelisted by process name |
 
 **After any `write` / `destroy` / `install` action succeeds, the gate re-reads the machine and reports a fact, not a receipt.** The verdict travels with the tool result as `verify: { state, fact }` and into the audit log (`verified` / `verifyFact`):
 

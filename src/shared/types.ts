@@ -8,7 +8,14 @@
  */
 export type ToolEffect = 'read' | 'ui' | 'write' | 'destroy' | 'install'
 
-export type AuthzDecision = 'auto' | 'user_once' | 'user_always' | 'denied' | 'expired'
+export type AuthzDecision =
+  | 'auto'
+  | 'user_once'
+  | 'user_always'
+  /** 落在一次时间窗授权内：用户批准过这一段，本次没有再弹卡（模拟键鼠专用） */
+  | 'grant'
+  | 'denied'
+  | 'expired'
 
 /** 用户在授权卡上的选择；expired 只由 60 秒超时产生，用户点不出来 */
 export type AuthAnswer = 'once' | 'always' | 'deny' | 'expired'
@@ -121,6 +128,14 @@ export interface ButlerConfig extends ModelConfig {
      * 都能连到这个端口。仍然需要配对码换 token 才能用，但这个口子不该长期开着。
      */
     lanAccess?: boolean
+    /**
+     * 允许接受模拟键鼠操作的程序（进程名，不带 .exe）。
+     *
+     * **默认空 = 一个都不允许**。这个能力一旦开放就是"能点屏幕上的任何东西"，
+     * 用户必须亲手把要操作的程序加进来，而不是给一个全局开关。
+     * 判断依据是进程名不是窗口标题——标题可以被网页改写（恶意页面能把自己叫成"微信"）。
+     */
+    inputAllow?: string[]
   }
   /**
    * 用户额外打开的编排项目目录（编排页「打开项目目录…」）。
@@ -505,6 +520,8 @@ export interface AuthRequest {
   requestedAt: string
   /** 是否允许"始终允许"（销毁类固定 false；install_app 允许，key 含包名+版本） */
   allowAlways: boolean
+  /** 当前屏幕（模拟键鼠类工具才有）：批准前必须让用户看见要点的是什么 */
+  screenshot?: string
 }
 
 /**

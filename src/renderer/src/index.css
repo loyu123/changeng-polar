@@ -1345,6 +1345,28 @@ textarea {
   color: var(--ink);
   word-break: break-all;
 }
+/* 授权卡上的屏幕截图：模拟键鼠专用。
+   卡片可能因此变高，所以限高 + 可滚动——按钮必须始终能被看到，
+   这和手机上"允许被输入栏盖住"是同一类问题。 */
+.authcard-shot {
+  margin: 8px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.authcard-shot b {
+  font-size: 12px;
+  color: var(--ink4);
+  font-weight: 500;
+}
+.authcard-shot img {
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #000;
+}
 .authcard-kv {
   display: flex;
   gap: 8px;

@@ -107,6 +107,19 @@ function AuthCard({ request, answer, onAnswer }: { request: AuthRequest; answer?
         <b>影响</b>
         <span>{request.impact}</span>
       </div>
+      {request.screenshot && (
+        /**
+         * 屏幕截图：模拟键鼠的卡必须带。
+         *
+         * 没有图，用户批准的是「点击 (1240, 460)」这种他自己看不见的东西——
+         * 那里可能是保存，也可能是格式化。图是这次判断的唯一依据，
+         * 所以放在影响说明的**下面、按钮的上方**：先看清，再点。
+         */
+        <div className="authcard-shot">
+          <b>当前屏幕</b>
+          <img src={request.screenshot} alt="当前屏幕（点击位置所在的那块）" />
+        </div>
+      )}
       {request.undoHint && (
         <div className="authcard-kv">
           <b>能撤回</b>

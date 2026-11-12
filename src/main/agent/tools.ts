@@ -19,6 +19,7 @@ import {
 import { launchUninstaller, planUninstall } from '../node/uninstall'
 import { resolveLaunch } from '../node/launch'
 import { appIdentity, findOpenWindow, type LaunchProbe } from '../node/running'
+import { windowAt } from '../node/screen'
 import { planFolder } from '../node/folder'
 import {
   DEFAULT_MAX_CHARS,
@@ -180,6 +181,27 @@ export interface ToolDeps {
    * 在解析阶段定（会执行的后缀一律拒绝），这里不再重复判断。
    */
   openFile?: (filePath: string) => Promise<string>
+  /**
+   * 屏幕截图（给模拟键鼠的授权卡用）。主进程注入 Electron 的 desktopCapturer。
+   * 没注入 = 当前环境截不了图（评测/离线），模拟键鼠类工具会如实拒绝执行——
+   * 看不到屏幕就不该批准点击，也不该在没有图的情况下让用户盲签。
+   */
+  captureScreen?: (x?: number, y?: number) => Promise<{ dataUrl: string; width: number; height: number; originX: number; originY: number; scale: number }>
+  /**
+   * 模拟键鼠的入口。主进程注入真实实现；没注入 = 不支持。
+   *
+   * 三个动作分开注入而不是一个大函数：白名单检查要在调用**之前**做，
+   * 而且每个动作的授权语义不同（点击看坐标、输入看文本、按键看组合键）。
+   */
+  desktopInput?: {
+    /** 列可见窗口（白名单检查用） */
+    listWindows: () => Promise<Array<{ title: string; process: string; x: number; y: number; width: number; height: number }>>
+    click: (x: number, y: number, button: 'left' | 'right') => Promise<{ ok: boolean; detail: string }>
+    type: (text: string) => Promise<{ ok: boolean; detail: string }>
+    press: (combo: string) => Promise<{ ok: boolean; detail: string }>
+    /** 允许操作哪些进程（白名单）；空数组 = 一个都不允许 */
+    allowedProcesses: () => string[]
+  }
   /** 卸载前的快照落盘（主进程注入 Store；评测脚本可不注入，只跳过存档） */
   saveSnapshot?: (snapshot: AppSnapshot) => Promise<void>
   /**
@@ -2442,9 +2464,265 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     }
   ]
 
+
+  /**
+   * ---------------- 屏幕与模拟键鼠 ----------------
+   *
+   * 这组工具的能力是"无粒度"的：模拟鼠标一旦能动，就能点屏幕上的任何东西。
+   * 所以三道闸一起上：
+   *  1. screen_capture 只读，但读的是整块屏幕（可能看到密码/私信），算私密读取；
+   *  2. 三个 input 工具一律 destroy 档、必须过卡、永不"始终允许"；
+   *  3. 卡上带当前屏幕，并且**先算出坐标会落到哪个窗口**——不在白名单里直接拒绝，
+   *     不靠模型自觉。
+   *
+   * 时间窗授权（60 秒 / 10 个动作）由闸门的 hasActiveGrant 处理，
+   * 这里只负责"每个动作都如实回报做了什么"。
+   */
+
+  /** 屏幕截图（只读但涉及私密内容：整块屏幕什么都可能有） */
+  const screenCaptureTool: ToolDef = {
+    name: 'screen_capture',
+    label: '看一眼屏幕（只读）',
+    description:
+      '截取当前屏幕。**只读**，不改动任何东西。用于：用户问"屏幕上现在是什么""那个报错写了什么"，或者你需要先看清界面再决定下一步。截的是整块屏幕，可能包含私密内容，所以会被记进操作记录。',
+    effect: 'read',
+    readsPrivateData: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', description: '为什么要看屏幕，一句话' }
+      }
+    },
+    describeTarget: (args) => ({
+      title: '截取当前屏幕',
+      target: String(args?.reason ?? '（未说明原因）'),
+      impact: '只读取当前屏幕画面，不改动任何东西'
+    }),
+    run: async (args) => {
+      if (!deps.captureScreen) {
+        return { ok: false, summary: '当前环境不支持截屏（评测或离线模式）。' }
+      }
+      try {
+        const shot = await deps.captureScreen()
+        return {
+          ok: true,
+          summary: '已截取屏幕（' + shot.width + '×' + shot.height + '）。画面已返回给调用方。',
+          data: { width: shot.width, height: shot.height },
+          evidence: [ev({ type: 'local', title: '当前屏幕截图', detail: String(args?.reason ?? '') })]
+        }
+      } catch (err) {
+        return { ok: false, summary: '截屏失败：' + (err instanceof Error ? err.message : String(err)) }
+      }
+    }
+  }
+
+  /**
+   * 白名单检查：这个坐标会落到哪个窗口上，那个进程允不允许操作。
+   *
+   * 抽成函数是因为三个 input 工具都要用，而且**必须在真正动鼠标之前**用——
+   * "先点了再检查"等于没检查。
+   */
+  const checkTarget = async (
+    x?: number,
+    y?: number
+  ): Promise<{ ok: true; note: string } | { ok: false; reason: string }> => {
+    if (!deps.desktopInput) return { ok: false, reason: '当前环境不支持模拟键鼠（评测或离线模式）' }
+    const allowed = deps.desktopInput.allowedProcesses()
+    if (allowed.length === 0) {
+      return {
+        ok: false,
+        reason:
+          '还没有允许任何程序接受模拟操作。请到「设置 → 远程访问」里把要操作的程序加进白名单。'
+      }
+    }
+    if (typeof x !== 'number' || typeof y !== 'number') return { ok: true, note: '' }
+    const wins = await deps.desktopInput.listWindows()
+    const hit = windowAt(wins, x, y)
+    if (!hit) return { ok: false, reason: '坐标 (' + x + ', ' + y + ') 上没有可操作的窗口' }
+    const proc = hit.process.toLowerCase()
+    if (!allowed.some((p) => p.toLowerCase() === proc)) {
+      return {
+        ok: false,
+        reason:
+          '坐标 (' + x + ', ' + y + ') 落在「' + (hit.title || hit.process) + '」(' + hit.process +
+          ') 上，它不在允许名单里。允许的有：' + allowed.join('、')
+      }
+    }
+    return { ok: true, note: '目标窗口：' + (hit.title || hit.process) + '（' + hit.process + '）' }
+  }
+
+  /** 模拟鼠标点击（需授权，卡上带截图） */
+  const clickTool: ToolDef = {
+    name: 'click_screen',
+    label: '点击屏幕（需授权）',
+    description:
+      '在屏幕的指定坐标上点击鼠标。**这是改动机器的操作，必须过授权卡**，且坐标落点必须在用户允许的程序窗口内。用法：先用 screen_capture 看清界面，确认坐标，再调用它；reason 要写清"点的是哪个按钮、为什么"。用户没有明确同意前不要调用。',
+    effect: 'destroy',
+    requiresConfirmation: true,
+    allowAlways: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: '屏幕 X 坐标（像素，与 screen_capture 同一套坐标）' },
+        y: { type: 'number', description: '屏幕 Y 坐标' },
+        button: { type: 'string', enum: ['left', 'right'], description: '鼠标键，默认左键' },
+        reason: {
+          type: 'string',
+          description: '点的是哪个按钮、为什么，一句话。这句话会显示在授权卡上'
+        }
+      },
+      required: ['x', 'y', 'reason']
+    },
+    plan: async (args) => {
+      const x = Math.round(Number(args?.x))
+      const y = Math.round(Number(args?.y))
+      const check = await checkTarget(x, y)
+      if (!check.ok) return { ok: false, reason: check.reason }
+      const shot = deps.captureScreen ? await deps.captureScreen(x, y).catch(() => null) : null
+      return {
+        ok: true,
+        target: {
+          title: '点击屏幕 (' + x + ', ' + y + ')',
+          target: x + ', ' + y + ' · ' + check.note,
+          impact: String(args?.reason ?? '（未说明原因）') + '。点击会立刻生效，无法自动撤销。',
+          ...(shot ? { screenshot: shot.dataUrl } : {})
+        },
+        execute: async () => {
+          const r = await deps.desktopInput!.click(x, y, args?.button === 'right' ? 'right' : 'left')
+          return {
+            ok: r.ok,
+            summary: r.ok ? r.detail + '（' + check.note + '）' : '点击失败：' + r.detail,
+            evidence: [ev({ type: 'local', title: r.detail, detail: String(args?.reason ?? '') })]
+          }
+        }
+      }
+    },
+    /**
+     * 事后核对：**做不到**，如实说。
+     *
+     * 模拟点击是不可逆、无痕的动作——没有"事后查一下"这回事。
+     * 能确认的只有"这个动作被执行了"，不能确认"它作用在了预期的地方"。
+     * 所以返回 unavailable 并把这句话写出来，而不是塞进 SELF_VERIFIED 名单
+     * 假装有结论：核对表上有东西、但其实什么都没查，比空着更糟。
+     */
+    verify: async () => ({ state: 'unavailable' as const, fact: '模拟点击是一次性动作，事后无法回查——只能确认它执行了，不能确认点中的是不是预期的按钮' }),
+    run: async () => ({ ok: false, summary: '这个工具必须走授权流程' })
+  }
+
+  /** 输入文字（需授权） */
+  const typeTool: ToolDef = {
+    name: 'type_text',
+    label: '输入文字（需授权）',
+    description:
+      '把一段文字输入到**当前前台窗口**里（经剪贴板粘贴，原剪贴板内容会恢复）。**改动机器的操作，必须过授权卡**。注意：它输入到当前前台窗口，所以调用前通常要先用 click_screen 把焦点点到目标输入框，否则字会敲到别处。',
+    effect: 'destroy',
+    requiresConfirmation: true,
+    allowAlways: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '要输入的文字' },
+        reason: { type: 'string', description: '输入这段文字是为了做什么，一句话' }
+      },
+      required: ['text', 'reason']
+    },
+    plan: async (args) => {
+      const text = String(args?.text ?? '')
+      if (!text) return { ok: false, reason: '没有要输入的内容' }
+      const check = await checkTarget()
+      if (!check.ok) return { ok: false, reason: check.reason }
+      const shot = deps.captureScreen ? await deps.captureScreen().catch(() => null) : null
+      return {
+        ok: true,
+        target: {
+          title: '输入 ' + text.length + ' 个字符',
+          target: text.slice(0, 120),
+          impact:
+            String(args?.reason ?? '（未说明原因）') +
+            '。会临时占用剪贴板（粘贴后恢复），输入到当前前台窗口。',
+          ...(shot ? { screenshot: shot.dataUrl } : {})
+        },
+        execute: async () => {
+          const r = await deps.desktopInput!.type(text)
+          return {
+            ok: r.ok,
+            summary: r.ok ? r.detail : '输入失败：' + r.detail,
+            evidence: [ev({ type: 'local', title: r.detail, detail: String(args?.reason ?? '') })]
+          }
+        }
+      }
+    },
+    /**
+     * 事后核对：**做不到**，如实说。
+     *
+     * 模拟输入是不可逆、无痕的动作——没有"事后查一下"这回事。
+     * 能确认的只有"这个动作被执行了"，不能确认"它作用在了预期的地方"。
+     * 所以返回 unavailable 并把这句话写出来，而不是塞进 SELF_VERIFIED 名单
+     * 假装有结论：核对表上有东西、但其实什么都没查，比空着更糟。
+     */
+    verify: async () => ({ state: 'unavailable' as const, fact: '输入的文字粘贴进前台窗口后无法回查——只能确认粘贴动作执行了，不能确认落到了哪个输入框' }),
+    run: async () => ({ ok: false, summary: '这个工具必须走授权流程' })
+  }
+
+  /** 按键（需授权） */
+  const pressTool: ToolDef = {
+    name: 'press_keys',
+    label: '按键（需授权）',
+    description:
+      '按一个组合键。**改动机器的操作，必须过授权卡**。只接受白名单里的写法（Ctrl+S、Enter、Alt+Tab、Esc 等），不认识的组合直接拒绝——不把任意字符串拼进按键序列，敲错一个字符可能是完全另一个键。',
+    effect: 'destroy',
+    requiresConfirmation: true,
+    allowAlways: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        combo: { type: 'string', description: '组合键，例如 Ctrl+S、Enter、Alt+Tab' },
+        reason: { type: 'string', description: '为什么要按这个键，一句话' }
+      },
+      required: ['combo', 'reason']
+    },
+    plan: async (args) => {
+      const combo = String(args?.combo ?? '').trim()
+      const check = await checkTarget()
+      if (!check.ok) return { ok: false, reason: check.reason }
+      const shot = deps.captureScreen ? await deps.captureScreen().catch(() => null) : null
+      return {
+        ok: true,
+        target: {
+          title: '按键 ' + (combo || '(空)'),
+          target: combo,
+          impact: String(args?.reason ?? '（未说明原因）') + '。按键会作用在当前前台窗口上。',
+          ...(shot ? { screenshot: shot.dataUrl } : {})
+        },
+        execute: async () => {
+          const r = await deps.desktopInput!.press(combo)
+          return {
+            ok: r.ok,
+            summary: r.ok ? r.detail : '按键失败：' + r.detail,
+            evidence: [ev({ type: 'local', title: r.detail, detail: String(args?.reason ?? '') })]
+          }
+        }
+      }
+    },
+    /**
+     * 事后核对：**做不到**，如实说。
+     *
+     * 模拟按键是不可逆、无痕的动作——没有"事后查一下"这回事。
+     * 能确认的只有"这个动作被执行了"，不能确认"它作用在了预期的地方"。
+     * 所以返回 unavailable 并把这句话写出来，而不是塞进 SELF_VERIFIED 名单
+     * 假装有结论：核对表上有东西、但其实什么都没查，比空着更糟。
+     */
+    verify: async () => ({ state: 'unavailable' as const, fact: '按键是一次性动作，事后无法回查——只能确认它执行了，不能确认作用到了哪个窗口' }),
+    run: async () => ({ ok: false, summary: '这个工具必须走授权流程' })
+  }
+
   return [
     listApps,
     listStartup,
+    screenCaptureTool,
+    clickTool,
+    typeTool,
+    pressTool,
     webSearch,
     webFetch,
     openSettings,

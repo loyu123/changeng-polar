@@ -76,6 +76,14 @@ export const MOBILE_PAGE = `<!doctype html>
   #authCard .target { font-size: 13px; word-break: break-all; background: var(--bg); padding: 8px; border-radius: 8px; margin: 8px 0; max-height: 22vh; overflow-y: auto; }
   #authCard .btns { display: flex; gap: 10px; }
   #authCard .btns button { flex: 1; padding: 18px; font-size: 17px; min-height: 56px; }
+  /* 截图：卡片可能因此变高，所以图本身也限高——
+     按钮必须始终能被看到，这和"允许被输入栏盖住"是同一类问题。 */
+  #authShotWrap { margin: 4px 0 12px; }
+  #authShotWrap .shotlabel { font-size: 12px; color: var(--sub); margin-bottom: 6px; }
+  #authShotWrap img {
+    width: 100%; max-height: 34vh; object-fit: contain;
+    border-radius: 8px; border: 1px solid var(--line); background: #000;
+  }
   .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--line); }
 </style>
 </head>
@@ -110,6 +118,11 @@ export const MOBILE_PAGE = `<!doctype html>
       <div style="font-weight:600" id="authTitle"></div>
       <div class="target" id="authTarget"></div>
       <div class="impact" id="authImpact"></div>
+      <!-- 屏幕截图：模拟键鼠的卡才有。手机上看不清就无法判断它要点什么 -->
+      <div id="authShotWrap" class="hide">
+        <div class="shotlabel">当前屏幕</div>
+        <img id="authShot" alt="当前屏幕" />
+      </div>
       <div class="btns">
         <button id="denyBtn" class="danger">拒绝</button>
         <button id="allowBtn" class="ok">允许</button>
@@ -262,6 +275,20 @@ export const MOBILE_PAGE = `<!doctype html>
     $('authTitle').textContent = req.title || '需要你确认'
     $('authTarget').textContent = req.target || ''
     $('authImpact').textContent = req.impact || ''
+    /**
+     * 截图：模拟键鼠的卡才有。
+     *
+     * 在手机上批准「点击 (1240, 460)」这种动作，如果没有画面，
+     * 用户批准的是他自己看不见的东西——那里可能是保存，也可能是格式化。
+     * 所以图必须显示出来，而且是这次判断的主要依据。
+     */
+    if (req.screenshot) {
+      $('authShot').src = req.screenshot
+      $('authShotWrap').classList.remove('hide')
+    } else {
+      $('authShot').removeAttribute('src')
+      $('authShotWrap').classList.add('hide')
+    }
     /**
      * 显示卡的时候把输入栏收起来。
      *

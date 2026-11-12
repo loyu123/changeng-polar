@@ -128,6 +128,8 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const [remoteBusy, setRemoteBusy] = useState(false)
   /** 局域网测试模式：开启后监听 0.0.0.0，手机同一 WiFi 才能访问 */
   const [lanAccess, setLanAccess] = useState(false)
+  /** 模拟键鼠白名单的输入草稿（保存才写配置，避免打一个字就落盘） */
+  const [inputAllowDraft, setInputAllowDraft] = useState('')
   const [importing, setImporting] = useState(false)
   /** 操作记录条数（权限与安全里的「查看记录 N」） */
   const [recordCount, setRecordCount] = useState(0)
@@ -167,6 +169,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
       setRemoteState(s)
       // 界面上的开关要跟着实际监听模式走，不能自己猜
       setLanAccess(s.lanAccess === true)
+    })
+    // 白名单草稿要从配置回填：不回填的话用户以为列表空了，其实是没加载
+    void window.butler.config.get().then((c) => {
+      setInputAllowDraft((c.remote?.inputAllow ?? []).join(', '))
     })
     void window.butler.records.list(500).then((list) => setRecordCount(list.length))
     void window.butler.tools.list().then((list) =>
@@ -1608,6 +1614,58 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 >
                   {lanAccess ? '改回只监听本机' : '开启局域网访问'}
                 </button>
+              </div>
+            </div>
+          </div>
+          <div className="cardbox">
+            <div className="ch">模拟键盘鼠标（需授权）</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              <div className="hint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
+                让长庚能点按钮、输入文字。**每次使用前都要你在手机或桌面上批准**，
+                一次批准管 60 秒 / 最多 10 个动作；授权卡上会带当前屏幕的截图，
+                并算出点击位置会落到哪个窗口。
+                <br />
+                <b>下面这几个程序之外的地方，代码层直接拒绝</b>
+                ——不靠模型自觉。留空 = 一个都不允许。
+              </div>
+              <div className="setrow" style={{ paddingLeft: 0, alignItems: 'flex-start' }}>
+                <div className="rl" style={{ flex: 1 }}>
+                  <b>允许操作的程序（进程名）</b>
+                  <span>不带 .exe，逗号分隔。例如：chrome, notepad, Code</span>
+                </div>
+              </div>
+              <div className="row" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <input
+                  className="input"
+                  style={{ flex: 1 }}
+                  value={inputAllowDraft}
+                  placeholder="chrome, notepad"
+                  onChange={(e) => setInputAllowDraft(e.target.value)}
+                />
+                <button
+                  className="btn btn-ghost"
+                  disabled={remoteBusy}
+                  onClick={async () => {
+                    setRemoteBusy(true)
+                    try {
+                      const list = inputAllowDraft
+                        .split(/[,，\s]+/)
+                        .map((x) => x.trim().replace(/\.exe$/i, ''))
+                        .filter(Boolean)
+                      await window.butler.config.save({ remote: { ...(config?.remote ?? { enabled: false }), inputAllow: list } })
+                      setConfig(await window.butler.config.get())
+                      setStatus({ ok: true, text: `已保存允许名单：${list.length ? list.join('、') : '（空，等于一个都不允许）'}` })
+                    } finally {
+                      setRemoteBusy(false)
+                    }
+                  }}
+                >
+                  保存
+                </button>
+              </div>
+              <div className="hint" style={{ marginTop: 10 }}>
+                判断用的是<b>进程名</b>而不是窗口标题：标题可以被网页改写
+                （恶意页面能把自己叫成「微信」），进程名是操作系统给的、改不了。
               </div>
             </div>
           </div>

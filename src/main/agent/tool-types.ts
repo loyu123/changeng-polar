@@ -65,6 +65,14 @@ export interface ToolTarget {
   impact: string
   undoHint?: string
   reinstallHint?: string
+  /**
+   * 授权卡上要显示的当前屏幕（data URI）。
+   *
+   * 只有模拟键鼠类工具会填：批准「点击 (1240, 460)」这种动作，用户必须看得见
+   * 那个位置现在是什么，否则是盲签。截图在 plan 里生成，
+   * 与卡片上写的目标出自同一次解析——和 K7 那条不变量一致。
+   */
+  screenshot?: string
 }
 
 /**

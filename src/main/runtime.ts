@@ -24,6 +24,10 @@ import { focusProcessWindow, probeLaunch } from './node/running'
 import type { Store } from './node/store'
 import type { InstallJobs } from './node/install-jobs'
 import { logError } from './log'
+import { captureAt } from './capture'
+import { clickAt, pressKeys, typeText } from './node/input'
+import { listWindows } from './node/screen'
+import { InputGrant } from './node/input-grant'
 
 /**
  * 一轮对话的运行环境：工具装配 + 授权闸门的实现 + 系统提示词。
@@ -211,7 +215,31 @@ export function filterTools(
 }
 
 export class TurnRuntime {
+  /**
+   * 模拟键鼠的时间窗授权。
+   *
+   * 放在 runtime 上而不是某个工具里：一次批准要覆盖"接下来的若干个动作"，
+   * 而每个动作是独立的一次工具调用，只有这里能跨调用记住状态。
+   */
+  readonly inputGrant = new InputGrant()
+
   constructor(private readonly opts: TurnRuntimeOptions) {}
+
+  /**
+   * 模拟键鼠的白名单（进程名，小写）。
+   *
+   * 默认空 = 一个都不允许：这个能力一旦开放就是"能点屏幕上的任何东西"，
+   * 用户必须亲手把要操作的程序加进来。每次读配置而不是缓存，
+   * 用户在设置里改完立刻生效——缓存会让"我明明加了白名单"变成一句空话。
+   */
+  private inputAllowlist: string[] = []
+
+  /** 每轮开始前刷新白名单（从配置读） */
+  private refreshInputAllowlist(config: ButlerConfig): void {
+    this.inputAllowlist = (config.remote?.inputAllow ?? [])
+      .map((p) => String(p ?? '').trim().toLowerCase())
+      .filter(Boolean)
+  }
 
   /**
    * 构建本轮的工具集：按能力开关与只读模式过滤，依赖由 Store 注入。
@@ -283,7 +311,28 @@ export class TurnRuntime {
        * 就这两个根，不加第三个。上传带 `repo` 权限，等于能往用户所有仓库写东西——
        * 允许"传任意路径"就是允许模型把桌面上的任何文件推到公开仓库去。
        */
-      uploadRoots: [SANDBOX_ROOT, path.join(app.getPath('userData'), 'orchestrator')]
+      uploadRoots: [SANDBOX_ROOT, path.join(app.getPath('userData'), 'orchestrator')],
+      /**
+       * 屏幕截图：模拟键鼠的授权卡上必须带画面。
+       *
+       * 没有图，用户批准的是「点击 (1240, 460)」这种他自己看不见的东西——
+       * 那里可能是保存，也可能是格式化。签得再勤也等于没签。
+       */
+      captureScreen: (x, y) => captureAt(x, y),
+      /**
+       * 模拟键鼠的真实实现。
+       *
+       * 白名单从配置读（设置里能改），空数组 = 一个都不允许。
+       * 默认空是有意的：这个能力一旦开放就是"能点屏幕上的任何东西"，
+       * 用户必须亲手把要操作的程序加进来。
+       */
+      desktopInput: {
+        listWindows: () => listWindows(),
+        click: (x, y, button) => clickAt(x, y, button),
+        type: (text) => typeText(text),
+        press: (combo) => pressKeys(combo),
+        allowedProcesses: () => this.inputAllowlist
+      }
     })
     return filterTools(all, { toggles, readOnly })
   }
@@ -299,7 +348,27 @@ export class TurnRuntime {
       requestAuth: (request) => {
         // 定时任务无人在场：写操作当场拒绝（审计照常留痕），绝不默默放行
         if (!uiAuth) return Promise.resolve<AuthAnswer>('deny')
-        return broker.wait(request, requestId, emit)
+        return broker.wait(request, requestId, emit).then((answer) => {
+          /**
+           * 模拟键鼠类的卡被批准 → 开一个 60 秒 / 10 个动作的窗口。
+           *
+           * 为什么不是"逐次都问"：填一个表单要批十几次，用户最后会学会
+           * 不看内容直接点允许——那比不批更糟。窗口让"批一次"变得有意义。
+           * 窗口过期或额度用完，下一个动作会重新弹卡。
+           */
+          if (answer === 'once' || answer === 'always') this.inputGrant.open(request.title)
+          return answer
+        })
+      },
+      /**
+       * 时间窗内免卡：只对模拟键鼠三个工具生效。
+       *
+       * 免的是"再问一次"，不是跳过备份、核对和审计——闸门那边走的是
+       * 同一个 backupThenRun，authz 记成 `grant`，事后查得出这是窗口内的动作。
+       */
+      hasActiveGrant: (toolName) => {
+        if (!['click_screen', 'type_text', 'press_keys'].includes(toolName)) return false
+        return this.inputGrant.active
       },
       /**
        * 候选卡同样只在有人在看的时候才发。
@@ -361,6 +430,8 @@ export class TurnRuntime {
     const { requestId, messages, controller, emit, uiAuth } = params
     const origin = params.origin ?? 'desktop'
     const config = await this.opts.store.getConfig()
+    // 模拟键鼠的白名单每轮重读：用户在设置里改完要立刻生效
+    this.refreshInputAllowlist(config)
     // 能力开关（插件页）+ 只读模式（权限与安全）：两者都决定本轮有哪些工具
     const tools = this.toolsFor(config.toolToggles ?? {}, config.readOnly === true, config.worker)
 

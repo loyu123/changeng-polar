@@ -36,6 +36,15 @@ export interface GateHooks {
   /** 「始终允许」白名单：key = `${tool}::${target}` */
   isRemembered: (key: string) => boolean
   remember: (key: string, request: AuthRequest) => void
+  /**
+   * 这个工具当前是否落在一次有效的时间窗授权里（模拟键鼠专用）。
+   *
+   * 存在理由：模拟鼠标的能力是无粒度的——一旦能动鼠标就能点屏幕上的任何东西。
+   * 逐次弹确认又不可用（填一个表单要批十几次，用户会学会不看内容直接点）。
+   * 所以做成"用户批准一次 → 60 秒内免卡"，但**每个动作照样写审计**。
+   * 返回 true 时闸门不弹卡，authz 记成 `grant`（看得出是窗口内，不是自动放行）。
+   */
+  hasActiveGrant?: (toolName: string) => boolean
   /** 统一审计入口 */
   record: (entry: Omit<RecordEntry, 'id' | 'ts'>) => void
   /** 演练模式：判定照走，但不真正执行（评测里验证拦截用） */
@@ -401,6 +410,16 @@ export async function executeThroughGate(
   // ---- 销毁 / 安装：必须过卡（改动机器且不可静默）----
   // 用 def.effect 构造卡，所以 write 档的强制卡会如实显示成"写入"档，
   // 不会伪装成删除或安装。
+  /**
+   * 时间窗内免卡。
+   *
+   * 只对声明了 `opensGrant` 的工具生效，且**仍然走 backupThenRun**——
+   * 免的是"再问一次"，不是"跳过备份和核对"。
+   */
+  if (hooks.hasActiveGrant?.(def.name)) {
+    return backupThenRun('grant')
+  }
+
   const key = rememberKey(def.name, target.target)
   let answer: AuthAnswer
   let authz: AuthzDecision
@@ -423,7 +442,9 @@ export async function executeThroughGate(
       reinstallHint: target.reinstallHint,
       paramsPreview: JSON.stringify(args ?? {}).slice(0, 300),
       requestedAt: new Date().toISOString(),
-      allowAlways: memorizable
+      allowAlways: memorizable,
+      // 模拟键鼠类工具：卡上要带当前屏幕，否则用户是在盲签
+      ...(target.screenshot ? { screenshot: target.screenshot } : {})
     }
     answer = normalizeAnswer(await hooks.requestAuth(request))
     if (answer === 'deny') {
