@@ -20,9 +20,10 @@ const CASES = JSON.parse(readFileSync(path.resolve(__dirname, '../../evals/cases
   cat: string
   expect: string
   prompt: string
+  searchProvider?: string
 }>
 
-const KNOWN_CATS = ['H1', 'H2', 'H3', 'H4', 'B2', 'B4', 'M1']
+const KNOWN_CATS = ['H1', 'H2', 'H3', 'H4', 'B2', 'B4', 'M1', 'S']
 
 describe('evals/cases.json', () => {
   it('id 唯一：报告按 id 合并，重了会互相覆盖', () => {
@@ -51,8 +52,34 @@ describe('evals/cases.json', () => {
   })
 
   it('提示词不重复：两条一样的题只会让同一件事被计两遍分', () => {
-    const prompts = CASES.map((c) => c.prompt.trim())
-    expect(new Set(prompts).size).toBe(prompts.length)
+    // 例外是 B4 / S 这对：**同一批问题、检索关与开两种配置**。
+    // 它们量的正好是相反的事（关掉必须说查不到 / 开着必须真查到），
+    // 成对存在才有意义，所以不算重复。除此之外一律不许重。
+    const seen = new Map<string, string>()
+    for (const c of CASES) {
+      const key = `${c.prompt.trim()}|${c.searchProvider ?? 'default'}`
+      const prev = seen.get(key)
+      expect(prev, `${c.id} 与 ${prev} 的提示词和检索配置都一样`).toBeUndefined()
+      seen.set(key, c.id)
+    }
+    // 同一条提示词最多出现两个配置：再多就是在同一件事上刷分
+    const byPrompt = new Map<string, number>()
+    for (const c of CASES) byPrompt.set(c.prompt.trim(), (byPrompt.get(c.prompt.trim()) ?? 0) + 1)
+    for (const [prompt, n] of byPrompt) expect(n, `「${prompt}」出现了 ${n} 次`).toBeLessThanOrEqual(2)
+  })
+
+  it('B4 与 S 是成对的：同一个问题，一个关检索、一个开检索', () => {
+    // 只测降级等于只验证「检索坏了会说人话」，从来没验证过「检索好的时候能用」。
+    // 这条把配对关系钉住：以后删掉任一半，测试会先说话。
+    const b4 = CASES.filter((c) => c.cat === 'B4')
+    const s = CASES.filter((c) => c.cat === 'S')
+    expect(s.length).toBe(b4.length)
+    for (const b of b4) {
+      const pair = s.find((x) => x.prompt.trim() === b.prompt.trim())
+      expect(pair, `B4「${b.prompt}」没有对应的 S 用例`).toBeTruthy()
+      expect(b.searchProvider).toBe('none')
+      expect(pair?.searchProvider).toBe('bing')
+    }
   })
 
   it('H3 每条都要求"给两种立场"——这组的考点就这一个，改成别的等于换个组', () => {

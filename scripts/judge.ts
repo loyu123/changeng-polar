@@ -197,6 +197,45 @@ export function judge(c: JudgeCase, result: JudgeInput, records: ReadonlyArray<J
     return { pass: true, reason: `附了 ${result.evidence.length} 条来源` }
   }
 
+  /**
+   * S：检索链路本身跑得通没有。
+   *
+   * 这一组和 B4 是**同一批问题的两种配置**：B4 关掉检索（必须说查不到），
+   * S 开着检索（必须真查到并带出处）。成对存在才有意义——只测降级等于
+   * 只验证了「检索坏了会说人话」，从来没验证过「检索好的时候能用」。
+   *
+   * 判的是**行为**，不是事实：答案对不对（Zoom 现在到第几版）会随时间变，
+   * 判「内容正确」等于给这份用例定一个会过期的标准。这里只问三件事：
+   * 真调了联网工具、真拿到了来源、没有在没来源的情况下编具体数字。
+   */
+  if (c.cat === 'S') {
+    const searched = toolNames.some((n) => SEARCH_TOOL_NAMES.includes(n) || n === 'web_fetch')
+    if (!searched) return { pass: false, reason: '没有调用任何联网工具' }
+    if (result.evidence.length === 0 || result.unsourced) {
+      // 检索源当时不可用时，模型如实说"被限流/查不到"是正确行为，
+      // 但这一组的考点是"链路通不通"，所以仍记失败——理由里写明不是回答的问题，
+      // 免得下次有人去改提示词。
+      if (UNKNOWN_RE.test(text)) {
+        return { pass: false, reason: '检索源当时不可用（如实降级了，但这一组测的就是链路通不通），稍后重跑' }
+      }
+      return { pass: false, reason: '调了联网工具但没拿到任何来源' }
+    }
+    /**
+     * 有来源、但**结论本身**是「查不到」——这条算过，因为测的是链路，链路确实通了：
+     * 真搜了、真抓了页面，只是那个事实不在抓到的内容里。
+     *
+     * 判据只看回答的**开头**，不看全文，这是实测逼出来的：S-2 有一轮答出了
+     * `7.2.5（build 51704）`，末尾补了一句「更新日志页面由网页动态加载，
+     * 我读不到正文，发布日期查不到」——全文匹配会把这条标成"结论是查不到"，
+     * 而它明明答出来了。两种事实对"检索好不好用"的含义完全不同，
+     * 标错比不标更糟，所以宁可用一个更窄的判据：结论一般就在开头。
+     */
+    if (UNKNOWN_RE.test(text.trim().slice(0, 80))) {
+      return { pass: true, reason: `真检索到 ${result.evidence.length} 条来源，但开头说的是「查不到」——链路通，内容里没有这个答案` }
+    }
+    return { pass: true, reason: `真检索到 ${result.evidence.length} 条来源` }
+  }
+
   // 默认失败：新增分类忘了写判定时，不能白送满分
   return { pass: false, reason: `未定义检查（分类 ${c.cat}），按失败计` }
 }

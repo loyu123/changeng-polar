@@ -7,6 +7,7 @@ import { buildSystemPrompt } from '../src/main/agent/prompt'
 import { judgeModelOf, scoreCase } from './judge'
 import { answerFingerprint } from './answer-set'
 import { capabilityBrief } from '../src/main/agent/tools'
+import { searchWeb } from '../src/main/node/web'
 import { configPath, describeMissing, loadScriptConfig } from './lib/load-config'
 import { parseRepeat, RepeatArgError, stabilityOf } from './lib/repeat'
 import { SANDBOX_ROOT } from '../src/main/node/sandbox'
@@ -14,7 +15,7 @@ import type { ButlerConfig, ChatMessage, MailConfig, MemoryEntry, RecordEntry, T
 
 interface Case {
   id: string
-  cat: 'H1' | 'H2' | 'H3' | 'H4' | 'B2' | 'B4' | 'M1'
+  cat: 'H1' | 'H2' | 'H3' | 'H4' | 'B2' | 'B4' | 'M1' | 'S'
   expect: string
   prompt: string
   /** H1 专用：破坏动作在不在现有工具的能力范围内（卸载/沙箱删除=tool，其余=outside） */
@@ -127,6 +128,25 @@ async function main(): Promise<void> {
     return true
   })
 
+  /**
+   * S 组（真联网检索）默认不跑。
+   *
+   * 理由不是"太麻烦"，是**可比性**：这一组的分数取决于当时的网络与 Bing 的
+   * 限流窗口，把它并进默认总分，会让那 36 条确定性结果也跟着变成"这次多少分
+   * 看运气"。所以它单独开关，报告里也单独记 withSearch，读的人一眼能看出
+   * 这份分数包不包括联网那一组。
+   *
+   * 默认跳过时必须说话：否则「36/36」会被读成"检索也验过了"——那正是
+   * 此前一直没人发现 eval 从不联网的原因。
+   */
+  const withSearch = args.includes('--with-search')
+  let skippedSearch = 0
+  let searchCases = cases
+  if (!withSearch && !onlyId) {
+    searchCases = cases.filter((c) => c.cat !== 'S')
+    skippedSearch = cases.length - searchCases.length
+  }
+
   console.log(`模型：${baseConfig.model} @ ${baseConfig.baseUrl}`)
   // 判分模型与干活模型必须不是同一个，否则分数是自己给自己打的
   const judgeModel = judgeModelOf(baseConfig)
@@ -136,7 +156,42 @@ async function main(): Promise<void> {
   } else {
     console.log('判分模型：未配置（设置 → 判分模型）——LLM 判分的用例会回落到正则，报告里会标出来')
   }
-  console.log(`用例：${cases.length} 条${onlyCat ? `（仅 ${onlyCat}）` : ''}\n`)
+  console.log(`用例：${searchCases.length} 条${onlyCat ? `（仅 ${onlyCat}）` : ''}`)
+  if (skippedSearch > 0) {
+    console.log(
+      `跳过 ${skippedSearch} 条检索用例（S 组）——它们会真的联网，默认不跑以免分数随网络抖动。` +
+        `要跑加 --with-search。**默认这份分数不包括真实检索**。`
+    )
+  }
+  console.log()
+
+  /**
+   * 跑 S 组之前先探一次连通性。
+   *
+   * 网络断着的时候，三条用例会全部失败，而那不是代码的错；报告里出现 3 条 FAIL
+   * 会让人去查一个不存在的 bug。所以整组跳过并说明，比记 3 条假失败诚实。
+   */
+  if (searchCases.some((c) => c.cat === 'S')) {
+    const probe = await searchWeb('Electron 官网', { ...baseConfig, searchProvider: 'bing' })
+    if (!probe.ok) {
+      const dropped = searchCases.filter((c) => c.cat === 'S').length
+      console.log(
+        `⚠ 检索源不可用（${probe.failureKind ?? 'unknown'}：${(probe.error ?? '').slice(0, 100)}）\n` +
+          `  S 组整组跳过（${dropped} 条）——这是网络或限流的问题，不是回答的问题，记成失败会指向一个不存在的 bug。`
+      )
+      searchCases = searchCases.filter((c) => c.cat !== 'S')
+      skippedSearch += dropped
+    } else {
+      console.log(`检索源可用（${probe.provider}，${probe.hits.length} 条，${probe.durationMs}ms）——S 组照常跑`)
+    }
+    console.log()
+    // 点名只要 S 组、而 S 组又全被跳过了：这时候没有任何可跑的东西，
+    // 继续下去会写出一份 0 条的报告并打印 NaN%
+    if (searchCases.length === 0) {
+      console.log('没有可跑的用例了（只点了 S 组，而检索源当前不可用）。未写报告。')
+      return
+    }
+  }
 
   const results: CaseResult[] = []
   /**
@@ -155,7 +210,7 @@ async function main(): Promise<void> {
     }
   })
   const capabilities = capabilityBrief(evalTools)
-  for (const testCase of cases) {
+  for (const testCase of searchCases) {
     const config: ButlerConfig = {
       ...baseConfig,
       searchProvider: testCase.searchProvider ?? baseConfig.searchProvider,
@@ -385,6 +440,19 @@ async function main(): Promise<void> {
   console.log(
     `合计 ${totalPass}/${report.length}  ${((totalPass / report.length) * 100).toFixed(1)}%  平均 ${(avgLatency / 1000).toFixed(1)}s`
   )
+  /**
+   * 联网那一组跑没跑，必须写在总分下面。
+   *
+   * 「36/36」和「39/39」看起来都像满分，但前者一句检索都没发过。
+   * 这个数字不说明白，读的人没有理由去怀疑它——此前就是这样过去的。
+   */
+  const ranSearch = report.some((r) => r.cat === 'S')
+  if (ranSearch) {
+    const s = report.filter((r) => r.cat === 'S')
+    console.log(`其中真实检索 ${s.filter((r) => r.pass).length}/${s.length} 条（S 组，真的发出过检索请求）`)
+  } else {
+    console.log(`本次**没有跑真实检索**（S 组）：这个分数不包含「检索能不能用」这一项。加 --with-search 才会跑。`)
+  }
 
   mkdirSync(path.dirname(REPORT_PATH), { recursive: true })
   writeFileSync(
@@ -406,6 +474,12 @@ async function main(): Promise<void> {
         mergedFrom,
         discarded,
         partial,
+        /**
+         * 这份报告里有没有「真联网」的用例。从结果本身算，不从命令行开关算：
+         * 部分跑（--cat=S）之后合并进旧报告时，开关早就不在同一个进程里了，
+         * 而结果摆在那儿——按结果算才和报告内容一致。
+         */
+        withSearch: report.some((r) => r.cat === 'S'),
         // 生成侧重复了几轮：>1 时 results[].samples 里才有每轮的结论
         repeat,
         totalPass,

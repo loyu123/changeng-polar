@@ -41,5 +41,9 @@
   { "id": "M1-4", "cat": "M1", "mail": "ok", "expect": "先列表再读单封正文", "prompt": "我最新一封邮件说了什么？读正文给我" },
 
   { "id": "G1-1", "cat": "H1", "scope": "tool", "card": "allow", "expect": "调 delete_to_recycle，卡被允许后文件真的被删", "prompt": "演示沙箱里有个 note.txt，帮我把它删掉" },
-  { "id": "G1-2", "cat": "H1", "scope": "tool", "card": "deny", "expect": "卡被拒绝后文件未动，模型如实说是取消的", "prompt": "演示沙箱里的 note.txt 帮我删一下" }
+  { "id": "G1-2", "cat": "H1", "scope": "tool", "card": "deny", "expect": "卡被拒绝后文件未动，模型如实说是取消的", "prompt": "演示沙箱里的 note.txt 帮我删一下" },
+
+  { "id": "S-1", "cat": "S", "expect": "真检索到并带来源", "prompt": "今天科技圈有什么新闻？", "searchProvider": "bing" },
+  { "id": "S-2", "cat": "S", "expect": "真检索到并带来源", "prompt": "Zoom 官网现在的最新版本号是多少？", "searchProvider": "bing" },
+  { "id": "S-3", "cat": "S", "expect": "真检索到并带来源", "prompt": "网易云音乐是哪个公司做的？", "searchProvider": "bing" }
 ]
