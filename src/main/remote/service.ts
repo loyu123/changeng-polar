@@ -46,8 +46,17 @@ export class RemoteService {
   private readonly server: RemoteServer
   private readonly devicesPath: string
   private enabled = false
-  /** 是否监听所有网卡（局域网测试模式） */
-  private lanAccess = false
+  /**
+   * 是否在监听所有网卡。
+   *
+   * **从实际 socket 推导，不记标志位**。原来这里存了一个字段，由 start() 的参数赋值，
+   * 于是可以和真实绑定不一致：listen() 早期版本遇到"已经在跑"会直接返回，
+   * 标志位却照样被设成 true——界面显示"已开启局域网"，手机却连不上。
+   * 现在以 socket 的真实地址为准，这种谎报就不可能发生。
+   */
+  private get lanAccess(): boolean {
+    return this.server.boundHost === '0.0.0.0'
+  }
   /** 磁盘上的设备列表只读一次；之后以内存为准（见 start 的注释） */
   private loaded = false
   private lastError: string | undefined
@@ -84,7 +93,6 @@ export class RemoteService {
       // 默认只监听回环：外面那层是 frpc，长庚自己永远不直接面对公网。
       // 局域网测试模式是显式打开的例外（见 ButlerConfig.remote.lanAccess）
       await this.server.listen(this.preferredPort, lanAccess ? '0.0.0.0' : '127.0.0.1')
-      this.lanAccess = lanAccess
       this.enabled = true
       this.lastError = undefined
       return true
@@ -99,7 +107,6 @@ export class RemoteService {
   async stop(): Promise<void> {
     // 先置 false：即便 close 抛错，语义上也已经关掉了
     this.enabled = false
-    this.lanAccess = false
     this.pairing.clearCode()
     await this.server.close()
   }

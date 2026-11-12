@@ -106,8 +106,30 @@ export class RemoteServer {
     return `${addr.address}:${addr.port}`
   }
 
+  /** 当前实际绑定的地址（`127.0.0.1` / `0.0.0.0`）；没监听时为 null */
+  get boundHost(): string | null {
+    const addr = this.server?.address()
+    return addr && typeof addr !== 'string' ? addr.address : null
+  }
+
+  /**
+   * 开始监听。
+   *
+   * **换了监听地址必须重新绑定**。原来这里是 `if (this.server) return this.port()`：
+   * 服务先在 127.0.0.1 上跑着，再要求绑 0.0.0.0 时会直接返回、什么都不做，
+   * 而调用方以为已经切过去了（真机踩到：界面上显示"已开启局域网"，
+   * 手机却连不上，因为端口实际还只绑在回环）。所以这里比对当前绑定地址，
+   * 不一致就关掉重开。
+   */
   async listen(port: number = DEFAULT_REMOTE_PORT, host = '127.0.0.1'): Promise<number> {
-    if (this.server) return this.port()
+    if (this.server) {
+      if (this.boundHost === host && this.port() === port) return this.port()
+      // 换了地址/端口：先真的关掉，否则新绑定会撞在自己的旧 socket 上
+      const oldPort = this.port()
+      await this.close()
+      // 端口写的是 0（让系统分配）时重开还是 0；否则沿用原来的实际端口
+      if (port === 0 && oldPort > 0) port = oldPort
+    }
     const server = createServer((req, res) => {
       void this.handle(req, res).catch((err) => {
         // 任何没接住的异常都要回一句，否则手机端只能干等超时

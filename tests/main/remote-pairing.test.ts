@@ -262,3 +262,44 @@ describe('远程服务 · 监听范围', () => {
     }
   })
 })
+
+describe('远程服务 · 换监听地址必须真的重新绑定', () => {
+  it('先回环再开局域网：socket 真的切到 0.0.0.0，state 不许谎报', async () => {
+    // 真机踩到过：服务先在 127.0.0.1 上跑着，再要求绑 0.0.0.0 时
+    // listen() 直接 return（因为 this.server 已存在），什么也没做，
+    // 而调用方以为切过去了——界面显示"已开启局域网"，手机连不上。
+    const dir = await fsp.mkdtemp(path.join(fspTmp(), 'remote-rebind-'))
+    const { RemoteService } = await import('../../src/main/remote/service')
+    const svc = new RemoteService(
+      {
+        version: 't',
+        executeTurn: async () => ({}),
+        auth: { answer: () => true, choose: () => true, settleRequest: () => {} },
+        inflight: new Map()
+      },
+      dir,
+      0
+    )
+    try {
+      await svc.start(false)
+      expect(svc.state().lanAccess).toBe(false)
+      expect(svc.state().address.startsWith('127.0.0.1:')).toBe(true)
+
+      // 同一个服务对象上切换模式（不 stop，模拟界面上直接切开关）
+      const portBefore = svc.state().port
+      await svc.start(true)
+      expect(svc.state().lanAccess).toBe(true)
+      expect(svc.state().address.startsWith('0.0.0.0:')).toBe(true)
+      // 端口要沿用，不能因为重绑就换一个
+      expect(svc.state().port).toBe(portBefore)
+
+      // 切回来也一样
+      await svc.start(false)
+      expect(svc.state().lanAccess).toBe(false)
+      expect(svc.state().address.startsWith('127.0.0.1:')).toBe(true)
+    } finally {
+      await svc.stop()
+      await fsp.rm(dir, { recursive: true, force: true })
+    }
+  })
+})

@@ -68,11 +68,14 @@ export const MOBILE_PAGE = `<!doctype html>
   }
   .composer .wrap { padding: 0; display: flex; gap: 8px; }
   /* 授权卡：手机上点得准比好看重要 */
-  #authCard { border-color: var(--danger); }
+  /* 卡片可能比屏幕高（长路径 + 长影响说明），所以限高并允许内部滚动，
+     否则按钮会被挤出可视区域——和"被输入栏盖住"是同一类问题。 */
+  #authWrap { max-height: 75vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #authCard { border: 2px solid var(--danger); }
   #authCard .impact { font-size: 13px; color: var(--sub); margin: 8px 0 14px; }
-  #authCard .target { font-size: 13px; word-break: break-all; background: var(--bg); padding: 8px; border-radius: 8px; margin: 8px 0; }
+  #authCard .target { font-size: 13px; word-break: break-all; background: var(--bg); padding: 8px; border-radius: 8px; margin: 8px 0; max-height: 22vh; overflow-y: auto; }
   #authCard .btns { display: flex; gap: 10px; }
-  #authCard .btns button { flex: 1; padding: 16px; font-size: 16px; }
+  #authCard .btns button { flex: 1; padding: 18px; font-size: 17px; min-height: 56px; }
   .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--line); }
 </style>
 </head>
@@ -259,6 +262,14 @@ export const MOBILE_PAGE = `<!doctype html>
     $('authTitle').textContent = req.title || '需要你确认'
     $('authTarget').textContent = req.target || ''
     $('authImpact').textContent = req.impact || ''
+    /**
+     * 显示卡的时候把输入栏收起来。
+     *
+     * 原来两者都是 fixed bottom:0，卡片比输入栏高，于是「允许」正好被输入栏盖住——
+     * 真机上点不到。卡还挂着的时候本来也不该继续打字：这一轮正等你答复，
+     * 再发一句只会插队。收起输入栏既解决遮挡，也让「现在该点卡」这件事更明确。
+     */
+    $('composerBar').classList.add('hide')
     $('authWrap').classList.remove('hide')
     // 手机上可能没在看屏幕：震一下
     if (navigator.vibrate) navigator.vibrate(200)
@@ -266,6 +277,8 @@ export const MOBILE_PAGE = `<!doctype html>
   function hideAuth() {
     currentAuth = null
     $('authWrap').classList.add('hide')
+    // 只在对话页才把输入栏放回来（配对页本来就不该有它）
+    if (!$('chatView').classList.contains('hide')) $('composerBar').classList.remove('hide')
   }
 
   async function answer(verdict) {

@@ -283,3 +283,23 @@ describe('远程入口 · 手机页面', () => {
     expect(deps.executeTurn).not.toHaveBeenCalled()
   })
 })
+
+describe('手机页面 · 授权卡不能被输入栏盖住', () => {
+  it('显示授权卡时收起输入栏（两者都是 fixed bottom，会同一条边重叠）', async () => {
+    const { base } = await boot()
+    const html = await (await fetch(`${base}/`)).text()
+    // showAuth 里必须把 composerBar 收起来，否则卡片底部按钮被输入栏盖住
+    const showAuthBody = html.slice(html.indexOf('function showAuth'), html.indexOf('function hideAuth'))
+    expect(showAuthBody).toContain("$('composerBar').classList.add('hide')")
+    // 收起后要能放回来
+    const hideAuthBody = html.slice(html.indexOf('function hideAuth'), html.indexOf('async function answer'))
+    expect(hideAuthBody).toContain("$('composerBar').classList.remove('hide')")
+  })
+
+  it('授权卡限高并可滚动：长路径不会把按钮挤出屏幕', async () => {
+    const { base } = await boot()
+    const html = await (await fetch(`${base}/`)).text()
+    expect(html).toContain('max-height: 75vh')
+    expect(html).toContain('overflow-y: auto')
+  })
+})
