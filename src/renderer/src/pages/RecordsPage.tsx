@@ -255,6 +255,13 @@ export default function RecordsPage({ active }: { active: boolean }) {
                       <div className="sub">{record.sub}</div>
                       {/* 写操作的事后核对：查了什么、查到什么。没有这一行就是当时没核对 */}
                       {record.verifyFact && <div className="sub verify">核对：{record.verifyFact}</div>}
+                      {/* 被拒绝时把"它想干什么"也列出来：
+                          只写一句"没有执行"，事后判断不了是模型选错目标还是环境不允许 */}
+                      {record.argsPreview && (
+                        <div className="sub verify" style={{ wordBreak: 'break-all' }}>
+                          当时的调用参数：{record.argsPreview}
+                        </div>
+                      )}
                       {missing === record.id && (
                         <div className="sub verify">那个文件已经不在了（可能被你移走或删掉了）</div>
                       )}

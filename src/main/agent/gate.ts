@@ -199,7 +199,11 @@ export async function executeThroughGate(
       title: `拒绝：${def.name} 没有声明合法的效果分档`,
       sub: `effect=${String(def.effect)}`,
       result: 'rejected',
-      reversible: false
+      reversible: false,
+      // 拒绝也要记工具名：事后按工具统计"哪些工具老被拒"靠它，
+      // 只靠 title 里的中文名会和本地化、文案改动一起漂
+      tool: def.name,
+      effect: def.effect
     })
     return { ok: false, blocked: true, summary: `没有执行：${def.name} 没有声明合法的效果分档` }
   }
@@ -233,6 +237,7 @@ export async function executeThroughGate(
           sub: '用户取消了候选选择，什么都没有改动',
           result: 'rejected',
           reversible: false,
+          tool: def.name,
           effect: def.effect,
           target: trim(choice.title)
         })
@@ -256,6 +261,7 @@ export async function executeThroughGate(
           sub: `选了 ${picked} 之后没有继续：${trim(planned.reason)}`,
           result: 'rejected',
           reversible: false,
+          tool: def.name,
           effect: def.effect,
           target: trim(picked)
         })
@@ -268,6 +274,7 @@ export async function executeThroughGate(
           sub: `解析结果与你的选择不一致（选的是 ${picked}，解析成 ${trim(planned.target.target)}）`,
           result: 'rejected',
           reversible: false,
+          tool: def.name,
           effect: def.effect,
           target: trim(picked)
         })
@@ -295,8 +302,13 @@ export async function executeThroughGate(
         sub: trim(planned.reason),
         result: 'rejected',
         reversible: false,
+        // 工具名 + 分档：事后统计"哪些工具老被拒、拒在什么环节"要靠这两个字段。
+        // 之前这里没写 tool，23 条拒绝记录只能靠中文标题猜是哪个工具。
+        tool: def.name,
         effect: def.effect,
-        target: trim(planned.reason)
+        // 把模型给的参数也留一份：点了哪里/要打开什么，是判断"它是不是选错目标"的唯一依据
+        target: trim(planned.reason),
+        ...(Object.keys(args ?? {}).length > 0 ? { argsPreview: JSON.stringify(args).slice(0, 300) } : {})
       })
       return { ok: false, blocked: true, summary: `没有执行：${planned.reason}` }
     }
