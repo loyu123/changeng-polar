@@ -1479,7 +1479,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     name: 'launch_app',
     label: '打开程序',
     description:
-      '打开一个已安装的程序（等价于用户自己双击它的图标），不改动任何东西。用户说"打开哔哩哔哩""把豆包打开""我要玩 ICEY""把计算器打开"时用它。它能开的是这台机器上装着的程序：开始菜单和桌面上的快捷方式、Steam 这类协议启动的游戏、以及系统应用清单里不建快捷方式的程序（商店应用、计算器、记事本等）。**它不打开网页、不打开文件夹**（网页用 web_fetch 取内容，文件夹用 open_folder）。程序名对不上唯一一个时工具会拒绝并列出候选，**这时不要自己挑一个，把名字念给用户让他确认**。如果工具说已经开着，就如实转述"本来就开着、窗口已经叫到前面"，不要说成刚打开。',
+      '打开一个已安装的程序（等价于用户自己双击它的图标），不改动任何东西。用户说"打开哔哩哔哩""把豆包打开""我要玩 ICEY""把计算器打开"时用它。它能开的是这台机器上装着的程序：开始菜单和桌面上的快捷方式、Steam 这类协议启动的游戏、以及系统应用清单里不建快捷方式的程序（商店应用、计算器、记事本等）。**它不打开网页、不打开文件夹**（网页用 web_fetch 取内容，文件夹用 open_folder）。程序名对不上唯一一个时工具会拒绝并列出候选，**这时不要自己挑一个，把名字念给用户让他确认**。**同一个程序不要反复打开**：工具自己会检查它是不是已经开着，开着就只把窗口叫到前面、不会再启动一份，结果里会明说。所以**同一轮里不要为了"确保它开着"连开两次**——那会多出窗口，把用户正在用的那个挤掉。需要操作某个界面时，先 screen_capture 看清哪个窗口在最前面，再决定要不要打开。如果工具说已经开着，就如实转述"本来就开着、窗口已经叫到前面"，不要说成刚打开。',
     effect: 'ui',
     parameters: {
       type: 'object',
@@ -1513,12 +1513,16 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
            * 探不到进程表（权限、PowerShell 抽风）时当它没开，照常启动——
            * "多开一个窗口"比"明明没开却说已经开了"轻得多。
            *
-           * apps-folder 条目跳过这一步：它们的 AppID（`Doubao.ChatApp`、
-           * `Microsoft.WindowsCalculator_...!App`）没法可靠地映射到进程名，
-           * 猜错的代价是"用户想开却被告知已经开着"——比多按一次激活重得多。
-           * 而这类程序本身多是单实例激活，按第二次通常只是把窗口叫到前面。
+           * apps-folder 条目**也要查**，但只认确知的映射（见 running.ts 的
+           * APPID_PROCESS_HINTS）：AppID 里的包名和进程名之间没有通用换算规则，
+           * 猜错的代价是"用户想开却被告知已经开着"——比多开一个窗口重得多。
+           * 所以没有映射的仍退回"照常启动"。
+           *
+           * 曾经这里对 apps-folder 整个跳过。真机上踩到后果：模型为了"确保记事本
+           * 开着"反复调 launch_app，每次都开一个新窗口，最后把真正输入了内容的
+           * 那个挤没了——记事本恰好是有映射的那一类，现在能认出来。
            */
-          if (deps.probeLaunch && kind !== 'apps-folder') {
+          if (deps.probeLaunch) {
             const probe = await deps.probeLaunch(shortcut.path).catch(() => null)
             const open = probe ? findOpenWindow(probe.processes, appIdentity(shortcut, probe.targetPath)) : null
             if (open) {

@@ -102,6 +102,51 @@ export function normalizeAppName(text: string): string {
 }
 
 /**
+ * 已知的「AppID 包名 → 进程名」对应表。
+ *
+ * 为什么需要这张表：apps-folder 的 AppID 长这样 `Microsoft.WindowsNotepad_8wekyb3d8bbwe!App`，
+ * 而进程名是 `Notepad`。两者之间没有可靠的通用换算规则（包名可以随便起），
+ * 所以只对**确知的几个**做映射，其余仍退回按显示名匹配。
+ *
+ * 加这一条的直接原因：真机上模型为了"确保记事本开着"反复调 launch_app，
+ * 每次都开一个新窗口，最后把真正输入了内容的那个挤没了。
+ * 根因是 apps-folder 条目跳过了"已经开着就别再开"的检查。
+ */
+const APPID_PROCESS_HINTS: Record<string, string> = {
+  // 包名小写 → 进程名
+  'microsoft.windowsnotepad': 'notepad',
+  'microsoft.windowscalculator': 'calculatorapp',
+  'microsoft.windowsterminal': 'windowsterminal',
+  'microsoft.paint': 'mspaint',
+  'microsoft.screensketch': 'snippingtool',
+  'microsoft.windows.photos': 'photos',
+  'microsoft.windowscamera': 'windowscamera',
+  'microsoft.zunemusic': 'music.ui',
+  'microsoft.windowsstore': 'winstore.app'
+}
+
+/**
+ * 从 AppID 里取进程名线索。
+ *
+ * `Microsoft.WindowsNotepad_8wekyb3d8bbwe!App` → `microsoft.windowsnotepad`
+ * 注意**只取到第一个下划线之前**：后面那串是包发布者哈希，取进来会变成无意义的键；
+ * 也不能整串丢进 basename，那会得到 "Microsoft"（能匹配一堆东西）。
+ */
+export function processHintFromAppId(appId: string): string[] {
+  const raw = String(appId ?? '').trim()
+  if (!raw) return []
+  // `!App` / `!MicrosoftEdge` 这类是入口名，去掉
+  const pkg = raw.split('!')[0] ?? ''
+  // 下划线后面是 PublisherId（哈希），不是包名的一部分
+  const name = pkg.split('_')[0]?.toLowerCase() ?? ''
+  if (!name) return []
+  const hint = APPID_PROCESS_HINTS[name]
+  // 只返回**确知**的进程名。没有映射就返回空——宁可多开一个窗口，
+  // 也不要拿包名去猜进程名，猜错会说"已经开着"而用户看不到任何窗口。
+  return hint ? [normalizeAppName(hint)] : []
+}
+
+/**
  * 一个程序可能对应哪些进程名。
  *
  * 两条来源都给：快捷方式上写的名字（`微信`），和它真正指向的 exe 名（`Weixin`）。
@@ -109,7 +154,7 @@ export function normalizeAppName(text: string): string {
  *
  * apps-folder 条目的 `path` 是 AppID（`Microsoft.WindowsCalculator_...!App`），
  * 不是文件路径，对它做 basename 会得出 "Microsoft" 这种能匹配一堆东西的键。
- * 所以这类直接跳过路径那一条。
+ * 所以这类不走路径那一条，改走 `processHintFromAppId`（只认确知的映射）。
  */
 export function appIdentity(
   shortcut: { name: string; path: string; kind?: string },
@@ -118,7 +163,11 @@ export function appIdentity(
   const keys = new Set<string>()
   const byName = normalizeAppName(shortcut.name)
   if (byName) keys.add(byName)
-  if (shortcut.kind === 'apps-folder') return [...keys]
+  if (shortcut.kind === 'apps-folder') {
+    // AppID 里能推出进程名时一起用上，这样「记事本已经开着」才认得出来
+    for (const hint of processHintFromAppId(shortcut.path)) keys.add(hint)
+    return [...keys]
+  }
 
   const fromTarget = targetPath ? normalizeAppName(path.basename(targetPath)) : ''
   if (fromTarget) keys.add(fromTarget)
