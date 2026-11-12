@@ -169,3 +169,106 @@ describe('Store · 配置读取', () => {
     await expect(fs.stat(path.join(dir, 'tasks.json.corrupt'))).rejects.toThrow()
   })
 })
+
+/**
+ * 便携版：配置单独落一个目录。
+ *
+ * 「只搬配置」这条口径全靠这里守着——如果哪天 config.json 因为用了 this.p()
+ * 而跟着其余数据落回 userData，U 盘上就只剩一个空目录，而界面上不会报错。
+ */
+describe('Store · 便携版配置目录', () => {
+  it('配置写进便携目录，其余数据仍在本机目录', async () => {
+    const local = path.join(dir, 'local')
+    const usb = path.join(dir, 'usb')
+    await fs.mkdir(local, { recursive: true })
+    await fs.mkdir(usb, { recursive: true })
+    const store = new Store(local, undefined, usb)
+
+    await store.saveConfig({ model: 'portable-model' })
+    await store.appendRecord({ tool: 'x', effect: 'read', status: 'ok' } as never)
+
+    const cfgRaw = await fs.readFile(path.join(usb, 'config.json'), 'utf8')
+    expect(cfgRaw).toContain('portable-model')
+    // userData 那份不该出现配置；记录该在
+    await expect(fs.stat(path.join(local, 'config.json'))).rejects.toThrow()
+    await expect(fs.stat(path.join(local, 'records.jsonl'))).resolves.toBeTruthy()
+    expect(await store.getConfig()).toMatchObject({ model: 'portable-model' })
+  })
+
+  it('从便携目录读得到配置（不是只写不读）', async () => {
+    const local = path.join(dir, 'local2')
+    const usb = path.join(dir, 'usb2')
+    await fs.mkdir(local, { recursive: true })
+    await fs.mkdir(usb, { recursive: true })
+    await fs.writeFile(path.join(usb, 'config.json'), JSON.stringify({ model: 'from-usb' }), 'utf8')
+    const store = new Store(local, undefined, usb)
+    expect((await store.getConfig()).model).toBe('from-usb')
+  })
+
+  it('便携目录不存在时保存会自己建出来', async () => {
+    const local = path.join(dir, 'local3')
+    const usb = path.join(dir, 'usb3-not-yet')
+    await fs.mkdir(local, { recursive: true })
+    const store = new Store(local, undefined, usb)
+    await store.saveConfig({ model: 'm' })
+    expect(await fs.readFile(path.join(usb, 'config.json'), 'utf8')).toContain('"m"')
+  })
+
+  it('configPath() 报的是便携目录，设置页据此显示', () => {
+    const store = new Store(dir, undefined, path.join(dir, 'usb4'))
+    expect(store.configPath()).toBe(path.join(dir, 'usb4'))
+  })
+})
+
+/**
+ * 密钥解不开的检测。
+ *
+ * 场景是真的：便携配置拿到另一台电脑上，DPAPI 解不开，decrypt 静默回空串。
+ * 没有这个检测，用户只会看到 Key 一片空白，分不清"丢了"还是"没填"。
+ */
+describe('Store · 密钥在本机解不开', () => {
+  /** 只会解 enc:v1:ok 的假编解码：其余密文一律解不开（模拟换了电脑的 DPAPI） */
+  const codec = {
+    active: true,
+    encrypt: (plain: string) => (plain ? `enc:v1:${plain}` : plain),
+    decrypt: (stored: string) =>
+      stored.startsWith('enc:v1:') ? (stored === 'enc:v1:ok' ? 'ok' : '') : stored
+  }
+
+  it('解不开的密文会按字段名报出来', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ apiKey: 'enc:v1:other-machine', searchKey: 'enc:v1:ok', model: 'm' }),
+      'utf8'
+    )
+    const store = new Store(dir, codec)
+    expect(await store.undecryptableSecrets()).toEqual(['模型 API Key'])
+  })
+
+  it('明文与空值不算解不开', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ apiKey: '', searchKey: 'plain-key', judge: { apiKey: '' } }),
+      'utf8'
+    )
+    const store = new Store(dir, codec)
+    expect(await store.undecryptableSecrets()).toEqual([])
+  })
+
+  it('多账号邮箱授权码解不开也算一条', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ mailAccounts: [{ address: 'a@b.c', authCode: 'enc:v1:nope' }] }),
+      'utf8'
+    )
+    const store = new Store(dir, codec)
+    expect(await store.undecryptableSecrets()).toContain('邮箱授权码（多账号）')
+  })
+
+  it('配置不存在或坏掉时返回空数组，不抛', async () => {
+    const store = new Store(dir, codec)
+    expect(await store.undecryptableSecrets()).toEqual([])
+    await fs.writeFile(path.join(dir, 'config.json'), '{ 坏掉的 json', 'utf8')
+    expect(await store.undecryptableSecrets()).toEqual([])
+  })
+})

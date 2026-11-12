@@ -48,6 +48,12 @@ npm run eval
 ```
 
 All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks and sessions.
+
+**The portable build is the exception**: `changgeng-polar-*-portable.exe` moves `config.json` into `changeng-polar-data\` **next to the exe**, so the configuration travels with the program on a USB stick. The switch keys off `PORTABLE_EXECUTABLE_DIR`, which electron-builder injects — a portable build self-extracts to a temp directory before running, so `process.execPath` points into that temp folder and is gone on exit; using it as the data directory would mean starting from scratch every launch. **Nothing else travels with it** — sessions, action records, memory, orchestration projects and caches stay in `%APPDATA%`, so plugging into someone else's machine doesn't carry your history along. Three limits worth remembering:
+1. **Secrets do not travel.** Keys are encrypted with Windows DPAPI, bound to the current user, and cannot be decrypted on another machine. The code used to return an empty string silently; it now names the unreadable keys in Model and Storage settings, instead of letting you think they were never filled in.
+2. **It cannot run alongside the installed build on the same machine.** The single-instance lock is keyed on userData, and the portable build only moves the config — not userData — so with the installed app running, the portable one exits by itself and merely raises the existing window (two processes writing the same sessions/records would overwrite each other).
+3. **A read-only, full or unplugged stick falls back to the local config**, and the settings page says it fell back rather than failing to start.
+
 The one place it writes outside that folder is the user's Desktop: `write_document` only ever lands in `长庚产出\` on the Desktop (it resolves the path through `app.getPath('desktop')`, so it follows the Desktop if that is redirected to OneDrive). The folder name is hard-coded in `node/document.ts`; the model cannot choose it. It sits in a folder on the Desktop rather than loose on the Desktop itself, so repeated writes don't bury the user's icons.
 
 ---

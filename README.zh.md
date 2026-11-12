@@ -53,6 +53,18 @@ npm run eval
 数据都落在 `%APPDATA%\changeng-polar\`：`config.json`（模型/检索/邮箱凭据，落盘前经 safeStorage 加密）、
 `records.jsonl`（append-only 动作记录，5MB 轮转，只留最近三份）、`verify.json`（查证缓存）、
 `auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆），以及任务/会话各一份 JSON。
+
+**便携版例外**：`changgeng-polar-*-portable.exe` 这个构建把 `config.json` 挪到 **exe 同级的
+`changeng-polar-data\`**，插到别的电脑上配置跟着走。判断依据是 electron-builder 注入的
+`PORTABLE_EXECUTABLE_DIR`（便携版会把程序自解压到临时目录再跑，`process.execPath` 指向的是那个临时目录，
+程序一退就没了，拿它当数据目录等于每次开机从空白开始）。**其余数据不跟着走**——会话、动作记录、记忆、
+编排项目、缓存仍在 `%APPDATA%`，所以插到别人电脑上不会把历史记录一起带过去。三条要记住的边界：
+1. **密钥不跟着走**。Key 用 Windows DPAPI 加密、绑当前用户，换机后解不开；代码以前是静默返回空串，
+   现在会在「模型」和「存储与缓存」里明说哪几个密钥解不开，而不是让你以为没填。
+2. **同一台电脑上不能和已装版同时开**。单实例锁按 userData 算，而便携版只挪配置不挪 userData，
+   所以已装版开着时便携版会自己退出，只把已有窗口叫到前面来（两个进程写同一份会话/记录会互相覆盖）。
+3. **U 盘只读、写满、拔掉时自动退回本机配置**，并在设置页说明退回了，不会让程序起不来。
+
 唯一写到外面的是用户自己的桌面：`write_document` 的产出只落在**桌面上**的 `长庚产出\` 里（走 `app.getPath('desktop')`，桌面被重定向到 OneDrive 时跟着走），
 目录名写死在 `node/document.ts`，模型指定不了。挂在桌面根目录而不是直接铺在桌面上——直接散在图标堆里，写多几次桌面就没法看了。
 

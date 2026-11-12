@@ -1,5 +1,4 @@
 import { app, safeStorage } from 'electron'
-import path from 'node:path'
 import type { DesktopPrefs, TaskDef } from '../shared/types'
 import { desktopPrefsOf } from '../shared/desktop'
 import { orbPrefsOf } from '../shared/orb'
@@ -15,6 +14,7 @@ import { applyOrbPrefs, createOrb, destroyOrb } from './orb'
 import { notifyInstall, notifyReady, notifyTask } from './notify'
 import { registerIpc } from './ipc'
 import { logError } from './log'
+import { resolvePortable } from './portable'
 
 /**
  * 主进程入口：只做装配。
@@ -41,7 +41,21 @@ import { logError } from './log'
 process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason))
 process.on('uncaughtException', (err) => logError('uncaughtException', err))
 
-const store = new Store(path.join(app.getPath('userData')), makeSafeStorageCodec(safeStorage))
+/**
+ * 便携版：配置跟着 exe 走，其余数据仍在本机 userData。
+ *
+ * 必须在建 Store **之前**算出来，否则 Store 会先按旧路径读一遍配置。
+ * 判断失败不影响启动，resolvePortable 会退回本机目录并给出原因。
+ */
+const userDataDir = app.getPath('userData')
+const portable = resolvePortable(process.env, userDataDir)
+if (portable.active) {
+  console.log(`[portable] 配置目录：${portable.configDir}`)
+} else if (portable.reason) {
+  console.warn(`[portable] ${portable.reason}`)
+}
+
+const store = new Store(userDataDir, makeSafeStorageCodec(safeStorage), portable.configDir)
 const inflight = new Map<string, AbortController>()
 const broker = new AuthBroker()
 /**
@@ -223,6 +237,7 @@ void app.whenReady().then(async () => {
 
   registerIpc({
     store,
+    portable,
     alwaysAllowed,
     inflight,
     executeTurn: (params) => runtime.executeTurn(params),

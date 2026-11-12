@@ -27,6 +27,8 @@ const api = {
       today: string
       appVersion: string
       userData: string
+      /** 便携模式：配置跟着 exe 走时 active=true，configDir 是 U 盘上的配置目录 */
+      portable: { active: boolean; configDir: string; exeDir?: string; reason?: string }
     }>,
 
   config: {
@@ -35,6 +37,15 @@ const api = {
       ipcRenderer.invoke('config:save', patch) as Promise<ButlerConfig>,
     /** 密钥是否加密落盘（决定设置页提示文案） */
     secretsEncrypted: () => ipcRenderer.invoke('config:secretsEncrypted') as Promise<boolean>,
+    /** 有哪几个密钥在本机解不开（便携配置换机后会出现） */
+    secretIssues: () => ipcRenderer.invoke('config:secretIssues') as Promise<string[]>,
+    /** 便携模式：把本机 %APPDATA% 的配置复制过来 */
+    importLocal: (overwrite: boolean) =>
+      ipcRenderer.invoke('config:importLocal', overwrite) as Promise<{
+        ok: boolean
+        detail: string
+        needConfirm?: boolean
+      }>,
     test: (patch: Partial<ButlerConfig>) =>
       ipcRenderer.invoke('config:test', patch) as Promise<{
         ok: boolean
@@ -269,7 +280,10 @@ const api = {
     stats: () =>
       ipcRenderer.invoke('storage:stats') as Promise<{
         dir: string
-        files: Array<{ file: string; bytes: number }>
+        /** 配置目录：便携模式下在 U 盘上，与 dir 不同 */
+        configDir: string
+        portable: boolean
+        files: Array<{ file: string; bytes: number; dir: string }>
       }>
   },
 

@@ -10,7 +10,7 @@ import type {
   RecordEntry,
   TaskDef
 } from '../../shared/types'
-import { decodeConfigSecrets, encodeConfigSecrets, PLAIN_CODEC, type SecretCodec } from './secrets'
+import { decodeConfigSecrets, encodeConfigSecrets, ENC_PREFIX, PLAIN_CODEC, type SecretCodec } from './secrets'
 
 export const DEFAULT_CONFIG: ButlerConfig = {
   baseUrl: 'https://api.openai.com/v1',
@@ -58,8 +58,18 @@ export class Store {
   constructor(
     private readonly dir: string,
     /** 密钥加解密；评测脚本不注入时按明文读写 */
-    private readonly codec: SecretCodec = PLAIN_CODEC
+    private readonly codec: SecretCodec = PLAIN_CODEC,
+    /**
+     * config.json 的落点。默认与其它数据同目录；便携版传 U 盘上的目录进来，
+     * 于是会话、记录、记忆仍在本机，只有配置跟着 exe 走。
+     */
+    private readonly configDir: string = dir
   ) {}
+
+  /** 配置实际所在目录（设置页要如实显示"配置到底存哪了"） */
+  configPath(): string {
+    return this.configDir
+  }
 
   /** 密钥是否真的在加密（设置页据此决定提示文案） */
   secretsEncrypted(): boolean {
@@ -81,6 +91,10 @@ export class Store {
     return path.join(this.dir, name)
   }
 
+  private cfg(name: string): string {
+    return path.join(this.configDir, name)
+  }
+
   /** 先写 .tmp 再改名：进程被强杀时不会留下半截 JSON 把旧数据一起带走 */
   private async writeAtomic(name: string, text: string): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true })
@@ -89,13 +103,21 @@ export class Store {
     await fs.rename(tmp, this.p(name))
   }
 
+  /** 配置的原子写：目录可能是 U 盘，和上面那份不是同一个 */
+  private async writeConfigAtomic(name: string, text: string): Promise<void> {
+    await fs.mkdir(this.configDir, { recursive: true })
+    const tmp = this.cfg(`${name}.tmp`)
+    await fs.writeFile(tmp, text, 'utf8')
+    await fs.rename(tmp, this.cfg(name))
+  }
+
   async init(): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true })
   }
 
   async getConfig(): Promise<ButlerConfig> {
     try {
-      const raw = await fs.readFile(this.p('config.json'), 'utf8')
+      const raw = await fs.readFile(this.cfg('config.json'), 'utf8')
       const parsed = { ...DEFAULT_CONFIG, ...(JSON.parse(stripBom(raw)) as Partial<ButlerConfig>) }
       // 盘上是密文，内存里一律明文：调用方（模型请求、IMAP 登录）拿到的都是能直接用的值
       return decodeConfigSecrets(parsed, this.codec)
@@ -104,10 +126,45 @@ export class Store {
     }
   }
 
+  /**
+   * 哪几个密钥在这台机器上解不开。
+   *
+   * 存在的理由：密钥用 Windows DPAPI 加密，绑当前用户。便携版的配置被拿到另一台
+   * 电脑上时，JSON 读得出来、密文解不开——而 decrypt 现在的处理是**静默返回空串**，
+   * 用户只会看到设置页里 Key 一片空白，不知道是丢了还是本来就没填。
+   *
+   * 判据是「盘上是密文（enc:v1: 前缀）但解出来是空」：空值在编码时就不会加密，
+   * 所以非空密文解出空串只可能是解不开，不会是"本来就是空的"。
+   */
+  async undecryptableSecrets(): Promise<string[]> {
+    let raw: string
+    try {
+      raw = await fs.readFile(this.cfg('config.json'), 'utf8')
+    } catch {
+      return []
+    }
+    let parsed: Partial<ButlerConfig>
+    try {
+      parsed = JSON.parse(stripBom(raw)) as Partial<ButlerConfig>
+    } catch {
+      return []
+    }
+    const broken = (value: string | undefined): boolean =>
+      typeof value === 'string' && value.startsWith(ENC_PREFIX) && this.codec.decrypt(value) === ''
+
+    const names: string[] = []
+    if (broken(parsed.apiKey)) names.push('模型 API Key')
+    if (broken(parsed.searchKey)) names.push('检索 Key')
+    if (broken(parsed.judge?.apiKey)) names.push('判分模型 Key')
+    if (broken(parsed.mail?.authCode)) names.push('邮箱授权码')
+    if ((parsed.mailAccounts ?? []).some((acc) => broken(acc?.authCode))) names.push('邮箱授权码（多账号）')
+    return names
+  }
+
   async saveConfig(patch: Partial<ButlerConfig>): Promise<ButlerConfig> {
     return this.enqueue('config.json', async () => {
       const next = { ...(await this.getConfig()), ...patch }
-      await this.writeAtomic('config.json', JSON.stringify(encodeConfigSecrets(next, this.codec), null, 2))
+      await this.writeConfigAtomic('config.json', JSON.stringify(encodeConfigSecrets(next, this.codec), null, 2))
       return next
     })
   }

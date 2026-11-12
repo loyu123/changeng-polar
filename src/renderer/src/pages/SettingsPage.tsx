@@ -103,7 +103,15 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   /** 分区搜索词 */
   const [navQuery, setNavQuery] = useState('')
   /** 存储占用（存储与缓存分区） */
-  const [storageStats, setStorageStats] = useState<{ dir: string; files: Array<{ file: string; bytes: number }> } | null>(null)
+  const [storageStats, setStorageStats] = useState<{
+    dir: string
+    configDir: string
+    portable: boolean
+    files: Array<{ file: string; bytes: number; dir: string }>
+  } | null>(null)
+  /** 便携模式下密钥解不开的那几个（换机器后 DPAPI 解不了密文） */
+  const [secretIssues, setSecretIssues] = useState<string[]>([])
+  const [importing, setImporting] = useState(false)
   /** 操作记录条数（权限与安全里的「查看记录 N」） */
   const [recordCount, setRecordCount] = useState(0)
   /**
@@ -137,6 +145,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   useEffect(() => {
     void window.butler.storage.stats().then(setStorageStats)
     void window.butler.config.secretsEncrypted().then(setSecretsEncrypted)
+    void window.butler.config.secretIssues().then(setSecretIssues)
     void window.butler.records.list(500).then((list) => setRecordCount(list.length))
     void window.butler.tools.list().then((list) =>
       setToolsStat({
@@ -481,9 +490,19 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const sections: Record<SettingsSection, { title: string; lead: string; body: ReactNode; raw?: boolean }> = {
     model: {
       title: '模型',
-      lead: '模型与 Key 都只存在本机 config.json；Key 不进日志、不进对话历史。',
+      lead: storageStats?.portable
+        ? '模型与 Key 都存在便携配置里（跟着程序走的 config.json）；Key 不进日志、不进对话历史。'
+        : '模型与 Key 都只存在本机 config.json；Key 不进日志、不进对话历史。',
       body: (
         <div className="cardbox">
+          {secretIssues.some((n) => n.includes('模型')) && (
+            <div className="form" style={{ padding: '12px 15px 0' }}>
+              <div className="hint" style={{ color: '#B4552D', lineHeight: 1.7 }}>
+                这份配置是从另一台电脑（或另一个 Windows 账户）带过来的，其中的 API Key 在本机解不开，
+                输入框里现在是空的。重新填一次并保存即可，其它配置不受影响。
+              </div>
+            </div>
+          )}
           <div className="ch">模型</div>
           <div className="form" style={{ padding: '12px 15px 14px' }}>
             <div className="form-row">
@@ -1344,9 +1363,74 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     // 存储与缓存（概念图 · 编码组）：真实占用 + 打开数据目录 + 清会话
     storage: {
       title: '存储与缓存',
-      lead: '所有数据都在本机。对话会话存在渲染层的浏览器存储里，其余是 userData 下的 JSON / 日志文件。',
+      lead: storageStats?.portable
+        ? '便携版：config.json 跟着程序走（存在 U 盘上），会话、记录、记忆仍留在本机。'
+        : '所有数据都在本机。对话会话存在渲染层的浏览器存储里，其余是 userData 下的 JSON / 日志文件。',
       body: (
         <>
+          {storageStats?.portable && (
+            <div className="cardbox">
+              <div className="ch">便携模式</div>
+              <div className="form" style={{ padding: '12px 15px 14px' }}>
+                <div className="hint" style={{ marginBottom: 8 }}>
+                  配置跟着程序走：<code style={{ wordBreak: 'break-all' }}>{storageStats.configDir}</code>
+                </div>
+                <div className="hint" style={{ marginBottom: 10, color: '#8E8E86' }}>
+                  密钥仍用 Windows 系统加密（绑当前用户）。换一台电脑打开时密钥解不开，需要在「模型」里重新填一次——
+                  其余配置会照常带过去。
+                </div>
+                <div className="hint" style={{ marginBottom: 10, color: '#8E8E86' }}>
+                  同一台电脑上如果已经开着装好的长庚，便携版不会再启动一份（两个进程写同一份会话与记录会互相覆盖）——
+                  它只会把已有的窗口叫到前面来。
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => void window.butler.shell.openPath(storageStats.configDir)}
+                  >
+                    打开配置目录
+                  </button>
+                  <button
+                    className="btn btn-ghost"
+                    disabled={importing}
+                    onClick={async () => {
+                      if (importing) return
+                      setImporting(true)
+                      try {
+                        let r = await window.butler.config.importLocal(false)
+                        if (r.needConfirm) {
+                          if (!window.confirm('便携配置已经存在，用本机 %APPDATA% 的那份覆盖它？')) return
+                          r = await window.butler.config.importLocal(true)
+                        }
+                        window.alert(r.detail)
+                        if (r.ok) {
+                          setConfig(await window.butler.config.get())
+                          setSecretIssues(await window.butler.config.secretIssues())
+                        }
+                      } finally {
+                        setImporting(false)
+                      }
+                    }}
+                  >
+                    {importing ? '导入中…' : '从本机导入配置'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {secretIssues.length > 0 && (
+            <div className="cardbox">
+              <div className="ch">密钥在本机解不开</div>
+              <div className="form" style={{ padding: '12px 15px 14px' }}>
+                <div className="hint" style={{ lineHeight: 1.7 }}>
+                  这几个密钥是用另一台电脑（或另一个 Windows 账户）的系统加密存进去的，本机解不开，
+                  所以现在等同于没填：<b>{secretIssues.join('、')}</b>。
+                  <br />
+                  在对应分区重新填一次即可，不需要重新配置其它项。
+                </div>
+              </div>
+            </div>
+          )}
           <div className="cardbox">
             <div className="ch">数据目录</div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>
@@ -1371,6 +1455,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   <div className="setrow" key={f.file} style={{ paddingLeft: 0 }}>
                     <div className="rl">
                       <b style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{f.file}</b>
+                      {/* 便携模式下 config.json 不在数据目录里，标出来免得对不上 */}
+                      {storageStats && f.dir !== storageStats.dir && (
+                        <span style={{ fontSize: 11, color: '#8E8E86' }}>在便携目录</span>
+                      )}
                     </div>
                     <span style={{ fontSize: 12, color: '#5A5A54', fontVariantNumeric: 'tabular-nums' }}>
                       {f.bytes < 1024 ? `${f.bytes} B` : `${(f.bytes / 1024).toFixed(1)} KB`}

@@ -14,6 +14,8 @@ import { isInsideOutput } from '../node/document'
 /** IPC 注册时共用的依赖：主进程入口只负责把它们装配起来传下去 */
 export interface IpcContext {
   store: Store
+  /** 便携模式状态：配置是否跟着 exe 走、配置目录在哪 */
+  portable: import('../portable').PortableState
   /** 「始终允许」的内存副本，撤销时要同步清掉 */
   alwaysAllowed: Set<string>
   /** 本轮在跑的请求：停止时要能精确打断 */
@@ -60,7 +62,13 @@ export function registerAppIpc(ctx: IpcContext): void {
   ipcMain.handle('app:info', () => ({
     ...machineEnv(),
     appVersion: app.getVersion(),
-    userData: app.getPath('userData')
+    userData: app.getPath('userData'),
+    portable: {
+      active: ctx.portable.active,
+      configDir: ctx.portable.configDir,
+      exeDir: ctx.portable.exeDir,
+      reason: ctx.portable.reason
+    }
   }))
 
   ipcMain.handle('win:minimize', () => getMainWindow()?.minimize())
@@ -101,17 +109,21 @@ export function registerAppIpc(ctx: IpcContext): void {
     return true
   })
 
-  // 打开数据目录（存储与缓存分区）：只允许打开 userData 里的东西
+  // 打开数据目录（存储与缓存分区）：只允许打开 userData 里的东西，
+  // 以及便携版的配置目录——它在 U 盘上，不在 userData 里
   ipcMain.handle('shell:openPath', async (_e, p: string) => {
-    const dir = app.getPath('userData')
-    if (typeof p !== 'string' || !path.resolve(p).startsWith(path.resolve(dir))) return false
-    const err = await shell.openPath(path.resolve(p))
+    if (typeof p !== 'string') return false
+    const target = path.resolve(p)
+    const allowed = [path.resolve(app.getPath('userData')), path.resolve(ctx.portable.configDir)]
+    if (!allowed.some((dir) => target === dir || target.startsWith(dir + path.sep))) return false
+    const err = await shell.openPath(target)
     return err === ''
   })
 
-  // 存储占用：列 userData 下的数据文件与大小
+  // 存储占用：列数据文件与大小。config.json 可能在便携目录里，单独查
   ipcMain.handle('storage:stats', async () => {
     const dir = app.getPath('userData')
+    const configDir = ctx.portable.configDir
     const names = [
       'config.json',
       'records.jsonl',
@@ -122,16 +134,18 @@ export function registerAppIpc(ctx: IpcContext): void {
       'auth-memory.json',
       'snapshots.json'
     ]
-    const files: Array<{ file: string; bytes: number }> = []
+    const files: Array<{ file: string; bytes: number; dir: string }> = []
     for (const file of names) {
+      // 配置文件跟着 portable 走，别处仍是 userData
+      const base = file === 'config.json' ? configDir : dir
       try {
-        const st = await fs.stat(path.join(dir, file))
-        files.push({ file, bytes: st.size })
+        const st = await fs.stat(path.join(base, file))
+        files.push({ file, bytes: st.size, dir: base })
       } catch {
         /* 不存在 = 还没生成 */
       }
     }
-    return { dir, files }
+    return { dir, configDir, portable: ctx.portable.active, files }
   })
 
   // ---- 能力开关（图标条 · 插头）：工具清单 + 启用状态 ----
