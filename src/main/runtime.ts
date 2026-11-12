@@ -288,7 +288,12 @@ export class TurnRuntime {
     return filterTools(all, { toggles, readOnly })
   }
 
-  private gateFor(requestId: string, emit: (payload: ChatPayload) => void, uiAuth: boolean): GateHooks {
+  private gateFor(
+    requestId: string,
+    emit: (payload: ChatPayload) => void,
+    uiAuth: boolean,
+    origin: 'desktop' | 'remote' = 'desktop'
+  ): GateHooks {
     const { store, broker, alwaysAllowed } = this.opts
     return {
       requestAuth: (request) => {
@@ -334,7 +339,8 @@ export class TurnRuntime {
           .catch((err) => logError('auth-memory', err))
       },
       record: (entry) => {
-        recordAudit(store, entry)
+        // 审计里标记来源：远程发起的动作事后必须能分辨出来
+        recordAudit(store, { ...entry, origin })
       }
     }
   }
@@ -349,8 +355,11 @@ export class TurnRuntime {
     controller: AbortController
     emit: (raw: ChatPayload) => void
     uiAuth: boolean
+    /** 这一轮是谁发起的；不传按桌面处理（定时任务也是无人在场的本地发起） */
+    origin?: 'desktop' | 'remote'
   }): Promise<TurnResult> {
     const { requestId, messages, controller, emit, uiAuth } = params
+    const origin = params.origin ?? 'desktop'
     const config = await this.opts.store.getConfig()
     // 能力开关（插件页）+ 只读模式（权限与安全）：两者都决定本轮有哪些工具
     const tools = this.toolsFor(config.toolToggles ?? {}, config.readOnly === true, config.worker)
@@ -382,13 +391,13 @@ export class TurnRuntime {
       tools,
       signal: controller.signal,
       emit,
-      gate: this.gateFor(requestId, emit, uiAuth),
+      gate: this.gateFor(requestId, emit, uiAuth, origin),
       ctx: {
         config,
         signal: controller.signal,
         record: (entry) => {
-          recordAudit(this.opts.store, entry)
-          return { ...entry, id: randomUUID(), ts: new Date().toISOString() }
+          recordAudit(this.opts.store, { ...entry, origin })
+          return { ...entry, origin, id: randomUUID(), ts: new Date().toISOString() }
         }
       }
     })

@@ -15,6 +15,7 @@ import { notifyInstall, notifyReady, notifyTask } from './notify'
 import { registerIpc } from './ipc'
 import { logError } from './log'
 import { resolvePortable } from './portable'
+import { RemoteService } from './remote/service'
 
 /**
  * 主进程入口：只做装配。
@@ -99,6 +100,29 @@ const runtime = new TurnRuntime({
   installJobs,
   openSettings: openSettingsPage
 })
+
+/**
+ * 远程入口（手机 App）。
+ *
+ * 这里只是**装配**，是否真的监听由总闸决定：默认关，桌面上打开才起。
+ * 构造时不启动，避免应用一开机就把端口开出来。
+ */
+const remote = new RemoteService(
+  {
+    version: app.getVersion(),
+    // 远程那一轮与桌面走同一条链路，只是 origin 不同
+    executeTurn: (params) => runtime.executeTurn(params),
+    auth: {
+      answer: (authId, answer) => broker.answer(authId, answer),
+      choose: (choiceId, value) => broker.choose(choiceId, value),
+      settleRequest: (requestId, answer) => broker.settleRequest(requestId, answer)
+    },
+    inflight,
+    // 设备白名单落盘（只存 token 的哈希）
+    onPaired: () => remote.persistDevices()
+  },
+  app.getPath('userData')
+)
 
 /** 托盘菜单：状态行、打开哪一页、真退出 */
 const trayOptions: TrayOptions = {
@@ -232,12 +256,22 @@ void app.whenReady().then(async () => {
   // 那一刻托盘还不存在而被关掉
   createTray(trayOptions)
 
-  const prefs = desktopPrefsOf(await store.getConfig())
-  applyDesktopPrefs(prefs)
+  const config = await store.getConfig()
+  applyDesktopPrefs(desktopPrefsOf(config))
+
+  /**
+   * 远程入口：只有用户**上次明确打开过**才起。
+   * 默认不开——远程入口一旦开着，等于把这台机器接到网络上。
+   */
+  if (config.remote?.enabled === true) {
+    const started = await remote.start()
+    if (!started) logError('remote-autostart', new Error('远程入口未能启动（端口被占用？）'))
+  }
 
   registerIpc({
     store,
     portable,
+    remote,
     alwaysAllowed,
     inflight,
     executeTurn: (params) => runtime.executeTurn(params),

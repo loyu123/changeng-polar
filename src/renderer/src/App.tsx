@@ -103,6 +103,7 @@ const SECTION_LABEL: Record<SettingsSection, string> = {
   accountsLogin: '账号与登录',
   pluginsCap: '插件与能力',
   security: '权限与安全',
+  remote: '远程访问',
   records: '操作记录',
   general: '常规',
   orb: '桌面助手',

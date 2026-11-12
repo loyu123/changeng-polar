@@ -4,6 +4,7 @@ import { registerConfigIpc } from './config'
 import { registerInstallIpc } from './install'
 import { registerOrbIpc } from './orb'
 import { registerOrchestrationIpc } from './orchestration'
+import { registerRemoteIpc } from './remote'
 import { registerWorkIpc } from './work'
 
 export type { IpcContext } from './app'
@@ -16,5 +17,6 @@ export function registerIpc(ctx: IpcContext): void {
   registerWorkIpc(ctx)
   registerOrbIpc(ctx)
   registerOrchestrationIpc(ctx)
+  registerRemoteIpc(ctx)
   registerInstallIpc(ctx.installJobs)
 }

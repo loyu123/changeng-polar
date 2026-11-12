@@ -62,6 +62,7 @@ export type SettingsSection =
   | 'accountsLogin'
   | 'pluginsCap'
   | 'security'
+  | 'remote'
   | 'records'
   | 'general'
   | 'orb'
@@ -111,6 +112,18 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   } | null>(null)
   /** 便携模式下密钥解不开的那几个（换机器后 DPAPI 解不了密文） */
   const [secretIssues, setSecretIssues] = useState<string[]>([])
+  /** 远程入口：总闸状态、配对码、忙碌标记 */
+  const [remoteState, setRemoteState] = useState<{
+    enabled: boolean
+    address: string
+    port: number
+    devices: Array<{ id: string; label: string; createdAt: number; lastSeenAt: number | null }>
+    pairing: { code: string; expiresAt: number; remainingMs: number } | null
+    listeners: number
+    error?: string
+  } | null>(null)
+  const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null)
+  const [remoteBusy, setRemoteBusy] = useState(false)
   const [importing, setImporting] = useState(false)
   /** 操作记录条数（权限与安全里的「查看记录 N」） */
   const [recordCount, setRecordCount] = useState(0)
@@ -146,6 +159,7 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     void window.butler.storage.stats().then(setStorageStats)
     void window.butler.config.secretsEncrypted().then(setSecretsEncrypted)
     void window.butler.config.secretIssues().then(setSecretIssues)
+    void window.butler.remote.state().then(setRemoteState)
     void window.butler.records.list(500).then((list) => setRecordCount(list.length))
     void window.butler.tools.list().then((list) =>
       setToolsStat({
@@ -1495,6 +1509,128 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         </>
       )
     },
+    // 远程访问：手机 App 的总闸、配对、设备白名单
+    remote: {
+      title: '远程访问',
+      lead: '手机 App 通过这台电脑上的一个本地端口连进来；默认关闭，关掉时端口一起释放。',
+      body: (
+        <>
+          <div className="cardbox">
+            <div className="ch">总闸</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              <div className="setrow" style={{ paddingLeft: 0 }}>
+                <div className="rl">
+                  <b>允许远程连接</b>
+                  <span>
+                    只监听 <code>127.0.0.1</code>，外面那层由 frp 隧道转发——长庚自己永远不直接面对公网。
+                  </span>
+                </div>
+                <button
+                  className={`btn ${remoteState?.enabled ? 'btn-ghost' : 'btn-primary'}`}
+                  disabled={remoteBusy}
+                  onClick={async () => {
+                    setRemoteBusy(true)
+                    try {
+                      setRemoteState(await window.butler.remote.enable(!remoteState?.enabled))
+                    } finally {
+                      setRemoteBusy(false)
+                    }
+                  }}
+                >
+                  {remoteState?.enabled ? '关闭远程入口' : '开启远程入口'}
+                </button>
+              </div>
+              {remoteState?.error && (
+                <div className="hint" style={{ color: '#B4552D', marginTop: 8 }}>启动失败：{remoteState.error}</div>
+              )}
+              {remoteState?.enabled && (
+                <div className="hint" style={{ marginTop: 8 }}>
+                  正在监听 <code>{remoteState.address}</code>；当前有 {remoteState.listeners} 个事件流连接。
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="cardbox">
+            <div className="ch">配对新手机</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              <div className="hint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
+                配对码 2 分钟内有效、用一次即作废，试错 5 次会自动作废。手机 App 输入它换一个长期 token，
+                之后不用再输。
+              </div>
+              {pairCode ? (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 30, letterSpacing: 6, fontVariantNumeric: 'tabular-nums' }}>
+                    {pairCode.code}
+                  </div>
+                  <div className="hint">还剩约 {Math.max(0, Math.round((pairCode.expiresAt - Date.now()) / 1000))} 秒</div>
+                </div>
+              ) : null}
+              <button
+                className="btn btn-ghost"
+                disabled={remoteBusy}
+                onClick={async () => {
+                  setRemoteBusy(true)
+                  try {
+                    const r = await window.butler.remote.issuePairingCode()
+                    if (r.ok && r.code && r.expiresAt) setPairCode({ code: r.code, expiresAt: r.expiresAt })
+                    else setPairCode(null)
+                    setRemoteState(await window.butler.remote.state())
+                  } finally {
+                    setRemoteBusy(false)
+                  }
+                }}
+              >
+                {pairCode ? '重新生成配对码' : '生成配对码'}
+              </button>
+            </div>
+          </div>
+
+          <div className="cardbox">
+            <div className="ch">已配对设备</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              {(remoteState?.devices ?? []).length === 0 ? (
+                <div style={{ fontSize: 12, color: '#8E8E86' }}>还没有设备配对。</div>
+              ) : (
+                (remoteState?.devices ?? []).map((d) => (
+                  <div className="setrow" key={d.id} style={{ paddingLeft: 0 }}>
+                    <div className="rl">
+                      <b>{d.label}</b>
+                      <span>
+                        配对于 {new Date(d.createdAt).toLocaleString('zh-CN')}
+                        {d.lastSeenAt ? ` · 上次连接 ${new Date(d.lastSeenAt).toLocaleString('zh-CN')}` : ' · 还没连过'}
+                      </span>
+                    </div>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={async () => {
+                        await window.butler.remote.revoke(d.id)
+                        setRemoteState(await window.butler.remote.state())
+                      }}
+                    >
+                      踢掉
+                    </button>
+                  </div>
+                ))
+              )}
+              {(remoteState?.devices ?? []).length > 0 && (
+                <button
+                  className="btn btn-ghost"
+                  style={{ marginTop: 8 }}
+                  onClick={async () => {
+                    if (!window.confirm('踢掉全部已配对设备？它们需要重新配对才能再用。')) return
+                    await window.butler.remote.revokeAll()
+                    setRemoteState(await window.butler.remote.state())
+                  }}
+                >
+                  全部踢掉
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )
+    },
     // 原独立页迁入设置：整页原样嵌入（含各自的中栏），占满分区内容区
     records: {
       title: '操作记录',
@@ -1582,6 +1718,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         {('权限与安全'.includes(navQuery.trim()) || navQuery.trim() === '') && (
           <button className={`sitem${section === 'security' ? ' sel' : ''}`} onClick={() => setSection('security')}>
             权限与安全
+          </button>
+        )}
+        {('远程访问'.includes(navQuery.trim()) || navQuery.trim() === '') && (
+          <button className={`sitem${section === 'remote' ? ' sel' : ''}`} onClick={() => setSection('remote')}>
+            远程访问
           </button>
         )}
         {navQuery.trim() === '' && <div className="sgrp">本机</div>}

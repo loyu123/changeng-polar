@@ -103,6 +103,14 @@ export interface ButlerConfig extends ModelConfig {
   /** 桌面悬浮助手（球与面板），缺省按 DEFAULT_ORB_PREFS */
   orb?: OrbPrefs
   /**
+   * 远程入口（手机 App）的总闸。
+   *
+   * 缺省**关闭**：远程入口一旦开了，等于把这台机器接到网络上，默认必须是关的。
+   * 打开后重启仍然有效（用户明确表达过"我要用远程"），但桌面上随时可以一键关掉，
+   * 关掉时端口一起释放。
+   */
+  remote?: { enabled: boolean }
+  /**
    * 用户额外打开的编排项目目录（编排页「打开项目目录…」）。
    *
    * 为什么要有：项目默认只落在 `%APPDATA%\changeng-polar\orchestrator`，
@@ -359,6 +367,14 @@ export interface RecordEntry {
   undo?: string
   /** 谁批的 */
   authz?: AuthzDecision
+  /**
+   * 这一条是谁发起的。
+   *
+   * 远程助手的前提是「你不在电脑旁」，所以事后必须能一眼分辨哪些动作是外面发的：
+   * 手机丢过、账号借过、记不清自己做过什么的时候，这一栏是唯一的依据。
+   * 老记录没有这个字段，读的时候按桌面处理（远程入口是后加的，那之前只有桌面）。
+   */
+  origin?: 'desktop' | 'remote'
   sourceUrl?: string
   /** 卸载前存的状态快照 id（用来回答"卸完少了什么"） */
   snapshot?: string

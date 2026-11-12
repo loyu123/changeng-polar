@@ -16,6 +16,8 @@ export interface IpcContext {
   store: Store
   /** 便携模式状态：配置是否跟着 exe 走、配置目录在哪 */
   portable: import('../portable').PortableState
+  /** 远程入口（手机 App）：开关、配对码、设备白名单 */
+  remote: import('../remote/service').RemoteService
   /** 「始终允许」的内存副本，撤销时要同步清掉 */
   alwaysAllowed: Set<string>
   /** 本轮在跑的请求：停止时要能精确打断 */

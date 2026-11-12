@@ -275,6 +275,44 @@ const api = {
     reveal: (p: string) => ipcRenderer.invoke('shell:reveal', p) as Promise<boolean>
   },
 
+  /**
+   * 远程入口（手机 App）。
+   *
+   * 桌面这边能做的只有四件事：看状态、开关总闸、发配对码、踢设备。
+   * 配对本身在手机上完成——桌面上没有"替手机登录"的按钮。
+   */
+  remote: {
+    state: () =>
+      ipcRenderer.invoke('remote:state') as Promise<{
+        enabled: boolean
+        address: string
+        port: number
+        devices: Array<{ id: string; label: string; createdAt: number; lastSeenAt: number | null }>
+        pairing: { code: string; expiresAt: number; remainingMs: number } | null
+        listeners: number
+        error?: string
+      }>,
+    enable: (enabled: boolean) =>
+      ipcRenderer.invoke('remote:enable', enabled) as Promise<{
+        enabled: boolean
+        address: string
+        port: number
+        devices: Array<{ id: string; label: string; createdAt: number; lastSeenAt: number | null }>
+        pairing: { code: string; expiresAt: number; remainingMs: number } | null
+        listeners: number
+        error?: string
+      }>,
+    issuePairingCode: () =>
+      ipcRenderer.invoke('remote:pairing:issue') as Promise<{
+        ok: boolean
+        code?: string
+        expiresAt?: number
+        error?: string
+      }>,
+    revoke: (deviceId: string) => ipcRenderer.invoke('remote:devices:revoke', deviceId) as Promise<{ ok: boolean }>,
+    revokeAll: () => ipcRenderer.invoke('remote:devices:revokeAll') as Promise<{ revoked: number }>
+  },
+
   /** 存储占用（存储与缓存分区） */
   storage: {
     stats: () =>
