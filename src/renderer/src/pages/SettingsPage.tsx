@@ -120,10 +120,14 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     devices: Array<{ id: string; label: string; createdAt: number; lastSeenAt: number | null }>
     pairing: { code: string; expiresAt: number; remainingMs: number } | null
     listeners: number
+    lanAccess: boolean
+    urls: string[]
     error?: string
   } | null>(null)
   const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null)
   const [remoteBusy, setRemoteBusy] = useState(false)
+  /** 局域网测试模式：开启后监听 0.0.0.0，手机同一 WiFi 才能访问 */
+  const [lanAccess, setLanAccess] = useState(false)
   const [importing, setImporting] = useState(false)
   /** 操作记录条数（权限与安全里的「查看记录 N」） */
   const [recordCount, setRecordCount] = useState(0)
@@ -159,7 +163,11 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     void window.butler.storage.stats().then(setStorageStats)
     void window.butler.config.secretsEncrypted().then(setSecretsEncrypted)
     void window.butler.config.secretIssues().then(setSecretIssues)
-    void window.butler.remote.state().then(setRemoteState)
+    void window.butler.remote.state().then((s) => {
+      setRemoteState(s)
+      // 界面上的开关要跟着实际监听模式走，不能自己猜
+      setLanAccess(s.lanAccess === true)
+    })
     void window.butler.records.list(500).then((list) => setRecordCount(list.length))
     void window.butler.tools.list().then((list) =>
       setToolsStat({
@@ -1531,7 +1539,10 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   onClick={async () => {
                     setRemoteBusy(true)
                     try {
-                      setRemoteState(await window.butler.remote.enable(!remoteState?.enabled))
+                      // 关闭时一并清掉局域网模式；开启时沿用当前选择
+                      setRemoteState(
+                        await window.butler.remote.enable(!remoteState?.enabled, lanAccess)
+                      )
                     } finally {
                       setRemoteBusy(false)
                     }
@@ -1546,11 +1557,60 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
               {remoteState?.enabled && (
                 <div className="hint" style={{ marginTop: 8 }}>
                   正在监听 <code>{remoteState.address}</code>；当前有 {remoteState.listeners} 个事件流连接。
+                  {(remoteState.urls ?? []).length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      手机打开：
+                      {(remoteState.urls ?? []).map((u) => (
+                        <div key={u}>
+                          <code style={{ wordBreak: 'break-all' }}>{u}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           </div>
 
+          <div className="cardbox">
+            <div className="ch">局域网测试</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              <div className="hint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
+                正式用法是 frp 隧道（电脑主动连出去，不暴露公网）。配隧道前要先有一台 VPS，
+                在那之前同一 WiFi 下的手机没法访问只监听回环的服务。
+                <br />
+                <b style={{ color: '#B4552D' }}>
+                  打开后同一网络里的任何设备都能连到这个端口
+                </b>
+                （仍然需要配对码换 token 才能用）。测完请关掉。
+              </div>
+              <div className="setrow" style={{ paddingLeft: 0 }}>
+                <div className="rl">
+                  <b>监听所有网卡（0.0.0.0）</b>
+                  <span>{remoteState?.lanAccess ? '已开启——同一 WiFi 的设备可以访问' : '未开启（只监听本机回环）'}</span>
+                </div>
+                <button
+                  className="btn btn-ghost"
+                  disabled={remoteBusy}
+                  onClick={async () => {
+                    setRemoteBusy(true)
+                    try {
+                      const next = !lanAccess
+                      setLanAccess(next)
+                      // 服务已经在跑：要用新模式重启一次才生效
+                      if (remoteState?.enabled) {
+                        setRemoteState(await window.butler.remote.enable(true, next))
+                      }
+                    } finally {
+                      setRemoteBusy(false)
+                    }
+                  }}
+                >
+                  {lanAccess ? '改回只监听本机' : '开启局域网访问'}
+                </button>
+              </div>
+            </div>
+          </div>
           <div className="cardbox">
             <div className="ch">配对新手机</div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>

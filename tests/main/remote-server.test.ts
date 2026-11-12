@@ -237,3 +237,49 @@ describe('远程入口 · 事件流', () => {
     controller.abort()
   })
 })
+
+describe('远程入口 · 手机页面', () => {
+  it('根路径返回页面本体，且不需要 token', async () => {
+    const { base } = await boot()
+    const res = await fetch(`${base}/`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    const html = await res.text()
+    // 三个状态都得在：配对、对话、授权卡
+    expect(html).toContain('配对')
+    expect(html).toContain('api/pair')
+    expect(html).toContain('api/auth')
+    // 页面里不能出现任何凭据
+    expect(html.toLowerCase()).not.toContain('apikey')
+  })
+
+  it('页面不加载任何外部资源（用户在外面可能连不上 CDN）', async () => {
+    const { base } = await boot()
+    const html = await (await fetch(`${base}/`)).text()
+    expect(html).not.toMatch(/src=["']https?:/)
+    expect(html).not.toMatch(/href=["']https?:/)
+    expect(html).not.toMatch(/@import\s+url/)
+  })
+
+  it('页面带 CSP：不允许往任何别处发请求', async () => {
+    const { base } = await boot()
+    const res = await fetch(`${base}/`)
+    const csp = res.headers.get('content-security-policy') || ''
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain("connect-src 'self'")
+  })
+
+  it('页面本身不需要 token，但页面里调的接口仍然要', async () => {
+    const { base, deps } = await boot()
+    // 页面能拿到
+    expect((await fetch(`${base}/`)).status).toBe(200)
+    // 但同一个服务上不带 token 发指令依然 401
+    const res = await fetch(`${base}/api/turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'x' })
+    })
+    expect(res.status).toBe(401)
+    expect(deps.executeTurn).not.toHaveBeenCalled()
+  })
+})

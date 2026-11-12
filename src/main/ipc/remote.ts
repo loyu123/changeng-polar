@@ -11,19 +11,21 @@ import type { IpcContext } from './app'
 export function registerRemoteIpc(ctx: IpcContext): void {
   ipcMain.handle('remote:state', () => ctx.remote.state())
 
-  ipcMain.handle('remote:enable', async (_e, enabled: boolean) => {
+  ipcMain.handle('remote:enable', async (_e, enabled: boolean, lanAccess?: boolean) => {
     const want = enabled === true
+    // 局域网测试模式只在"开启"时有意义；关掉时一并清掉，免得下次悄悄开着
+    const lan = want && lanAccess === true
     if (want) {
-      const ok = await ctx.remote.start()
+      const ok = await ctx.remote.start(lan)
       if (!ok) {
         // 起不来就把配置也停在 false：否则重启后会一遍遍尝试同一个注定失败的端口
-        await ctx.store.saveConfig({ remote: { enabled: false } })
+        await ctx.store.saveConfig({ remote: { enabled: false, lanAccess: false } })
         return ctx.remote.state()
       }
-      await ctx.store.saveConfig({ remote: { enabled: true } })
+      await ctx.store.saveConfig({ remote: { enabled: true, lanAccess: lan } })
     } else {
       await ctx.remote.stop()
-      await ctx.store.saveConfig({ remote: { enabled: false } })
+      await ctx.store.saveConfig({ remote: { enabled: false, lanAccess: false } })
     }
     return ctx.remote.state()
   })

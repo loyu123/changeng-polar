@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { logError } from '../log'
 import { PairingStore, type PairedDevice } from './pairing'
@@ -21,7 +22,23 @@ export interface RemotePublicState {
   devices: Array<Omit<PairedDevice, 'tokenHash'>>
   pairing: { code: string; expiresAt: number; remainingMs: number } | null
   listeners: number
+  /** 是否在监听所有网卡（局域网测试模式） */
+  lanAccess: boolean
+  /** 手机可以直接打开的地址；enabled 为 false 时为空 */
+  urls: string[]
   error?: string
+}
+
+/** 本机的局域网 IPv4 地址（手机在同一 WiFi 下要用它） */
+function lanAddresses(): string[] {
+  const out: string[] = []
+  const ifaces = networkInterfaces()
+  for (const list of Object.values(ifaces)) {
+    for (const info of list ?? []) {
+      if (info.family === 'IPv4' && !info.internal) out.push(info.address)
+    }
+  }
+  return out
 }
 
 export class RemoteService {
@@ -29,6 +46,8 @@ export class RemoteService {
   private readonly server: RemoteServer
   private readonly devicesPath: string
   private enabled = false
+  /** 是否监听所有网卡（局域网测试模式） */
+  private lanAccess = false
   /** 磁盘上的设备列表只读一次；之后以内存为准（见 start 的注释） */
   private loaded = false
   private lastError: string | undefined
@@ -42,8 +61,13 @@ export class RemoteService {
     this.devicesPath = path.join(dataDir, DEVICES_FILE)
   }
 
-  /** 起服务并把已配对设备读回来。失败不抛：远程入口起不来不该让整个应用挂掉 */
-  async start(): Promise<boolean> {
+  /**
+   * 起服务并把已配对设备读回来。失败不抛：远程入口起不来不该让整个应用挂掉。
+   *
+   * `lanAccess` 为 true 时监听 0.0.0.0（局域网测试），否则只监听回环。
+   * 正式用法是 frp 隧道，那时也要传 false。
+   */
+  async start(lanAccess = false): Promise<boolean> {
     /**
      * 只在**第一次**启动时读磁盘。
      *
@@ -57,8 +81,10 @@ export class RemoteService {
       this.loaded = true
     }
     try {
-      // 只监听回环：外面那层是 frpc，长庚自己永远不直接面对公网
-      await this.server.listen(this.preferredPort, '127.0.0.1')
+      // 默认只监听回环：外面那层是 frpc，长庚自己永远不直接面对公网。
+      // 局域网测试模式是显式打开的例外（见 ButlerConfig.remote.lanAccess）
+      await this.server.listen(this.preferredPort, lanAccess ? '0.0.0.0' : '127.0.0.1')
+      this.lanAccess = lanAccess
       this.enabled = true
       this.lastError = undefined
       return true
@@ -73,6 +99,7 @@ export class RemoteService {
   async stop(): Promise<void> {
     // 先置 false：即便 close 抛错，语义上也已经关掉了
     this.enabled = false
+    this.lanAccess = false
     this.pairing.clearCode()
     await this.server.close()
   }
@@ -92,7 +119,7 @@ export class RemoteService {
    */
   async issuePairingCode(): Promise<{ code: string; expiresAt: number } | { error: string }> {
     if (!this.enabled) {
-      const ok = await this.start()
+      const ok = await this.start(this.lanAccess)
       if (!ok) return { error: this.lastError ?? '远程入口启动失败' }
     }
     return this.pairing.issueCode()
@@ -133,8 +160,22 @@ export class RemoteService {
         ? { code: live.code, expiresAt: live.expiresAt, remainingMs: live.expiresAt - Date.now() }
         : null,
       listeners: this.server.hub.size,
+      lanAccess: this.lanAccess,
+      urls: this.enabled ? this.urlsOf() : [],
       ...(this.lastError ? { error: this.lastError } : {})
     }
+  }
+
+  /**
+   * 手机能直接打开的地址。
+   *
+   * 局域网模式下给出每个网卡的 IP——用户要照着输到手机浏览器里，
+   * 让他自己去 `ipconfig` 里找那个数是没必要的。回环模式只有一个。
+   */
+  private urlsOf(): string[] {
+    const port = this.server.port()
+    if (!this.lanAccess) return [`http://127.0.0.1:${port}/`]
+    return lanAddresses().map((ip) => `http://${ip}:${port}/`)
   }
 
   private async loadDevices(): Promise<void> {

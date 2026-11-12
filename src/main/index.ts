@@ -264,7 +264,7 @@ void app.whenReady().then(async () => {
    * 默认不开——远程入口一旦开着，等于把这台机器接到网络上。
    */
   if (config.remote?.enabled === true) {
-    const started = await remote.start()
+    const started = await remote.start(config.remote.lanAccess === true)
     if (!started) logError('remote-autostart', new Error('远程入口未能启动（端口被占用？）'))
   }
 

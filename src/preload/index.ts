@@ -290,16 +290,20 @@ const api = {
         devices: Array<{ id: string; label: string; createdAt: number; lastSeenAt: number | null }>
         pairing: { code: string; expiresAt: number; remainingMs: number } | null
         listeners: number
+        lanAccess: boolean
+        urls: string[]
         error?: string
       }>,
-    enable: (enabled: boolean) =>
-      ipcRenderer.invoke('remote:enable', enabled) as Promise<{
+    enable: (enabled: boolean, lanAccess?: boolean) =>
+      ipcRenderer.invoke('remote:enable', enabled, lanAccess) as Promise<{
         enabled: boolean
         address: string
         port: number
         devices: Array<{ id: string; label: string; createdAt: number; lastSeenAt: number | null }>
         pairing: { code: string; expiresAt: number; remainingMs: number } | null
         listeners: number
+        lanAccess: boolean
+        urls: string[]
         error?: string
       }>,
     issuePairingCode: () =>

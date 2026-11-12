@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from 'node:crypto'
 import type { AuthAnswer, ChatMessage } from '../../shared/types'
 import { RemoteHub } from './hub'
+import { MOBILE_PAGE } from './mobile-page'
 import { PairingStore } from './pairing'
 
 /**
@@ -177,6 +178,27 @@ export class RemoteServer {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
     const method = (req.method ?? 'GET').toUpperCase()
+
+    /**
+     * 页面本身：手机浏览器打开根路径就看到配对界面。
+     *
+     * 不需要 token——页面本身不含任何凭据，配对是页面里后续发起的请求。
+     * 这样「手机浏览器直接打开」和「App 的 WebView 加载」是同一份东西。
+     */
+    if ((path === '/' || path === '/index.html') && method === 'GET') {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        // 这个页面不需要从别处加载任何东西（无 CDN、无外部字体），
+        // 明确告诉浏览器不要往外发请求
+        'content-security-policy':
+          "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'",
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer'
+      })
+      res.end(MOBILE_PAGE)
+      return
+    }
 
     // 这两个不需要 token：一个是探活，一个是配对本身
     if (path === '/api/ping' && method === 'GET') {

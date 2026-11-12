@@ -204,3 +204,61 @@ describe('远程服务 · 重复启动不能冲掉已配对设备', () => {
     }
   })
 })
+
+describe('远程服务 · 监听范围', () => {
+  it('默认只监听回环；局域网模式才监听 0.0.0.0', async () => {
+    const dir = await fsp.mkdtemp(path.join(fspTmp(), 'remote-lan-'))
+    const { RemoteService } = await import('../../src/main/remote/service')
+    const svc = new RemoteService(
+      {
+        version: 't',
+        executeTurn: async () => ({}),
+        auth: { answer: () => true, choose: () => true, settleRequest: () => {} },
+        inflight: new Map()
+      },
+      dir,
+      0
+    )
+    try {
+      await svc.start()
+      expect(svc.state().lanAccess).toBe(false)
+      expect(svc.state().address.startsWith('127.0.0.1:')).toBe(true)
+      // 回环模式下手机地址就只有本机那一个，不该把局域网 IP 也列出来骗人
+      expect(svc.state().urls.every((u) => u.includes('127.0.0.1'))).toBe(true)
+
+      await svc.stop()
+      await svc.start(true)
+      expect(svc.state().lanAccess).toBe(true)
+      expect(svc.state().address.startsWith('0.0.0.0:')).toBe(true)
+    } finally {
+      await svc.stop()
+      await fsp.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('关掉之后监听模式也复位：不能下次悄悄还开着 0.0.0.0', async () => {
+    const dir = await fsp.mkdtemp(path.join(fspTmp(), 'remote-lan2-'))
+    const { RemoteService } = await import('../../src/main/remote/service')
+    const svc = new RemoteService(
+      {
+        version: 't',
+        executeTurn: async () => ({}),
+        auth: { answer: () => true, choose: () => true, settleRequest: () => {} },
+        inflight: new Map()
+      },
+      dir,
+      0
+    )
+    try {
+      await svc.start(true)
+      expect(svc.state().lanAccess).toBe(true)
+      await svc.stop()
+      expect(svc.state().lanAccess).toBe(false)
+      expect(svc.state().enabled).toBe(false)
+      expect(svc.state().urls).toEqual([])
+    } finally {
+      await svc.stop()
+      await fsp.rm(dir, { recursive: true, force: true })
+    }
+  })
+})
