@@ -1,3 +1,14 @@
+> **Archived (2026-11-13) — the remote-access line is dropped.**
+> That covers the three routes on this page (LAN / Tailscale / frp), the **QQ bridge**
+> tried and abandoned later (Tencent bot single chat over an outbound WebSocket, no
+> public IP needed), and **reading WeChat through UI Automation**
+> (`scripts/wechat-uia-probe.ts`).
+> The code is still in the tree and still runs, but it is no longer maintained or
+> extended. This page stays only as a record of how it was built and which traps it hit,
+> so nobody redoes it from an outdated plan.
+> The project is back to what it was for: reporting progress, digesting material,
+> preparing documents.
+
 > Split out of the [README](../../README.md) so the front page stays an introduction.
 
 # Phone (remote access)

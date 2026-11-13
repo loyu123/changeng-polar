@@ -47,7 +47,7 @@ npm run check:projects                  # archive: validate → persist → read
 npm run check:list [project] [subdir]   # run list_files against a real project
 npm run check:log [project] [lines]     # run read_log_tail against a real project log
 npm run check:report [project]          # the two steps the progress-report skeleton needs
-npm run check:remote                    # remote entry over the LAN IP, then print the self-check verdicts
+npm run check:remote                    # remote entry over the LAN IP (that direction is archived; self-check only)
 npm run check:input                     # simulated mouse/keyboard: moves your mouse, restores it afterwards
 ```
 
@@ -68,7 +68,7 @@ The **portable build** (`changgeng-polar-*-portable.exe`) moves `config.json` ne
 | [Boundaries](docs/en/boundaries.md) | Every tool, its tier, and the constraints enforced in code rather than in the prompt |
 | [Evaluation](docs/en/evaluation.md) | Measured results, scoring criteria, how the cases themselves were stabilised |
 | [Architecture](docs/en/architecture.md) | Project layout and what each file is responsible for |
-| [Remote access](docs/en/remote.md) | Phone access over LAN or Tailscale, pairing, and the self-check |
+| [Remote access (archived)](docs/en/remote.md) | **Dropped**: LAN / Tailscale / frp, kept as a record |
 | [Known gaps](docs/en/known-gaps.md) | What is unverified, undone, or deliberately left alone |
 
 ## Deliberately not built

@@ -47,7 +47,7 @@ npm run check:projects                  # 项目档案：校验 → 落盘 → �
 npm run check:list [项目名] [子目录]     # 拿真实项目跑一遍 list_files
 npm run check:log [项目名] [行数]        # 拿真实项目的日志跑一遍 read_log_tail
 npm run check:report [项目名]           # 走一遍「进展汇报」骨架要用的两步
-npm run check:remote                    # 远程入口：经局域网 IP 走完整条链路，再打印自检结论
+npm run check:remote                    # 远程入口：经局域网 IP 走完整条链路（该方向已归档，仅保留自检）
 npm run check:input                     # 模拟键鼠真机验证：会真的移动鼠标（结束恢复原位）
 ```
 
@@ -68,7 +68,7 @@ npm run check:input                     # 模拟键鼠真机验证：会真的�
 | [边界](docs/zh/boundaries.md) | 每个工具的档位，以及哪些约束写在代码里而不是提示词里 |
 | [评测](docs/zh/evaluation.md) | 实测数字、打分口径、以及用例本身是怎么被补稳的 |
 | [架构](docs/zh/architecture.md) | 目录结构，每个文件负责什么 |
-| [手机端](docs/zh/remote.md) | 局域网或 Tailscale 连入、配对、自检 |
+| [手机端（历史）](docs/zh/remote.md) | **已作废**：局域网 / Tailscale / frp，留作记录 |
 | [已知待改进](docs/zh/known-gaps.md) | 没验的、没做的、以及刻意不做的 |
 
 ## Demo 明确没做
