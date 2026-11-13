@@ -25,6 +25,11 @@ npm test                         # unit tests (vitest, no network, no registry a
 npm run gate                     # offline acceptance for the auth gate (no model, 69 assertions)
 npm run smoke                    # model-free: verify registry reads + web search
 npm run mock                     # local fake model (exercise the chat path with no API key)
+npm run check:remote             # verify remote access without a phone: bind 0.0.0.0, walk the whole
+                                 #   flow over the LAN IP, then print the self-check verdicts
+npm run check:input              # verify simulated mouse/keyboard for real: builds its own target
+                                 #   window, really clicks / pastes / presses Enter, reads the content back
+                                 #   NOTE: it moves your mouse (restored afterwards) — interactive session only
 npm run eval                     # run the 36 eval cases (no network), writes evals/report.json
 npm run eval -- --with-search    # also run the 3 S cases: real live search, 39 in total
 npm run eval -- --cat=S --with-search   # only the 3 live-search cases
@@ -284,6 +289,28 @@ tests/                     unit tests (vitest, no network, no registry access)
 
 ---
 
+## Phone (remote access)
+
+**There is no app.** Everything the phone can do lives in a single-file web page (`src/main/remote/mobile-page.ts` — no framework, no build step) that any browser can open. The reason is not laziness: a real APK means installing and updating separately on HarmonyOS / Android / iOS, for an interface that has exactly three states (pair / chat / disconnected).
+
+Three ways to connect, pick by "do you need it away from home":
+
+| Scenario | How | Cost |
+|---|---|---|
+| Same WiFi | Turn on LAN mode (bind `0.0.0.0`), open `http://<pc-ip>:7474` on the phone | Stops at the front door |
+| Anywhere with internet | Install **Tailscale** on both PC and phone, same account, open `http://100.x.x.x:7474` | One client per side; traffic goes through an encrypted tunnel — no public exposure, no ports opened |
+| Anywhere (the other route) | frp / your own tunnel | Needs a public VPS |
+
+**Tailscale needs no configuration change**: once both ends are logged in, the address list in Settings gains a line labelled "Tailscale (works away from home)" with a 100.x address. It is recognised from `100.64.0.0/10` (RFC 6598) — no home or office LAN uses that range, so it cannot be mistaken for one. If you want HTTPS, `tailscale serve --bg 7474` lets the remote entry stay bound to loopback while Tailscale terminates TLS for the tailnet.
+
+**Pairing is one-shot**: generate a 6-digit code on the PC, valid for 2 minutes, consumed on first use; the token that comes back is stored only as a sha256 hash. The device list is visible in Settings and each device can be revoked.
+
+**"The phone can't connect" has a self-check**: Settings → Remote access → "Start self-check" walks the master switch, the bind address, LAN addresses, Tailscale, the firewall and the pairing state, each with a verdict and one next step. It holds the same line as the rest of this project: **state what can be determined, say "unknown" for what cannot**. The firewall is the latter case — Windows does not let a non-admin read whether a port has an allow rule (bulk `Get-NetFirewallPortFilter` returns AccessDenied, and asking rule by rule takes 33 seconds), so it reports "cannot confirm" plus the exact command to run, rather than a green tick that sends you looking elsewhere.
+
+`npm run check:remote` is the half that needs no phone: it really binds `0.0.0.0` and walks ping / page / pairing / token-authenticated access / event stream / wrong-token rejection **over the LAN IP** (not loopback), then prints the same verdicts the self-check would. A loopback-only test can be all green while the phone still cannot connect; this separates the three causes (wrong bind address, loopback-only, inbound firewall).
+
+**HarmonyOS note**: HarmonyOS 4.2 and earlier ship an AOSP compatibility layer and run APKs; **HarmonyOS NEXT (5.0+) is a pure HarmonyOS kernel and only accepts HAP packages**, so APKs will not install there. None of the three routes above needs an app, so this does not affect the phone workflow — only a future installable package would, and that means Capacitor wrapping the WebView on 4.2 versus a separate DevEco rewrite on NEXT.
+
 ## Boundaries (enforced in code, not left to the model's good intentions)
 
 **The main process registers 27 tools, tiered by effect:**
@@ -337,6 +364,11 @@ Real MCP connections, repository operations beyond GitHub search/upload, full-te
 Packaging and distribution are wired up (`npm run pack` produces an NSIS installer + portable build), but **builds are unsigned**.
 
 ## Known gaps
+
+- **Real-machine verification of simulated input is only half done**: `npm run check:input` builds its own WinForms target window (Win11's `notepad.exe` turns out to be a Store-app facade that exits immediately here — no window — so it cannot be the target), really moves the mouse to click it, really pastes mixed Chinese/English via the clipboard, really presses Enter, then reads the window content back and compares. That verifies what unit tests cannot: that `mouse_event` loads in this process, and that `Ctrl+V` really lands in another application. **But it only counts once a human runs it on the machine** — it moves the user's mouse, so it must not go into CI or run unattended. **Still unverified: whether the click hit the button you meant.** That needs a human watching the screen; the script can only confirm the action executed and the content went to the right place. For the same reason the three input tools' `verify` always returns `unavailable`: a click is irreversible and leaves no trace, there is no "check it afterwards", and a verification table is better left empty than filled with something that only looks like a conclusion.
+- **The phone side is a web page with no installable package**: the interface itself is enough (pair / chat / auth card / disconnection hint), but there is no push, no background residency, no offline. On HarmonyOS/Android "add to home screen" yields a shortcut, and under HTTP there is no Service Worker. A real APK means wrapping the WebView with Capacitor, and it must set `androidScheme: 'http'` plus `usesCleartextTraffic` — otherwise the page origin is `https://localhost` and a request to `http://192.168.x.x` is killed as mixed content. HarmonyOS NEXT does not accept APKs at all and would need a separate HAP.
+- **The program cannot confirm whether the firewall allows the port**: a non-admin cannot read rule details (`Get-NetFirewallPortFilter` bulk enumeration returns AccessDenied, and asking about all 429 rules one by one takes 33 seconds), so the self-check reports "the firewall is on" plus the allow command. Judging it automatically would mean asking the user to re-run the self-check elevated — a bigger price than pasting one netsh command, so it is not done for now.
+- **The away-from-home route is not auto-configured**: Tailscale works as soon as it is installed (the address appears in the list automatically), but `tailscale serve` is a command the user types once. The app does not install VPN clients or rewrite system network settings, deliberately.
 
 - **The default run never does a live search; that needs `--with-search`**: the 36 cases behind `npm run eval` **issue no search request at all**. All three B4 cases hard-code `searchProvider: "none"`, which is a deliberate design — they test the degradation behaviour, "with search off, say you can't find it". But the consequence needs stating plainly: **"36/36" on its own proves nothing about search working**, and the source count on B4 is always 0.
   Hence the **S group** (S-1/S-2/S-3), which is **the same batch of questions under two configurations**: search off (must say it can't find it) and search on (must actually find it and cite sources). The pairing is what gives the test meaning — covering only the degradation case verifies "search says something sensible when it's broken" and never verifies "search works when it's fine". `tests/main/eval-cases.test.ts` pins that pairing down, so removing either half fails a test first.

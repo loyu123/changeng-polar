@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs'
-import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { logError } from '../log'
+import type { AddressClass } from './addressing'
+import { detectTailscale, diagnose, localAddresses, readFirewallProfiles, type DiagItem } from './diagnose'
 import { PairingStore, type PairedDevice } from './pairing'
 import { DEFAULT_REMOTE_PORT, RemoteServer, type RemoteDeps } from './server'
 
@@ -26,20 +27,12 @@ export interface RemotePublicState {
   lanAccess: boolean
   /** 手机可以直接打开的地址；enabled 为 false 时为空 */
   urls: string[]
+  /** 上面那些地址各属于哪类网络（局域网 / Tailscale） */
+  addresses: AddressClass[]
   error?: string
 }
 
-/** 本机的局域网 IPv4 地址（手机在同一 WiFi 下要用它） */
-function lanAddresses(): string[] {
-  const out: string[] = []
-  const ifaces = networkInterfaces()
-  for (const list of Object.values(ifaces)) {
-    for (const info of list ?? []) {
-      if (info.family === 'IPv4' && !info.internal) out.push(info.address)
-    }
-  }
-  return out
-}
+/** 本机的局域网 IPv4 地址（手机在同一 WiFi 下要用它）—— 见 addressing.ts */
 
 export class RemoteService {
   readonly pairing = new PairingStore()
@@ -158,6 +151,7 @@ export class RemoteService {
 
   state(): RemotePublicState {
     const live = this.pairing.peekCode()
+    const addresses = localAddresses()
     return {
       enabled: this.enabled,
       address: this.server.address,
@@ -168,9 +162,34 @@ export class RemoteService {
         : null,
       listeners: this.server.hub.size,
       lanAccess: this.lanAccess,
-      urls: this.enabled ? this.urlsOf() : [],
+      urls: this.enabled ? this.urlsOf(addresses) : [],
+      addresses,
       ...(this.lastError ? { error: this.lastError } : {})
     }
+  }
+
+  /**
+   * 「手机连不上」的完整自检。
+   *
+   * 两个探测（防火墙、Tailscale）各起一次 PowerShell，加起来约 1 秒，
+   * 所以只在用户点「自检」时调，不塞进 state()——那个每开一次设置页就要一次。
+   */
+  async diagnose(): Promise<DiagItem[]> {
+    const [firewallProfiles, tailscaleInstalled] = await Promise.all([
+      readFirewallProfiles(),
+      detectTailscale()
+    ])
+    return diagnose({
+      enabled: this.enabled,
+      boundHost: this.server.boundHost,
+      port: this.server.port(),
+      addresses: localAddresses(),
+      devices: this.pairing.listDevices().length,
+      listeners: this.server.hub.size,
+      firewallProfiles,
+      tailscaleInstalled,
+      ...(this.lastError ? { error: this.lastError } : {})
+    })
   }
 
   /**
@@ -178,11 +197,21 @@ export class RemoteService {
    *
    * 局域网模式下给出每个网卡的 IP——用户要照着输到手机浏览器里，
    * 让他自己去 `ipconfig` 里找那个数是没必要的。回环模式只有一个。
+   *
+   * Tailscale 的 100.64/10 地址**回环模式下也给**：那种场景的用法是
+   * `tailscale serve` 把 tailnet 的 HTTPS 转发到回环端口，此时手机打的
+   * 正是这个地址。不给的话，用户只能自己去 `tailscale ip` 里抄——
+   * 而他会以为是程序不支持。
    */
-  private urlsOf(): string[] {
+  private urlsOf(addresses: AddressClass[]): string[] {
     const port = this.server.port()
-    if (!this.lanAccess) return [`http://127.0.0.1:${port}/`]
-    return lanAddresses().map((ip) => `http://${ip}:${port}/`)
+    if (!this.lanAccess) {
+      return [
+        `http://127.0.0.1:${port}/`,
+        ...addresses.filter((a) => a.kind === 'tailnet').map((a) => `http://${a.ip}:${port}/`)
+      ]
+    }
+    return addresses.map((a) => `http://${a.ip}:${port}/`)
   }
 
   private async loadDevices(): Promise<void> {

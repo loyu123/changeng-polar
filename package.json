@@ -1,6 +1,6 @@
 {
   "name": "changeng-polar",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "description": "长庚 · 本地电脑管家（对话驱动，写操作全部穿授权闸门）",
   "author": "loyu123",
@@ -21,6 +21,8 @@
     "backends:work": "tsx scripts/backends-work.ts",
     "mixed": "tsx scripts/mixed-backends.ts",
     "github": "tsx scripts/github-smoke.ts",
+    "check:remote": "tsx scripts/remote-lan-check.ts",
+    "check:input": "tsx scripts/input-smoke.ts",
     "mock": "node scripts/mock-llm.cjs",
     "test": "vitest run",
     "test:watch": "vitest",

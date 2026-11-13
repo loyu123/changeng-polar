@@ -11,6 +11,15 @@ import type { IpcContext } from './app'
 export function registerRemoteIpc(ctx: IpcContext): void {
   ipcMain.handle('remote:state', () => ctx.remote.state())
 
+  /**
+   * 「手机连不上」自检。
+   *
+   * 放在 IPC 而不是渲染层拼：判断要读网卡、读防火墙配置、探测 Tailscale，
+   * 这三样渲染进程都碰不到。返回的是一串**已经分好级**的结论，
+   * 渲染层只负责显示——让界面去猜"绑回环意味着什么"会把判断分散到两处。
+   */
+  ipcMain.handle('remote:diagnose', () => ctx.remote.diagnose())
+
   ipcMain.handle('remote:enable', async (_e, enabled: boolean, lanAccess?: boolean) => {
     const want = enabled === true
     // 局域网测试模式只在"开启"时有意义；关掉时一并清掉，免得下次悄悄开着

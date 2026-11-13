@@ -106,6 +106,19 @@ export const MOBILE_PAGE = `<!doctype html>
   <section id="chatView" class="hide">
     <h1>长庚</h1>
     <div class="sub" id="statusLine" style="margin-bottom:14px">已连接</div>
+    <!-- 断线超过一段时间才出现。连不上时手机上只有一个转圈的"重连中…"，
+         而原因在电脑那边（没开局域网模式 / 不在同一网络 / 电脑休眠了），
+         手机自己查不到，只能把可能性列出来让用户回去看一眼。 -->
+    <div id="netHint" class="card hide" style="border-color:var(--danger)">
+      <b style="color:var(--danger)">连不上电脑</b>
+      <div class="sub" style="margin-top:6px;line-height:1.7">
+        手机上排查不了电脑那边的情况，按这个顺序看一眼：<br>
+        1. 电脑上的长庚还开着，没休眠<br>
+        2. 设置 → 远程访问 里「监听所有网卡」是开着的<br>
+        3. 手机和电脑在同一个 WiFi（或者都登录了同一个 Tailscale）<br>
+        4. 电脑上的「自检」说了什么
+      </div>
+    </div>
     <div id="log"></div>
   </section>
 
@@ -145,6 +158,8 @@ export const MOBILE_PAGE = `<!doctype html>
   var es = null
   var requestId = null
   var busy = false
+  /** 连续多少次事件流连不上；接到一次就清零（见 onerror 的注释） */
+  var netFailures = 0
 
   var $ = function (id) { return document.getElementById(id) }
 
@@ -189,7 +204,13 @@ export const MOBILE_PAGE = `<!doctype html>
       localStorage.setItem(TOKEN_KEY, token)
       enterChat()
     } catch (e) {
-      $('pairMsg').textContent = '连不上电脑：' + e.message
+      /**
+       * 走到 catch 说明连电脑这一跳就失败了（不是码错——码错是 r.ok 为 false）。
+       * 手机这边能看到的只有 "Failed to fetch"，看不出为什么，
+       * 所以把最常见的两个原因直接说出来，省掉一轮猜。
+       */
+      $('pairMsg').textContent =
+        '连不上电脑：' + e.message + '。确认电脑上的长庚还开着，并且开了「监听所有网卡」。'
     } finally {
       $('pairBtn').disabled = false
     }
@@ -217,8 +238,20 @@ export const MOBILE_PAGE = `<!doctype html>
     }
     es.onerror = function () {
       $('statusLine').textContent = '连接断开，重连中…'
+      /**
+       * 连失败几次才提示。
+       *
+       * 一次不算：手机切前后台、WiFi 短暂抖动都会触发一次 onerror，
+       * 随后 EventSource 自己就接上了——这时候弹一张"连不上电脑"的红卡，
+       * 用户会去查一个根本不存在的问题。三次（约十几秒）之后还接不上，
+       * 才是真的有问题。
+       */
+      netFailures++
+      if (netFailures >= 3) $('netHint').classList.remove('hide')
     }
     es.onopen = function () {
+      netFailures = 0
+      $('netHint').classList.add('hide')
       $('statusLine').textContent = '已连接'
     }
   }
@@ -257,7 +290,7 @@ export const MOBILE_PAGE = `<!doctype html>
         setBusy(false)
       }
     } catch (e) {
-      addMsg('连不上电脑：' + e.message, 'bot')
+      addMsg('连不上电脑：' + e.message + '（消息没发出去）', 'bot')
       setBusy(false)
     }
   }
@@ -345,7 +378,8 @@ export const MOBILE_PAGE = `<!doctype html>
       enterChat()
     } catch (e) {
       show('pair')
-      $('pairMsg').textContent = '连不上电脑：' + e.message
+      $('pairMsg').textContent =
+        '连不上电脑：' + e.message + '。可能是电脑休眠了、换了地址，或者远程入口被关掉了。'
     }
   })()
 })()

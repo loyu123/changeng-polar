@@ -122,8 +122,22 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     listeners: number
     lanAccess: boolean
     urls: string[]
+    addresses: Array<{ ip: string; kind: 'lan' | 'tailnet' }>
     error?: string
   } | null>(null)
+  /**
+   * 「手机连不上」自检结果。
+   *
+   * null = 还没点过。**不自动跑**：一次自检要起两个 PowerShell 读防火墙和
+   * Tailscale，约 1 秒；每开一次设置页就跑一遍是白花用户的时间。
+   */
+  const [remoteDiag, setRemoteDiag] = useState<Array<{
+    level: 'ok' | 'warn' | 'fail' | 'unknown'
+    title: string
+    detail: string
+    action?: string
+    command?: string
+  }> | null>(null)
   const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null)
   const [remoteBusy, setRemoteBusy] = useState(false)
   /** 局域网测试模式：开启后监听 0.0.0.0，手机同一 WiFi 才能访问 */
@@ -1536,7 +1550,8 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                 <div className="rl">
                   <b>允许远程连接</b>
                   <span>
-                    只监听 <code>127.0.0.1</code>，外面那层由 frp 隧道转发——长庚自己永远不直接面对公网。
+                    默认只监听 <code>127.0.0.1</code>——长庚自己永远不直接面对公网。
+                    手机要连进来，要么开下面的局域网模式，要么用 Tailscale 转发。
                   </span>
                 </div>
                 <button
@@ -1566,13 +1581,94 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
                   {(remoteState.urls ?? []).length > 0 && (
                     <div style={{ marginTop: 8 }}>
                       手机打开：
-                      {(remoteState.urls ?? []).map((u) => (
-                        <div key={u}>
-                          <code style={{ wordBreak: 'break-all' }}>{u}</code>
-                        </div>
-                      ))}
+                      {(remoteState.urls ?? []).map((u) => {
+                        // 100.64/10 是 Tailscale 的网段。标出来是因为这两类地址
+                        // 的"什么时候能用"完全不同：局域网的要同一个 WiFi，
+                        // Tailscale 的在任何有网的地方都行——混在一起看不出区别
+                        const ip = u.replace(/^https?:\/\//, '').replace(/[:/].*$/, '')
+                        const isTailnet = (remoteState.addresses ?? []).some((a) => a.ip === ip && a.kind === 'tailnet')
+                        return (
+                          <div key={u}>
+                            <code style={{ wordBreak: 'break-all' }}>{u}</code>
+                            {isTailnet && (
+                              <span className="sub" style={{ marginLeft: 6 }}>
+                                Tailscale（外面也能连）
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="cardbox">
+            <div className="ch">连不上？点这里自检</div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              <div className="hint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
+                手机打不开、或者配对时一直失败，原因分散在四处（总闸、绑定地址、网络、
+                防火墙），界面上原来一个都不显示。自检把这些逐条查一遍：
+                <b>能确定的说确定，查不到的直说查不到</b>——防火墙有没有放行本程序这条，
+                Windows 不让非管理员读，所以会显示「无法确认」并给出放行命令。
+              </div>
+              <div className="row" style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn btn-ghost"
+                  disabled={remoteBusy}
+                  onClick={async () => {
+                    setRemoteBusy(true)
+                    try {
+                      setRemoteDiag(await window.butler.remote.diagnose())
+                      setRemoteState(await window.butler.remote.state())
+                    } finally {
+                      setRemoteBusy(false)
+                    }
+                  }}
+                >
+                  {remoteDiag ? '重新自检' : '开始自检'}
+                </button>
+              </div>
+              {remoteDiag && (
+                <div style={{ marginTop: 12 }}>
+                  {remoteDiag.map((item) => (
+                    <div key={item.title} style={{ marginBottom: 10, lineHeight: 1.65 }}>
+                      <b
+                        style={{
+                          color:
+                            item.level === 'fail'
+                              ? '#B4552D'
+                              : item.level === 'warn'
+                                ? '#8A6A1F'
+                                : item.level === 'unknown'
+                                  ? '#6B6B63'
+                                  : '#3F7A52'
+                        }}
+                      >
+                        {item.level === 'fail'
+                          ? '✕ '
+                          : item.level === 'warn'
+                            ? '! '
+                            : item.level === 'unknown'
+                              ? '? '
+                              : '✓ '}
+                        {item.title}
+                      </b>
+                      <div className="hint" style={{ marginTop: 2 }}>{item.detail}</div>
+                      {item.action && (
+                        <div className="hint" style={{ marginTop: 2 }}>
+                          → {item.action}
+                          {item.command && (
+                            <code style={{ display: 'block', marginTop: 4, wordBreak: 'break-all' }}>
+                              {item.command}
+                            </code>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1582,13 +1678,16 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
             <div className="ch">局域网测试</div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>
               <div className="hint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
-                正式用法是 frp 隧道（电脑主动连出去，不暴露公网）。配隧道前要先有一台 VPS，
-                在那之前同一 WiFi 下的手机没法访问只监听回环的服务。
+                出门在外也要连，用 <b>Tailscale</b>（手机装一个 App、登录同一账号就行，
+                不需要公网 IP、不用备案、不用开任何端口）。装了之后这里会多出一行
+                100.x 开头的地址，手机用它就能连——但远程入口仍然要开着。
+                <br />
+                frp 隧道是另一条路，代价是要有一台公网 VPS。
                 <br />
                 <b style={{ color: '#B4552D' }}>
-                  打开后同一网络里的任何设备都能连到这个端口
+                  打开局域网模式后，同一网络里的任何设备都能连到这个端口
                 </b>
-                （仍然需要配对码换 token 才能用）。测完请关掉。
+                （仍然需要配对码换 token 才能用）。只是家里用的话一直开着也无妨。
               </div>
               <div className="setrow" style={{ paddingLeft: 0 }}>
                 <div className="rl">

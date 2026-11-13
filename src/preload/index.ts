@@ -292,8 +292,23 @@ const api = {
         listeners: number
         lanAccess: boolean
         urls: string[]
+        addresses: Array<{ ip: string; kind: 'lan' | 'tailnet' }>
         error?: string
       }>,
+    /**
+     * 「手机连不上」自检。每条结论已经分好级（ok / warn / fail / unknown），
+     * 界面只负责显示——判断留在主进程，别让两边各猜一半。
+     */
+    diagnose: () =>
+      ipcRenderer.invoke('remote:diagnose') as Promise<
+        Array<{
+          level: 'ok' | 'warn' | 'fail' | 'unknown'
+          title: string
+          detail: string
+          action?: string
+          command?: string
+        }>
+      >,
     enable: (enabled: boolean, lanAccess?: boolean) =>
       ipcRenderer.invoke('remote:enable', enabled, lanAccess) as Promise<{
         enabled: boolean
@@ -304,6 +319,7 @@ const api = {
         listeners: number
         lanAccess: boolean
         urls: string[]
+        addresses: Array<{ ip: string; kind: 'lan' | 'tailnet' }>
         error?: string
       }>,
     issuePairingCode: () =>
