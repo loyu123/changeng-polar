@@ -134,7 +134,11 @@ export function registerAppIpc(ctx: IpcContext): void {
       'tasks.json',
       'sessions.json',
       'auth-memory.json',
-      'snapshots.json'
+      'snapshots.json',
+      // 项目档案：这个列表曾经漏了它，于是设置里的存储占用看不见这份数据，
+      // 而它恰恰是"模型会去读哪个目录"的配置——用户想知道它在哪、多大
+      'project-archive.json',
+      'memory.json'
     ]
     const files: Array<{ file: string; bytes: number; dir: string }> = []
     for (const file of names) {

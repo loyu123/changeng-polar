@@ -155,3 +155,16 @@ describe('工具预算撑得下三种骨架', () => {
     expect(prompt).toContain(`最多 ${TOOL_BUDGET_STEPS} 步`)
   })
 })
+
+describe('写给用户看的分区路径必须是真的', () => {
+  /**
+   * 我先前把分区名写成「记忆与项目」，而设置页里那一栏实际叫「权限与安全」。
+   * 这类错模型会原样转告用户，用户照着找找不到，然后怀疑功能没做。
+   * 所以路径文案也要钉住——它不在代码里跑，只能在提示词里被断言。
+   */
+  it('提示词里的项目档案路径是「权限与安全」', () => {
+    const prompt = buildSystemPrompt(env, '   - 测试能力')
+    expect(prompt).toContain('设置 → 权限与安全 → 项目档案')
+    expect(prompt).not.toContain('记忆与项目')
+  })
+})
