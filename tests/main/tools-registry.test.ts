@@ -103,30 +103,41 @@ describe('工具定义完整性', () => {
   })
 })
 
-describe('README 的边界说明与注册表一致', () => {
+describe('README 与 docs 的边界说明和注册表一致', () => {
   const root = path.resolve(__dirname, '../..')
   const tools = createTools()
   const readme = (file: string): string =>
     readFileSync(path.join(root, file), 'utf8').replace(/\r\n?/g, '\n')
 
   /**
-   * 为什么值得一条测试：README 是这套东西对外的全部承诺，而它里面**写着数字**。
-   * 真实发生过：README 的项目结构里写「tools.ts 17 个工具」、边界一节写 23 个，
-   * 设置页的「技术说明」写「主进程注册 10 个工具」外加一句「写入真实文件没有任何
-   * 通路」——而那时 `write_document` 早就在往真实文档目录写了。讲边界的段落写错
-   * 比不写更糟：读者会照着它去信任或去怀疑，两者都是错的。
+   * 这些文件都**写着数字**，任何一个说错都是同一类问题：读者照着它去信任，
+   * 而实际不是那样。
    *
-   * 设置页那段现在是**算出来的**（从 `tools:list` 取，见 SettingsPage 的 toolsStat），
-   * 结构上不会再腐。README 是静态文本，只能靠这条测试拦住。
+   * 2026-11-13 把 README 的深水区拆到 docs/ 之后，分档表搬进了 boundaries.md，
+   * 而工具数量那句话留在了首页摘要里——两处都要继续被这条测试盯着。
+   * **不能因为文件搬了就把检查删掉**：那会让"README 里写的工具数是假的"
+   * 这件事重新变成可能，而这正是这条测试当初存在的理由。
    */
-  for (const file of ['README.md', 'README.zh.md']) {
+  const DOC_FILES = [
+    'README.md',
+    'README.zh.md',
+    'docs/en/boundaries.md',
+    'docs/zh/boundaries.md'
+  ]
+
+  /** 带分档表的文件：只有边界文档里才有那张表 */
+  const TIER_FILES = ['docs/en/boundaries.md', 'docs/zh/boundaries.md']
+
+  for (const file of DOC_FILES) {
     it(`${file}：每处「N 个工具 / N tools」都等于注册表的真实数量`, () => {
       const text = readme(file)
       const claims = [...text.matchAll(/(\d+)\s*(?:个工具|tools)/g)].map((m) => Number(m[1]))
       expect(claims.length, '一处都没找到，说明正则或文案变了，别让这条静悄悄地失效').toBeGreaterThan(0)
       for (const n of claims) expect(n, `${file} 写了 ${n} 个工具`).toBe(tools.length)
     })
+  }
 
+  for (const file of TIER_FILES) {
     it(`${file}：分档表里每一档的工具名单与注册表一致`, () => {
       const text = readme(file)
       const byEffect = new Map<string, Set<string>>()
