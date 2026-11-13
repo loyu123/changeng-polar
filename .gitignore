@@ -19,3 +19,6 @@ evals/a4-report.json
 
 # 凭据：任何 .env 都不进仓库（AppSecret、token 等同密码）
 .env
+
+# 项目自己的进度日志：含本机绝对路径，且是给长庚读的现场记录，不进公开仓库
+.workbuddy/
