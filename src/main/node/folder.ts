@@ -35,6 +35,15 @@ const NOT_A_FOLDER_RE = /\.(exe|com|scr|msi|lnk|url|bat|cmd|ps1|vbs|js|jse|wsf|h
 const SKIP_DIR_RE =
   /^(node_modules|windows|winsxs|winstore|appdata|windowsapps|program files|program files \(x86\)|programdata|perflogs|msocache|recovery|installer|system volume information|\$recycle\.bin|\.git|\.svn|\.hg|__pycache__|venv|dist|out|build|target)$/i
 
+/**
+ * 已知是噪音的目录名（构建产物、包缓存、版本库内部）。
+ *
+ * 导出是为了让 `list-tree.ts` 用同一份清单：那里需要"跳过 node_modules 但**不**
+ * 跳过所有点开头目录"——两个判据不同，但"哪些名字是噪音"必须是同一份，
+ * 否则同一个目录会在文件夹索引里被跳过、在项目清单里又被列出来。
+ */
+export const NOISE_DIR_RE = SKIP_DIR_RE
+
 /** 一个目录里并排放着好几个这种文件 → 它是程序装出来的目录，不是用户自己建的 */
 const PROGRAM_FILE_RE = /\.(exe|dll|pak|asar|node)$/i
 const PROGRAM_DIR_MIN_FILES = 3

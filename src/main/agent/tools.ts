@@ -21,6 +21,7 @@ import { resolveLaunch } from '../node/launch'
 import { appIdentity, findOpenWindow, type LaunchProbe } from '../node/running'
 import { windowAt } from '../node/screen'
 import { planFolder } from '../node/folder'
+import { formatListing, isInsideRoot, listOneLevel, listTree, resolveWithin } from '../node/list-tree'
 import {
   DEFAULT_MAX_CHARS,
   HARD_MAX_CHARS,
@@ -229,6 +230,16 @@ export interface ToolDeps {
    * 来自审计记录里 effect=install 且成功的那几条，应用台账据此标"是不是管家装的"。
    */
   butlerInstalls?: () => Promise<Record<string, string>>
+  /**
+   * 项目档案里登记的根目录（用户亲手填的）。
+   *
+   * **这是 `list_files` 唯一的合法作用域**：不在这些根下面的路径一律拒绝。
+   * 没注入（空数组）时 list_files 会如实说明"还没有登记项目"，
+   * 而不是退化成"那就让你列任意目录吧"——那正是这个工具不该有的能力。
+   *
+   * 每轮由 runtime 从 project-archive.json 重读后注入，用户在设置里改完立刻生效。
+   */
+  projectRoots?: string[]
 }
 
 /**
@@ -1324,6 +1335,127 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         ]
       }
     }
+  }
+
+  /**
+   * 列项目目录（只读，作用域限项目档案里的根）。
+   *
+   * 这个工具存在的理由就一句话：用户问"报告进展到哪了"时，它得先看得见项目里有什么。
+   * 在这之前 27 个工具里没有任何一个能看目录，用户只能把文件名一个个报出来。
+   *
+   * 边界是它的全部价值：**只列 projectRoots 底下的东西**。
+   * 不做成"任意目录"——那样它和资源管理器一样宽，而这个能力要回答的问题只有一个。
+   */
+  const listFilesTool: ToolDef = {
+    name: 'list_files',
+    label: '查看项目目录（只读）',
+    description:
+      '列出**项目档案里登记过的项目**目录里的文件，可指定子目录、可控制深度。只读，不改动任何东西。用它回答"这个项目里有什么""最近改了哪些文件""资料都放在哪了"。**只能看用户在设置里登记过的项目根目录**，别的地方会被拒绝——用户没登记某个项目时，如实告诉他去「设置 → 记忆与项目 → 项目档案」加一条，不要试图用别的路径绕过。结果里带文件大小和修改时间，问"进展到哪"时按修改时间看最近动过什么。条目多时会截断并明说，要看某一块就传更具体的 dir。',
+    effect: 'read',
+    parameters: {
+      type: 'object',
+      properties: {
+        project: {
+          type: 'string',
+          description: '项目名（档案里登记的）。不填时：只有一个项目就用它，有多个就返回清单让你先选'
+        },
+        dir: {
+          type: 'string',
+          description: '子目录，相对项目根（如「.workbuddy/memory」）。不填 = 整个项目'
+        },
+        depth: {
+          type: 'number',
+          description: `往下看几层，默认 3，最大 3。只想看一层就传 1`
+        }
+      }
+    },
+    plan: async (args) => {
+      const roots = deps.projectRoots ?? []
+      if (roots.length === 0) {
+        return {
+          ok: false,
+          reason:
+            '还没有登记任何项目，所以我没法列出目录。请让用户去「设置 → 记忆与项目 → 项目档案」填一条（项目名 + 根目录），填完我就能看了'
+        }
+      }
+      const want = String(args?.project ?? '').trim()
+      const root = want
+        ? roots.find((r) => r.toLowerCase().includes(want.toLowerCase()) || path.basename(r).toLowerCase() === want.toLowerCase())
+        : roots.length === 1
+          ? roots[0]
+          : undefined
+
+      if (!root) {
+        return {
+          ok: false,
+          reason: want
+            ? `档案里没有叫「${want}」的项目。登记过的有：${roots.join('、')}`
+            : `档案里有 ${roots.length} 个项目，先用 project 参数指定一个：${roots.join('、')}`
+        }
+      }
+
+      // 子目录也必须在根里面：绝对路径同样要过这道关
+      const target = resolveWithin(root, args?.dir)
+      if (!target) {
+        return {
+          ok: false,
+          reason: `「${String(args?.dir ?? '')}」不在项目「${root}」里面。列目录只在这个根底下进行`
+        }
+      }
+
+      const depth = Math.min(Math.max(1, Math.floor(Number(args?.depth ?? 3)) || 3), 3)
+      return {
+        ok: true,
+        target: {
+          title: `查看项目目录`,
+          target: path.relative(root, target) ? `${root}\\${path.relative(root, target)}` : root,
+          impact: '只读列目录，不改动任何东西'
+        },
+        execute: async () => {
+          // depth=1 走单层，省掉一次递归：只想看"这层有什么"时没必要扫全树
+          if (depth === 1) {
+            const layer = await listOneLevel(root, target)
+            const dirs = layer.entries.filter((e) => e.kind === 'dir')
+            const files = layer.entries.filter((e) => e.kind === 'file')
+            return {
+              ok: true,
+              summary: `${path.relative(root, target) || '根目录'} 这一层有 ${dirs.length} 个目录、${files.length} 个文件`,
+              data: {
+                root,
+                dir: path.relative(root, target).split(path.sep).join('/') || '.',
+                dirs: dirs.map((d) => d.path),
+                files: files.map((f) => ({ path: f.path, sizeKB: Math.round((f.size ?? 0) / 1024), mtime: f.mtime })),
+                truncated: layer.truncated,
+                ...(layer.unreadable.length > 0 ? { unreadable: layer.unreadable } : {})
+              },
+              evidence: [ev({ type: 'local', title: `目录清单（${layer.entries.length} 条）`, detail: target })]
+            }
+          }
+
+          const result = await listTree(root, target, depth)
+          const text = formatListing(result)
+          const dirs = result.entries.filter((e) => e.kind === 'dir').length
+          const files = result.entries.length - dirs
+          return {
+            ok: true,
+            // 摘要里就写明截断/读不到：模型不该只在 data 里才看到这件事
+            summary:
+              `项目「${path.basename(root)}」共 ${dirs} 个目录、${files} 个文件（扫了 ${result.dirsScanned} 个目录）` +
+              (result.truncated ? '；**结果被上限截断了，这不是全部**' : '') +
+              (result.unreadable.length > 0 ? `；有 ${result.unreadable.length} 处读不进来（见 data）` : ''),
+            data: {
+              root,
+              listing: text,
+              truncated: result.truncated,
+              byExt: result.byExt,
+              ...(result.unreadable.length > 0 ? { unreadable: result.unreadable } : {})
+            },
+            evidence: [ev({ type: 'local', title: `项目目录清单（${result.entries.length} 条）`, detail: root })]
+          }
+        }
+      }
+    },
+    run: async () => ({ ok: false, summary: '这个工具必须走授权流程' })
   }
 
   const deleteToRecycleTool: ToolDef = {
@@ -2731,6 +2863,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     webFetch,
     openSettings,
     listSandboxTool,
+    listFilesTool,
     deleteToRecycleTool,
     readEmailTool,
     launchAppTool,

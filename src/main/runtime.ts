@@ -249,10 +249,23 @@ export class TurnRuntime {
    * 模型连申请的机会都没有。能力段由注册表生成，所以提示词里那句
    * 「当前版本没有能改动机器的工具」也会自动成立，不需要另写一份。
    */
-  private toolsFor(toggles: Record<string, boolean>, readOnly: boolean, worker: ButlerConfig['worker'] = {}): ToolDef[] {
+  private toolsFor(
+    toggles: Record<string, boolean>,
+    readOnly: boolean,
+    worker: ButlerConfig['worker'] = {},
+    projectRoots: string[] = []
+  ): ToolDef[] {
     const { store } = this.opts
     const all = createTools({
       openSettings: this.opts.openSettings,
+      /**
+       * list_files 的作用域：用户登记过的项目根。
+       *
+       * 由调用方每轮从档案里读出来传进来——用户刚在设置里加完就能用，
+       * 不需要重启。空数组时 list_files 会如实说"还没登记项目"，
+       * 而不是退化成能列任意目录（那正是它不该有的能力）。
+       */
+      projectRoots,
       // 「打开哔哩哔哩」这类请求：目标只能是 .lnk/.url 或系统应用清单里的一条
       launchShortcut: (filePath) => launchShortcut(filePath),
       // 豆包这类不建快捷方式的程序：走 shell:AppsFolder
@@ -433,8 +446,6 @@ export class TurnRuntime {
     const config = await this.opts.store.getConfig()
     // 模拟键鼠的白名单每轮重读：用户在设置里改完要立刻生效
     this.refreshInputAllowlist(config)
-    // 能力开关（插件页）+ 只读模式（权限与安全）：两者都决定本轮有哪些工具
-    const tools = this.toolsFor(config.toolToggles ?? {}, config.readOnly === true, config.worker)
 
     // 跨会话记忆：每轮都读一次，用户刚删掉的东西不该还出现在提示词里
     let memory = ''
@@ -449,13 +460,26 @@ export class TurnRuntime {
      *
      * 单列一段而不是并进记忆：这里给的是**可操作的位置**（根目录、日志）。
      * 并进记忆会被 200 字一条的上限切碎，变成"报告项目在 D 盘某处"这种没法用的句子。
+     *
+     * 读一次，两处用：提示词那一段（告诉它项目在哪）和 list_files 的作用域
+     * （它到底被允许看哪里）。**必须是同一份**——各读一次的话，用户在设置里
+     * 删掉一个项目后，提示词里已经没有了、而 list_files 还认那个根，两边对不上。
      */
-    let projects = ''
+    let projectList: Awaited<ReturnType<typeof this.opts.store.listProjects>> = []
     try {
-      projects = projectsBlock(await this.opts.store.listProjects())
+      projectList = await this.opts.store.listProjects()
     } catch {
       /* 同上：档案读失败当没有，不拖垮这一轮 */
     }
+    const projects = projectsBlock(projectList)
+
+    // 能力开关（插件页）+ 只读模式（权限与安全）：两者都决定本轮有哪些工具
+    const tools = this.toolsFor(
+      config.toolToggles ?? {},
+      config.readOnly === true,
+      config.worker,
+      projectList.map((p) => p.root)
+    )
 
     const system: ChatMessage = {
       role: 'system',
