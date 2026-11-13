@@ -1739,11 +1739,34 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
       )
     },
     // 远程访问：手机 App 的总闸、配对、设备白名单
+    // 2026-11-13 归档：这条线不做了，整块留在这里只为留档。见 docs/zh/remote.md 顶部横幅
     remote: {
       title: '远程访问',
       lead: '手机 App 通过这台电脑上的一个本地端口连进来；默认关闭，关掉时端口一起释放。',
       body: (
         <>
+          {/*
+            归档说明必须放在这一块最上面，而且不能只写在文档里：
+            文档读者是"翻代码的人"，而这段文案的读者是"真的会点这个开关的人"。
+            开关还留着（代码没删、自检还能跑），所以更要说清楚别开。
+          */}
+          <div
+            style={{
+              border: '1px solid var(--line)',
+              borderLeft: '3px solid #B4552D',
+              borderRadius: 9,
+              background: '#FBFAF7',
+              padding: '11px 14px',
+              marginBottom: 14
+            }}
+          >
+            <b style={{ color: '#B4552D' }}>这一块已归档（2026-11-13），不要再开</b>
+            <div className="hint" style={{ marginTop: 5, lineHeight: 1.75 }}>
+              远程接入这条线不做了。作废的包括这里的局域网模式与
+              Tailscale 转发、后来试过又放弃的 QQ 桥接，以及微信界面的文字读取。开关和自检代码都还在、也能跑，
+              但不再维护——留着只为记下当时怎么做的。长庚现在只做四件事：读项目、看目录、汇报进展、写材料。
+            </div>
+          </div>
           <div className="cardbox">
             <div className="ch">总闸</div>
             <div className="form" style={{ padding: '12px 15px 14px' }}>
@@ -2141,6 +2164,9 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
         {('远程访问'.includes(navQuery.trim()) || navQuery.trim() === '') && (
           <button className={`sitem${section === 'remote' ? ' sel' : ''}`} onClick={() => setSection('remote')}>
             远程访问
+            <span className="kbd" title="该方向已归档（2026-11-13），代码留着但不再维护">
+              历史
+            </span>
           </button>
         )}
         {navQuery.trim() === '' && <div className="sgrp">本机</div>}
