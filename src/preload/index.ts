@@ -10,6 +10,7 @@ import type {
   InstallJobView,
   MemoryEntry,
   OrbPrefs,
+  ProjectEntry,
   RecordEntry,
   SnapshotDiff,
   TaskDef,
@@ -136,6 +137,40 @@ const api = {
       >,
     delete: (ref: string) => ipcRenderer.invoke('memory:delete', ref) as Promise<MemoryEntry[]>,
     clear: () => ipcRenderer.invoke('memory:clear') as Promise<MemoryEntry[]>
+  },
+
+  /**
+   * 项目档案：用户亲手填的「项目在哪」。
+   *
+   * 列表和"路径还在不在"一起回来——设置页只有这一处显示档案，
+   * 拆成两次请求会让用户看到"列表出来了，红绿标记还在转"。
+   */
+  projects: {
+    list: () =>
+      ipcRenderer.invoke('project:list') as Promise<{
+        list: ProjectEntry[]
+        probes: Array<{ id: string; rootExists: boolean; logExists: boolean | null }>
+      }>,
+    save: (input: { name: string; root: string; logPath?: string; note?: string }) =>
+      ipcRenderer.invoke('project:save', input) as Promise<{
+        ok: boolean
+        reason?: string
+        savedId?: string
+        list: ProjectEntry[]
+        probes: Array<{ id: string; rootExists: boolean; logExists: boolean | null }>
+      }>,
+    delete: (id: string) =>
+      ipcRenderer.invoke('project:delete', id) as Promise<{
+        ok: boolean
+        list: ProjectEntry[]
+        probes: Array<{ id: string; rootExists: boolean; logExists: boolean | null }>
+      }>,
+    /** 填表时「再查一下」：只看两个路径现在在不在 */
+    probe: (paths: { root?: string; logPath?: string }) =>
+      ipcRenderer.invoke('project:probe', paths) as Promise<{
+        rootExists: boolean
+        logExists: boolean | null
+      }>
   },
 
   /** 定时任务（主进程调度；到点无头跑一轮，需要授权的操作会被当场拒绝） */

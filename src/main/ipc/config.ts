@@ -1,4 +1,5 @@
 import { app, ipcMain } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { AlwaysAllowedEntry, ButlerConfig } from '../../shared/types'
@@ -6,6 +7,8 @@ import { pingModel } from '../agent/llm'
 import { testMail } from '../node/mail'
 import { searchWeb } from '../node/web'
 import { mergeMemory, removeMemory } from '../node/memory'
+import { existsNow, probeProject } from '../node/projects-probe'
+import { upsertProject } from '../node/projects'
 import type { IpcContext } from './app'
 
 /** 配置 / 密钥 / 自检 / 授权记忆 */
@@ -110,4 +113,56 @@ export function registerConfigIpc(ctx: IpcContext): void {
     })
   )
   ipcMain.handle('memory:clear', () => ctx.store.mutateMemory(() => ({ list: [], result: [] })))
+
+  // ---- 项目档案：用户亲手填的「项目在哪」，模型按它去读，不靠猜 ----
+  /**
+   * 列表连同"路径还在不在"一起返回。
+   *
+   * 一起返回是因为设置页只有这一处会显示档案：分两次请求（先列表再逐条探测）
+   * 会多走两趟 IPC，而探测本身是个同步 stat，本来就不该拆。
+   */
+  ipcMain.handle('project:list', async () => {
+    const list = await ctx.store.listProjects()
+    return { list, probes: list.map((p) => probeProject(p)) }
+  })
+
+  ipcMain.handle('project:save', async (_e, input: { name?: string; root?: string; logPath?: string; note?: string }) => {
+    let rejected = ''
+    let savedId = ''
+    const list = await ctx.store.mutateProjects((current) => {
+      // id 与时间在这里生成：projects.ts 是纯函数层，不碰 randomUUID 和 Date
+      const outcome = upsertProject(current, input ?? {}, {
+        id: randomUUID(),
+        now: new Date().toISOString()
+      })
+      if (!outcome.ok) {
+        rejected = outcome.reason
+        return { list: current, result: current }
+      }
+      savedId = outcome.entry.id
+      return { list: outcome.list, result: outcome.list }
+    })
+    return rejected
+      ? { ok: false, reason: rejected, list, probes: list.map((p) => probeProject(p)) }
+      : { ok: true, savedId, list, probes: list.map((p) => probeProject(p)) }
+  })
+
+  ipcMain.handle('project:delete', async (_e, id: string) => {
+    const list = await ctx.store.mutateProjects((current) => {
+      const next = current.filter((p) => p.id !== String(id ?? ''))
+      return { list: next, result: next }
+    })
+    return { ok: true, list, probes: list.map((p) => probeProject(p)) }
+  })
+
+  /**
+   * 单独探一次路径。
+   *
+   * 填表时用户可能刚把移动硬盘插上、或在另一个窗口里改完目录名——他需要一个
+   * 「现在再查一下」的按钮，而不是保存之后才发现还是红的。
+   */
+  ipcMain.handle('project:probe', (_e, paths: { root?: string; logPath?: string }) => ({
+    rootExists: existsNow(String(paths?.root ?? '')),
+    logExists: paths?.logPath ? existsNow(String(paths.logPath)) : null
+  }))
 }

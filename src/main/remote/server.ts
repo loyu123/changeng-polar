@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { AuthAnswer, ChatMessage } from '../../shared/types'
+import { expectedError } from '../log'
 import { RemoteHub } from './hub'
 import { MOBILE_PAGE } from './mobile-page'
 import { PairingStore } from './pairing'
@@ -149,9 +150,22 @@ export class RemoteServer {
     })
     await new Promise<void>((resolve, reject) => {
       server.once('error', (err: NodeJS.ErrnoException) => {
+        /**
+         * 绑定失败要把这个 server 关掉再抛。
+         *
+         * 不关的话它是个活着的 EventEmitter：'error' 监听器是一次性的（once），
+         * 已经消费掉了，而 socket 后续再报错就**没人接**——Node 把它当未捕获异常，
+         * 往 stderr 打一整段堆栈。用户看到的是"端口被占用"后面跟着六行
+         * `at emitErrorNT (node:net:2045:8)`，信息量为零。
+         */
+        try {
+          server.close()
+        } catch {
+          /* 已经关了就算了 */
+        }
         reject(
           err.code === 'EADDRINUSE'
-            ? new Error(`端口 ${port} 已被占用，远程入口没起来`)
+            ? expectedError(`端口 ${port} 已被占用，远程入口没起来`)
             : err
         )
       })

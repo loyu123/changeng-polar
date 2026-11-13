@@ -34,9 +34,34 @@ function resolvePath(): string | null {
   }
 }
 
+/**
+ * 造一个「可预期的失败」。
+ *
+ * 这类错误的消息本身就是给人看的诊断（"端口 7474 已被占用"），堆栈没有用。
+ * 用它包一层，logError 就只记那句话。
+ */
+export function expectedError(message: string): Error {
+  const err = new Error(message)
+  err.name = 'ExpectedError'
+  return err
+}
+
 /** 记一条错误：控制台 + userData/errors.log（尽力而为） */
 export function logError(scope: string, err: unknown): void {
-  const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
+  /**
+   * 可预期的失败只记一句话。
+   *
+   * 「端口被占用」「文件不存在」这类错误的堆栈全是 node:net / node:events 的
+   * 内部帧——用户读它得不到任何信息，开发者也一眼能定位，唯一作用是让真正
+   * 意外的崩溃淹没在噪音里。区分靠 expectedError() 造的 name 标记，
+   * 不去猜错误消息里有没有某个词。
+   */
+  const expected = err instanceof Error && err.name === 'ExpectedError'
+  const detail = expected
+    ? (err as Error).message
+    : err instanceof Error
+      ? (err.stack ?? err.message)
+      : String(err)
   console.error(`[${scope}]`, detail)
 
   if (writes >= MAX_WRITES_PER_SESSION) {

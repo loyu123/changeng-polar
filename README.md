@@ -30,6 +30,8 @@ npm run check:remote             # verify remote access without a phone: bind 0.
 npm run check:input              # verify simulated mouse/keyboard for real: builds its own target
                                  #   window, really clicks / pastes / presses Enter, reads the content back
                                  #   NOTE: it moves your mouse (restored afterwards) — interactive session only
+npm run check:projects           # project archive: validate → persist → read back → print the exact
+                                 #   paragraph the model will see; also probes whether the paths still exist
 npm run eval                     # run the 36 eval cases (no network), writes evals/report.json
 npm run eval -- --with-search    # also run the 3 S cases: real live search, 39 in total
 npm run eval -- --cat=S --with-search   # only the 3 live-search cases
@@ -54,7 +56,7 @@ $env:BUTLER_MAIL_AUTHCODE="..."         # mail auth code (M1 group cases)
 npm run eval
 ```
 
-All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), plus one JSON each for tasks and sessions.
+All data lands in `%APPDATA%\changeng-polar\`: `config.json` (model / search / mail credentials, encrypted with safeStorage before hitting disk), `records.jsonl` (append-only action log, 5 MB rotation, last three kept), `auth-memory.json` (the "always allow" whitelist), `memory.json` (cross-session memory), `project-archive.json` (the project archive: name / root / log path), plus one JSON each for tasks and sessions.
 
 **The portable build is the exception**: `changgeng-polar-*-portable.exe` moves `config.json` into `changeng-polar-data\` **next to the exe**, so the configuration travels with the program on a USB stick. The switch keys off `PORTABLE_EXECUTABLE_DIR`, which electron-builder injects — a portable build self-extracts to a temp directory before running, so `process.execPath` points into that temp folder and is gone on exit; using it as the data directory would mean starting from scratch every launch. **Nothing else travels with it** — sessions, action records, memory, orchestration projects and caches stay in `%APPDATA%`, so plugging into someone else's machine doesn't carry your history along. Three limits worth remembering:
 1. **Secrets do not travel.** Keys are encrypted with Windows DPAPI, bound to the current user, and cannot be decrypted on another machine. The code used to return an empty string silently; it now names the unreadable keys in Model and Storage settings, instead of letting you think they were never filled in.

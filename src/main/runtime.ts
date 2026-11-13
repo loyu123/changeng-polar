@@ -19,6 +19,7 @@ import { buildSystemPrompt } from './agent/prompt'
 import { capabilityBrief, createTools } from './agent/tools'
 import type { ToolDef } from './agent/tool-types'
 import { memoryBlock } from './node/memory'
+import { projectsBlock } from './node/projects'
 import { SANDBOX_ROOT } from './node/sandbox'
 import { focusProcessWindow, probeLaunch } from './node/running'
 import type { Store } from './node/store'
@@ -443,6 +444,19 @@ export class TurnRuntime {
       /* 记忆读失败不该让整轮对话挂掉，当没有记忆处理 */
     }
 
+    /**
+     * 项目档案：和记忆一样每轮重读。
+     *
+     * 单列一段而不是并进记忆：这里给的是**可操作的位置**（根目录、日志）。
+     * 并进记忆会被 200 字一条的上限切碎，变成"报告项目在 D 盘某处"这种没法用的句子。
+     */
+    let projects = ''
+    try {
+      projects = projectsBlock(await this.opts.store.listProjects())
+    } catch {
+      /* 同上：档案读失败当没有，不拖垮这一轮 */
+    }
+
     const system: ChatMessage = {
       role: 'system',
       content: buildSystemPrompt(
@@ -450,7 +464,8 @@ export class TurnRuntime {
           ...machineEnv(),
           hasSearch: config.searchProvider !== 'none',
           toolBudget: TOOL_BUDGET_STEPS,
-          memory
+          memory,
+          projects
         },
         capabilityBrief(tools)
       )

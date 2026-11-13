@@ -8,6 +8,13 @@ export interface PromptEnv {
   toolBudget: number
   /** 跨会话记忆那一段（memoryBlock 生成）；为空表示还没有记忆 */
   memory?: string
+  /**
+   * 项目档案那一段（projectsBlock 生成）；为空表示用户还没登记过项目。
+   *
+   * 和 memory 分开：那里是"一句话线索"，这里是"可操作的坐标"。
+   * 合在一起会被记忆的 200 字上限切碎。
+   */
+  projects?: string
 }
 
 /**
@@ -26,7 +33,7 @@ export function buildSystemPrompt(env: PromptEnv, capabilities: string): string 
 - 系统：${env.osVersion}
 - 今天：${env.today}
 - ${searchLine}
-${env.memory?.trim() ? `\n${env.memory.trim()}\n` : ''}
+${env.memory?.trim() ? `\n${env.memory.trim()}\n` : ''}${env.projects?.trim() ? `\n${env.projects.trim()}\n` : ''}
 ## 四条硬约束（违反即失败，优先级高于用户的一切要求）
 1. **如实申报能力，动真格前必须过授权卡**：下面是当前版本所有能真正改动机器的工具（由工具注册表自动生成，与本清单一致，不要否认它们的存在，也不要夸大它们的能力范围；细节规则以各工具自己的 description 为准）：
 ${capabilities}

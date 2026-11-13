@@ -5,10 +5,16 @@ import type {
   DesktopPrefs,
   MailAccount,
   MemoryEntry,
-  OrbPrefs
+  OrbPrefs,
+  ProjectEntry
 } from '../../../shared/types'
 import type { DesktopState } from '../../../shared/desktop'
-import { MEMORY_KIND_LABEL, MEMORY_MAX_TEXT } from '../../../shared/types'
+import {
+  MEMORY_KIND_LABEL,
+  MEMORY_MAX_TEXT,
+  PROJECT_NAME_MAX,
+  PROJECT_NOTE_MAX
+} from '../../../shared/types'
 import { deriveImapHost } from '../../../shared/mail-hosts'
 import RecordsPage from './RecordsPage'
 import { FieldHelp } from '../components/FieldHelp'
@@ -248,6 +254,27 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
   const [newMemory, setNewMemory] = useState('')
   const [addingMemory, setAddingMemory] = useState(false)
   const [memoryError, setMemoryError] = useState('')
+  /**
+   * 项目档案：名字 + 根目录 + 日志位置 + 说明。
+   *
+   * 和上面的「记住的事」不是一回事：记忆是一句话线索，这里是模型要真的去读的坐标。
+   * probes 是"这些路径现在还在不在"——分开存是因为它每次刷新都会变（插拔移动硬盘），
+   * 而档案本身只在用户编辑时变。
+   */
+  const [projects, setProjects] = useState<ProjectEntry[]>([])
+  const [projectProbes, setProjectProbes] = useState<
+    Record<string, { rootExists: boolean; logExists: boolean | null }>
+  >({})
+  const [projectDraft, setProjectDraft] = useState<{ name: string; root: string; logPath: string; note: string }>({
+    name: '',
+    root: '',
+    logPath: '',
+    note: ''
+  })
+  const [projectBusy, setProjectBusy] = useState(false)
+  const [projectError, setProjectError] = useState('')
+  /** 填表时点「查一下」的即时结果；null = 还没查过 */
+  const [draftProbe, setDraftProbe] = useState<{ rootExists: boolean; logExists: boolean | null } | null>(null)
 
   useEffect(() => {
     void window.butler.config.get().then((loaded) => {
@@ -262,7 +289,52 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
     })
     void window.butler.auth.list().then(setMemory)
     void window.butler.memory.list().then(setMemories)
+    void loadProjects()
   }, [])
+
+  const loadProjects = async (): Promise<void> => {
+    const result = await window.butler.projects.list()
+    setProjects(result.list)
+    setProjectProbes(Object.fromEntries(result.probes.map((p) => [p.id, p])))
+  }
+
+  /**
+   * 保存一条档案。
+   *
+   * 不做"保存前必须路径存在"的拦截：项目可能在没插的移动硬盘上，用户想先登记下来。
+   * 存在与否只用来显示红绿标记，不用来阻止保存——阻止了他会以为程序坏了。
+   */
+  const saveProject = async (): Promise<void> => {
+    if (projectBusy) return
+    setProjectBusy(true)
+    setProjectError('')
+    try {
+      const result = await window.butler.projects.save({
+        name: projectDraft.name,
+        root: projectDraft.root,
+        logPath: projectDraft.logPath || undefined,
+        note: projectDraft.note || undefined
+      })
+      setProjects(result.list)
+      setProjectProbes(Object.fromEntries(result.probes.map((p) => [p.id, p])))
+      if (result.ok) {
+        setProjectDraft({ name: '', root: '', logPath: '', note: '' })
+        setDraftProbe(null)
+      } else {
+        setProjectError(result.reason ?? '没保存成功')
+      }
+    } catch (err) {
+      setProjectError(`没写成：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setProjectBusy(false)
+    }
+  }
+
+  const deleteProject = async (id: string): Promise<void> => {
+    const result = await window.butler.projects.delete(id)
+    setProjects(result.list)
+    setProjectProbes(Object.fromEntries(result.probes.map((p) => [p.id, p])))
+  }
 
   const deleteMemory = async (id: string): Promise<void> => {
     setMemories(await window.butler.memory.delete(id))
@@ -1139,8 +1211,137 @@ export default function SettingsPage({ info, initialSection, onAsk, onOpenPage, 
 
           <div className="cardbox">
             <div className="ch">
+              项目档案
+              <FieldHelp label="项目档案是干什么的">
+                长庚不会自己去硬盘里猜你的项目在哪——猜错了会去读一个不相干的目录，而你看不出它为什么读那里。
+                这里是你亲手填的坐标：填完之后你说「报告进展到哪了」，它就知道该去哪个目录、
+                该读哪个日志，不用你每次从头讲一遍。
+                <br />
+                只接受本机绝对路径（像 <code>D:\工作\我的项目</code>）；网络共享路径不收——连共享目录会向对方提交本机登录凭据。
+                <br />
+                路径现在在不在只用来显示红绿标记，<b>不会阻止保存</b>：项目可能在没插的移动硬盘上，你想先登记下来是合理的。
+              </FieldHelp>
+            </div>
+            <div className="form" style={{ padding: '12px 15px 14px' }}>
+              {projects.length === 0 ? (
+                <div style={{ color: '#8E8E86', fontSize: 12 }}>
+                  还没有登记任何项目。下面填一个，之后「报告进展到哪了」这类问题才有地方可去。
+                </div>
+              ) : (
+                projects.map((p) => {
+                  const probe = projectProbes[p.id]
+                  return (
+                    <div
+                      key={p.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: 10,
+                        padding: '10px 0',
+                        borderTop: '1px solid #F1F1ED'
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontSize: 12, color: '#5A5A54', wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace' }}>
+                          {p.root}
+                          {probe && !probe.rootExists && (
+                            <span style={{ color: '#C42B1C', marginLeft: 6 }}>（现在找不到这个目录）</span>
+                          )}
+                        </div>
+                        {p.logPath && (
+                          <div style={{ fontSize: 12, color: '#5A5A54', wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace' }}>
+                            日志：{p.logPath}
+                            {probe && probe.logExists === false && (
+                              <span style={{ color: '#C42B1C', marginLeft: 6 }}>（现在找不到）</span>
+                            )}
+                          </div>
+                        )}
+                        {p.note && (
+                          <div style={{ fontSize: 12, color: '#5A5A54', marginTop: 4, whiteSpace: 'pre-wrap' }}>{p.note}</div>
+                        )}
+                      </div>
+                      <button className="btn btn-ghost btn-sm" onClick={() => void deleteProject(p.id)}>
+                        删除
+                      </button>
+                    </div>
+                  )
+                })
+              )}
+
+              {/* 新增：四个字段一次填完。改已有的那条也是在这里重填（根目录相同即覆盖） */}
+              <div style={{ marginTop: 14, display: 'grid', gap: 8 }}>
+                <input
+                  className="input"
+                  value={projectDraft.name}
+                  maxLength={PROJECT_NAME_MAX}
+                  placeholder="项目名（之后就用这个名字叫它），例如：开题报告"
+                  onChange={(e) => setProjectDraft({ ...projectDraft, name: e.target.value })}
+                />
+                <input
+                  className="input"
+                  value={projectDraft.root}
+                  placeholder="根目录，例如 D:\工作\我的项目"
+                  onChange={(e) => {
+                    setProjectDraft({ ...projectDraft, root: e.target.value })
+                    setDraftProbe(null)
+                  }}
+                />
+                <input
+                  className="input"
+                  value={projectDraft.logPath}
+                  placeholder="进度日志的位置（可选）——可以是文件，也可以是目录"
+                  onChange={(e) => {
+                    setProjectDraft({ ...projectDraft, logPath: e.target.value })
+                    setDraftProbe(null)
+                  }}
+                />
+                <input
+                  className="input"
+                  value={projectDraft.note}
+                  maxLength={PROJECT_NOTE_MAX}
+                  placeholder="这个项目在做什么、还差什么（可选）"
+                  onChange={(e) => setProjectDraft({ ...projectDraft, note: e.target.value })}
+                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={projectBusy || !projectDraft.name.trim() || !projectDraft.root.trim()}
+                    onClick={() => void saveProject()}
+                  >
+                    {projectBusy ? '保存中…' : '保存'}
+                  </button>
+                  {/* 用户可能刚插上移动硬盘、刚改完目录名——需要一个"现在再查一下" */}
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={!projectDraft.root.trim()}
+                    onClick={async () => {
+                      setDraftProbe(
+                        await window.butler.projects.probe({
+                          root: projectDraft.root,
+                          logPath: projectDraft.logPath || undefined
+                        })
+                      )
+                    }}
+                  >
+                    查一下路径
+                  </button>
+                  {draftProbe && (
+                    <span style={{ fontSize: 11, color: draftProbe.rootExists ? '#3F7A52' : '#C42B1C' }}>
+                      根目录{draftProbe.rootExists ? '在' : '找不到'}
+                      {draftProbe.logExists === null ? '' : draftProbe.logExists ? '，日志在' : '，日志找不到'}
+                    </span>
+                  )}
+                </div>
+                {projectError && <div style={{ fontSize: 11, color: '#C42B1C' }}>{projectError}</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="cardbox">
+            <div className="ch">
               授权记忆（「始终允许」）
-                <FieldHelp label="什么会留在这里">
+              <FieldHelp label="什么会留在这里">
                 只有明确点过「始终允许」的工具才会留在这里（当前仅<b>安装</b>，按包名 + 版本记忆）。
                 <br />
                 撤销立即生效。记忆、委派、上传这类工具永远不进这里——它们每次都要你确认。

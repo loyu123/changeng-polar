@@ -328,6 +328,42 @@ export const MEMORY_KIND_LABEL: Record<MemoryKind, string> = {
   fact: '约定与事实'
 }
 
+/** 一个项目档案里最多这几条：太多会挤占提示词，也说明该归档了 */
+export const PROJECT_MAX_ENTRIES = 12
+/** 名字、说明、备注各自的字数上限 */
+export const PROJECT_NAME_MAX = 40
+export const PROJECT_NOTE_MAX = 300
+
+/**
+ * 项目档案。
+ *
+ * 和记忆分开存，理由不是洁癖：记忆是"一句话"，而这里要的是一组**可核对的坐标**——
+ * 根目录在哪、日志在哪、几个关键文件叫什么。混进记忆会变成三四条各说一半的碎句子，
+ * 模型拼不回来，用户也没法一处改全。
+ *
+ * 存的是**用户声明的路径**，不是程序猜出来的。程序不扫描磁盘去找项目——
+ * 猜错了会让模型去读一个不相干的目录，而且用户看不出它为什么读那里。
+ */
+export interface ProjectEntry {
+  id: string
+  /** 项目名，用户自己起，模型按这个名字认人 */
+  name: string
+  /** 根目录（本机绝对路径）。只读能力以它为边界 */
+  root: string
+  /**
+   * 进度日志的位置（可以是文件，也可以是目录）。
+   *
+   * 单列一个字段而不是让模型去根目录里翻：这个报告项目实际在用的是
+   * `.workbuddy/memory/2026-11-13.md` 这种按天分文件的写法，
+   * 靠"翻目录猜哪个是日志"很容易翻到备份或旧版本。
+   */
+  logPath?: string
+  /** 这个项目在做什么、做到哪了、还差什么——自由文本 */
+  note?: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface MemoryEntry {
   id: string
   kind: MemoryKind

@@ -93,9 +93,29 @@ async function main(): Promise<void> {
   }
 
   try {
-    const started = await service.start(true)
+    /**
+     * 端口被占时 server.listen 会同步抛（它内部的 Promise 已经 reject，外面还挂着
+     * 一个 'error' 监听器），Node 于是把整段堆栈打到 stderr。堆栈对用户没有信息量——
+     * 该说的是"长庚开着，先关掉"。所以这里接住异常，统一走下面那条中文提示。
+     */
+    const started = await service.start(true).catch(() => false)
     if (!started) {
-      console.log(`❌ 服务起不来：${service.state().error ?? '未知原因'}`)
+      const err = service.state().error ?? '未知原因'
+      /**
+       * 端口被占最常见的原因不是故障，是**长庚本身正开着**——它自己就监听 7474。
+       * 报"服务起不来"会让人以为程序坏了，而其实该做的是关掉应用再跑这个脚本。
+       * 判据是"已被占用"而不是 EADDRINUSE：server.ts 把那个错误码翻译成了一句中文，
+       * 这里拿到的是翻译后的文本。
+       */
+      if (/已被占用/.test(err) || /EADDRINUSE/i.test(err)) {
+        console.log(
+          `⚠️ 端口 ${DEFAULT_REMOTE_PORT} 已被占用——多半是长庚本身正开着（它自己就监听这个端口）。\n` +
+            '   这个脚本要自己绑同一个端口才能验证，所以请先关掉应用再跑。\n' +
+            '   应用开着的时候手机能不能连，改看设置 → 远程访问 → 自检，那个不占端口。'
+        )
+      } else {
+        console.log(`❌ 服务起不来：${err}`)
+      }
       process.exitCode = 1
       return
     }

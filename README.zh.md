@@ -27,6 +27,8 @@ npm run smoke                    # 不依赖模型：验证注册表读取 + 联
 npm run mock                     # 本地假模型（无 Key 时验证对话链路）
 npm run check:remote             # 不用手机验证远程入口：绑 0.0.0.0，经局域网 IP 走完整条链路 + 打印自检结论
 npm run check:input              # 真机验证模拟键鼠：自建靶子窗口，真点、真粘贴、真按键，读回内容比对
+npm run check:projects           # 项目档案：校验 → 落盘 → 读回 → 打印模型下一轮会看到的那一段
+                                 #   路径在不在也会一起查（不阻止保存，只显示红绿）
                                  #   注意：这个会真的移动鼠标（结束时恢复原位），只能在有桌面的会话里跑
 npm run eval                     # 跑 36 条评测（不含联网），结果写 evals/report.json
 npm run eval -- --with-search    # 额外跑 S 组 3 条：真的联网检索，共 39 条
@@ -57,7 +59,8 @@ npm run eval
 
 数据都落在 `%APPDATA%\changeng-polar\`：`config.json`（模型/检索/邮箱凭据，落盘前经 safeStorage 加密）、
 `records.jsonl`（append-only 动作记录，5MB 轮转，只留最近三份）、`verify.json`（查证缓存）、
-`auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆），以及任务/会话各一份 JSON。
+`auth-memory.json`（「始终允许」白名单）、`memory.json`（跨会话记忆）、
+`project-archive.json`（项目档案：项目名 / 根目录 / 日志位置），以及任务/会话各一份 JSON。
 
 **便携版例外**：`changgeng-polar-*-portable.exe` 这个构建把 `config.json` 挪到 **exe 同级的
 `changeng-polar-data\`**，插到别的电脑上配置跟着走。判断依据是 electron-builder 注入的

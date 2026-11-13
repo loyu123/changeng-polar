@@ -7,6 +7,7 @@ import type {
   ButlerConfig,
   ChatSession,
   MemoryEntry,
+  ProjectEntry,
   RecordEntry,
   TaskDef
 } from '../../shared/types'
@@ -402,6 +403,26 @@ export class Store {
     return this.enqueue('memory.json', async () => {
       const { list, result } = mutate(await this.readJsonList<MemoryEntry>('memory.json'))
       await this.writeJsonList('memory.json', list)
+      return result
+    })
+  }
+
+  // ---- 项目档案（见 projects.ts 的说明：与记忆分开存） ----
+  async listProjects(): Promise<ProjectEntry[]> {
+    return this.readJsonList<ProjectEntry>('project-archive.json')
+  }
+
+  async saveProjects(list: ProjectEntry[]): Promise<void> {
+    await this.enqueue('project-archive.json', () => this.writeJsonList('project-archive.json', list))
+  }
+
+  /** 读-改-写在一个临界区里完成，避免两次并发保存互相覆盖 */
+  async mutateProjects(
+    mutate: (list: ProjectEntry[]) => { list: ProjectEntry[]; result: ProjectEntry[] }
+  ): Promise<ProjectEntry[]> {
+    return this.enqueue('project-archive.json', async () => {
+      const { list, result } = mutate(await this.readJsonList<ProjectEntry>('project-archive.json'))
+      await this.writeJsonList('project-archive.json', list)
       return result
     })
   }
