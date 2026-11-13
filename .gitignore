@@ -16,3 +16,6 @@ build/_sheet.png
 
 # 评测产物：每次跑都会重写，且含本机 IP 与已装软件清单，不进仓库
 evals/a4-report.json
+
+# 凭据：任何 .env 都不进仓库（AppSecret、token 等同密码）
+.env
