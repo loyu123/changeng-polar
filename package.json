@@ -1,6 +1,6 @@
 {
   "name": "changeng-polar",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "description": "长庚 · 本地电脑管家（对话驱动，写操作全部穿授权闸门）",
   "author": "loyu123",
@@ -31,7 +31,8 @@
     "pack": "npm run build && electron-builder --win nsis portable",
     "check:projects": "tsx scripts/project-archive-check.ts",
     "check:list": "tsx scripts/list-project-check.ts",
-    "check:log": "tsx scripts/log-tail-check.ts"
+    "check:log": "tsx scripts/log-tail-check.ts",
+    "check:report": "tsx scripts/report-flow-check.ts"
   },
   "dependencies": {
     "imapflow": "^2.10.0",
