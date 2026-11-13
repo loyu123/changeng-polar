@@ -253,19 +253,19 @@ export class TurnRuntime {
     toggles: Record<string, boolean>,
     readOnly: boolean,
     worker: ButlerConfig['worker'] = {},
-    projectRoots: string[] = []
+    projects: Array<{ name: string; root: string; logPath?: string }> = []
   ): ToolDef[] {
     const { store } = this.opts
     const all = createTools({
       openSettings: this.opts.openSettings,
       /**
-       * list_files 的作用域：用户登记过的项目根。
+       * list_files / read_log_tail 的作用域：用户登记过的项目。
        *
-       * 由调用方每轮从档案里读出来传进来——用户刚在设置里加完就能用，
-       * 不需要重启。空数组时 list_files 会如实说"还没登记项目"，
-       * 而不是退化成能列任意目录（那正是它不该有的能力）。
+       * 带 logPath 一起给：那个字段本来就是"日志在哪"，让工具去猜"根目录里
+       * 哪个是日志"会翻到备份或旧版本。空数组时两个工具都如实说"还没登记"，
+       * 而不是退化成能看任意目录。
        */
-      projectRoots,
+      projects,
       // 「打开哔哩哔哩」这类请求：目标只能是 .lnk/.url 或系统应用清单里的一条
       launchShortcut: (filePath) => launchShortcut(filePath),
       // 豆包这类不建快捷方式的程序：走 shell:AppsFolder
@@ -478,7 +478,7 @@ export class TurnRuntime {
       config.toolToggles ?? {},
       config.readOnly === true,
       config.worker,
-      projectList.map((p) => p.root)
+      projectList.map((p) => ({ name: p.name, root: p.root, ...(p.logPath ? { logPath: p.logPath } : {}) }))
     )
 
     const system: ChatMessage = {

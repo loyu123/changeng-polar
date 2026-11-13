@@ -29,6 +29,7 @@ npm run check:remote             # 不用手机验证远程入口：绑 0.0.0.0�
 npm run check:input              # 真机验证模拟键鼠：自建靶子窗口，真点、真粘贴、真按键，读回内容比对
 npm run check:projects           # 项目档案：校验 → 落盘 → 读回 → 打印模型下一轮会看到的那一段
 npm run check:list [项目名] [子目录]  # 拿真实项目跑一遍 list_files，打印模型会读到的那段文字
+npm run check:log [项目名] [行数]     # 拿真实项目的日志跑一遍 read_log_tail，打印它会读到的那几行
                                  #   路径在不在也会一起查（不阻止保存，只显示红绿）
                                  #   注意：这个会真的移动鼠标（结束时恢复原位），只能在有桌面的会话里跑
 npm run eval                     # 跑 36 条评测（不含联网），结果写 evals/report.json
@@ -305,7 +306,7 @@ src/
       budget.ts            请求前的上下文预算：system 不裁、成对保留 tool_calls、单条截断
       llm.ts               OpenAI 兼容客户端（流式 / 非流式 / SSE 兼容）
       prompt.ts            系统提示词：H1–H4 的行为化表述；能力段由注册表生成
-      tools.ts             28 个工具（见下「边界」一节的完整清单与约束）
+      tools.ts             29 个工具（见下「边界」一节的完整清单与约束）
       tool-types.ts        工具定义、ToolPlan、ToolResult 的类型
     ipc/                   IPC 按领域拆：app / chat / config / work / orb
     node/
@@ -325,6 +326,7 @@ src/
       projects.ts          项目档案：路径校验（拒 UNC / 相对路径）+ 注入提示词那一段
       projects-probe.ts    「登记的路径现在还在不在」（只给界面显示红绿，不进提示词）
       list-tree.ts         列项目目录：作用域判据、链接不跟进、截断与跳过都要报出来
+      log-tail.ts          读日志尾部：按行数、复用解码阶梯、截断要说清、二进制要拒
       search.ts            全局搜索（在主进程做，只把命中的几十条送到渲染层）
       secrets.ts           凭据落盘加解密（主进程注入 safeStorage/DPAPI）
       tasks.ts             定时任务调度器
@@ -386,11 +388,11 @@ tests/                     单测（vitest，不连网、不读注册表）
 
 ## 边界（代码层，不靠模型自觉）
 
-**主进程注册 28 个工具，按效果分档：**
+**主进程注册 29 个工具，按效果分档：**
 
 | 档位 | 工具 | 闸门行为 |
 |---|---|---|
-| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`list_files`、`read_email`、`read_file`、`github_search`、`list_memory`、`check_uninstall_state`、`screen_capture` | 自动放行 + 留痕（`screen_capture` 标为读取私密内容）|
+| `read`（只读） | `list_installed_apps`、`list_startup_items`、`web_search`、`web_fetch`、`list_sandbox_files`、`list_files`、`read_log_tail`、`read_email`、`read_file`、`github_search`、`list_memory`、`check_uninstall_state`、`screen_capture` | 自动放行 + 留痕（`screen_capture` 标为读取私密内容）|
 | `ui`（只打开页面 / 窗口） | `open_settings_page`、`launch_app`、`open_folder`、`open_file` | 自动放行 + 留痕 |
 | `write`（本地数据） | `write_document`、`github_upload`、`delegate_to_agent`、`run_project`、`save_memory`、`forget_memory` | 先备份，备份失败就不执行；`write_document` / `github_upload` / `delegate_to_agent` / `run_project` 一律要过卡（`requiresConfirmation`） |
 | `install`（改动机器） | `install_app` | 必须过卡；**全表唯一允许「始终允许」的档位** |
@@ -416,6 +418,7 @@ tests/                     单测（vitest，不连网、不读注册表）
 - **`read_file`**：按后缀认定格式，**不靠"试着解一下"**——后者会把一张 jpg 解成几十 KB 的替换字符，然后模型拿着它编出"这张图看起来是…"。纯文本走一条有讲究的编码阶梯：BOM → UTF-16（无 BOM 时靠空字节奇偶位认）→ UTF-8 严格解 → GB18030。UTF-8 那一步必须 `fatal: true`，否则 GBK 文件会"解成功"成一串问号而调用方毫不知情。`.docx/.xlsx/.pptx` 是自己解 ZIP 里的 XML（`node/office.ts`），不依赖机器上装没装 Office；PDF 也是自己解——对象、页面树、内容流、字体的 `/ToUnicode` 表（`node/pdf.ts`）；2003 那种老格式的 `.doc/.xls/.ppt` 先解 OLE 容器再解里面的 FIB/片段表、BIFF8 记录和 PowerPoint 记录树（`node/ole.ts` + `node/legacy-office.ts`），同样不引依赖。**读不了就说读不了**：图片、压缩包、音视频一律如实拒绝，扫描件 PDF、字体没有 `/ToUnicode` 的 PDF、加密或基本空白的老 `.doc/.xls/.ppt` 也一样，并给出"用系统默认程序打开"这条出路，绝不吐一段乱码让模型去总结——读错比不读糟得多，因为错的内容会被当成事实讲给用户。后缀是 `.txt` 但内容是二进制的也拒。长文件分段读（默认 3200 字、硬上限 4000），返回 `totalChars` / `nextOffset`，让"只读到一部分"变成一个说得清的事实。标了 `readsPrivateData`：读过之后本轮视为被污染，后续 `sendsDataOut` 的工具要单独弹外发确认卡——合同、账单、密钥都可能在这条路上。
 - **`open_file`**：用系统默认程序打开，**不执行东西**。外壳接口对 `.exe/.bat/.cmd/.ps1/.lnk/.url/.msi/.reg` 这类是"运行"不是"打开"，所以这些后缀在解析阶段就拒掉并指向 `launch_app`。同样不认 UNC 路径（理由和 `open_folder` 一样）。同名有多个时弹候选卡，点哪个开哪个。
 - **`list_files`**：列**项目档案里登记过**的目录（`project-archive.json`），这是它唯一的合法作用域——不在那些根底下的路径一律拒绝，绝对路径也要过同一道关。不做成"任意目录"：那样它和资源管理器一样宽，而这个能力要回答的问题只有一个「我这个项目里有什么」。判据是**路径前缀 + 分隔符**，不是字符串前缀，否则 `D:\proj-evil` 会被当成 `D:\proj` 里面。深度上限 3、条目上限 300、目录上限 120，超了标 `truncated` 并在给模型的摘要里直说"这不是全部"。**读不到的目录要报出来**（权限、被占用），静默跳过会让模型断言"项目就这么点东西"。两处刻意的不同：①**点开头目录不一律跳过**——这个报告项目的进度日志就在 `.workbuddy/memory/`，照搬文件索引那套（跳过所有 `.` 开头）会让它列完说"没看到进度记录"；只跳过已知噪音（node_modules / dist / build / .git…），且跳过的**报名字**，否则模型会回答"没有 node_modules 这个目录"。②**符号链接列出来但不进去**：跟进去等于绕开作用域边界，而完全看不见会让模型以为项目里没有那个目录——所以列、标明是链接、说清没跟。
+- **`read_log_tail`**：读日志**末尾**，按行数而不是字数——因为「进展到哪了」的答案在末尾。这不是 `read_file` 能凑合的：那个从头切片（3200/4000 字），要拿到尾巴得"先问总长、再带 offset 读第二次"，一轮预算只有 5 步，问一句进展就烧掉一半。三件事它必须做对：①**编码走 `decodeText` 的阶梯**（BOM → UTF-16 → 严格 UTF-8 → GB18030）——日志是中文记事本、IDE、`>` 重定向都可能产出的；②**从中间开始读时丢掉首行残片**，否则被切断的多字节汉字会变成替换符出现在结论里；③**`truncatedFromStart` 要如实**——读了半截文件、或者文件比要求看的长，都算"上面还有"，摘要里直说。日志位置填成**目录**时自动挑里面最新的那个文件（这个项目的进度日志就是按天分文件存的），只在这一层挑、不递归——递归会挑到备份目录里的旧快照。**二进制内容直接拒**：日志位置填错成 .docx/.pdf 时解出来是控制字符，喂给模型只会得到幻觉。
 - **`open_folder`**：只开目录，文件走 `open_file`、程序走 `launch_app`——三件事拆开是因为硬塞进一个工具会让它既认程序又认目录，最后两边都说不准。名字对不上唯一一个时弹候选卡。不认 UNC 路径：连共享目录是一次 SMB 登录，会把本机凭据交出去，而"看一个文件夹"用不着付这个代价。
 - **`launch_app`**：目标只能是 `.lnk/.url` 或系统应用清单里的一条（商店应用、计算器这类不建快捷方式的程序）。启动前先探它是不是**已经开着**——只认有可见窗口的同名进程，探不到进程表时当它没开、照常启动（"多开一个窗口"比"明明没开却说已经开了"轻得多）；已经开着就不再开第二份，把那个窗口叫到前面来，并如实说"本来就开着"而不是"刚打开"。
 - **`web_fetch`**：只发一次 GET、剥标签取正文，**不执行 JS、不带登录状态**，只认 `http/https`。上限 4000 字 / 3 MB / 20 秒。读不到正文时会明说——返回里 `readable=false` 加一句原因（跳到登录页 / 正文靠 JS 生成 / 抓到的全是排版碎片 / 是错误页）。这一条是后补的：以前这三种情况都会"成功"返回一点文字，模型拿它当正文总结，用户看到一段通顺具体、但和那页毫无关系的话。现在宁可说"这页我读不到正文"，也不让碎片冒充内容。

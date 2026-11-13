@@ -22,6 +22,7 @@ import { appIdentity, findOpenWindow, type LaunchProbe } from '../node/running'
 import { windowAt } from '../node/screen'
 import { planFolder } from '../node/folder'
 import { formatListing, isInsideRoot, listOneLevel, listTree, resolveWithin } from '../node/list-tree'
+import { readTail, TAIL_DEFAULT_LINES, TAIL_MAX_LINES } from '../node/log-tail'
 import {
   DEFAULT_MAX_CHARS,
   HARD_MAX_CHARS,
@@ -231,15 +232,18 @@ export interface ToolDeps {
    */
   butlerInstalls?: () => Promise<Record<string, string>>
   /**
-   * 项目档案里登记的根目录（用户亲手填的）。
+   * 项目档案里登记的条目（用户亲手填的）。
    *
-   * **这是 `list_files` 唯一的合法作用域**：不在这些根下面的路径一律拒绝。
-   * 没注入（空数组）时 list_files 会如实说明"还没有登记项目"，
-   * 而不是退化成"那就让你列任意目录吧"——那正是这个工具不该有的能力。
+   * **这是 `list_files` 和 `read_log_tail` 唯一的合法作用域**：不在这些根下面的
+   * 路径一律拒绝。带上 logPath 是因为那个字段本来就是"日志在哪"，
+   * 让工具去猜"根目录里哪个是日志"会翻到备份或旧版本。
+   *
+   * 没注入（空数组）时两个工具都如实说明"还没有登记项目"，
+   * 而不是退化成"那就让你看任意目录吧"——那正是它们不该有的能力。
    *
    * 每轮由 runtime 从 project-archive.json 重读后注入，用户在设置里改完立刻生效。
    */
-  projectRoots?: string[]
+  projects?: Array<{ name: string; root: string; logPath?: string }>
 }
 
 /**
@@ -1370,8 +1374,8 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
       }
     },
     plan: async (args) => {
-      const roots = deps.projectRoots ?? []
-      if (roots.length === 0) {
+      const projects = deps.projects ?? []
+      if (projects.length === 0) {
         return {
           ok: false,
           reason:
@@ -1379,20 +1383,24 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
         }
       }
       const want = String(args?.project ?? '').trim()
-      const root = want
-        ? roots.find((r) => r.toLowerCase().includes(want.toLowerCase()) || path.basename(r).toLowerCase() === want.toLowerCase())
-        : roots.length === 1
-          ? roots[0]
+      // 按名字匹配优先于按路径匹配：用户和模型都是用名字说话的
+      const picked = want
+        ? (projects.find((p) => p.name.toLowerCase().includes(want.toLowerCase())) ??
+          projects.find((p) => p.root.toLowerCase().includes(want.toLowerCase())))
+        : projects.length === 1
+          ? projects[0]
           : undefined
 
-      if (!root) {
+      if (!picked) {
+        const names = projects.map((p) => p.name).join('、')
         return {
           ok: false,
           reason: want
-            ? `档案里没有叫「${want}」的项目。登记过的有：${roots.join('、')}`
-            : `档案里有 ${roots.length} 个项目，先用 project 参数指定一个：${roots.join('、')}`
+            ? `档案里没有叫「${want}」的项目。登记过的有：${names}`
+            : `档案里有 ${projects.length} 个项目，先用 project 参数指定一个：${names}`
         }
       }
+      const root = picked.root
 
       // 子目录也必须在根里面：绝对路径同样要过这道关
       const target = resolveWithin(root, args?.dir)
@@ -1451,6 +1459,125 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
               ...(result.unreadable.length > 0 ? { unreadable: result.unreadable } : {})
             },
             evidence: [ev({ type: 'local', title: `项目目录清单（${result.entries.length} 条）`, detail: root })]
+          }
+        }
+      }
+    },
+    run: async () => ({ ok: false, summary: '这个工具必须走授权流程' })
+  }
+
+  /**
+   * 读日志尾部。
+   *
+   * 和 `read_file` 的分工：那个从头读、按字数切片，适合"读一份文档"；
+   * 这个从**末尾**读、按行数，适合"看看跑到哪了"。用户问「进展到哪了」
+   * 时答案在末尾，用 read_file 得先问长度再带 offset 读第二次——
+   * 一轮预算 5 步，问一句进展就烧掉一半。
+   */
+  const readLogTailTool: ToolDef = {
+    name: 'read_log_tail',
+    label: '看日志末尾（只读）',
+    description:
+      '读一个日志文件**最后**若干行——回答"进展到哪了""刚才报什么错了""跑完了没"用它，**不要**用 read_file（那个从头读，而答案在末尾）。只能读项目档案里登记过的项目：不传 file 时读该项目登记的日志位置（日志位置是目录时，自动挑里面最新的那个文件）；传了 file 就按相对项目根解析。默认 80 行，最多 1000 行。结果会说明文件多大、编码是什么、**前面还有没有没读到的内容**——如果说了 truncatedFromStart，就代表上面还有，必要时用更大的 lines 再读一次，别把看到的当成全文。',
+    effect: 'read',
+    // 日志里可能记着路径、密钥、用户数据：读过之后本轮被污染，外发要先确认
+    readsPrivateData: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: '项目名（档案里登记的）。不填时：只有一个项目就用它，有多个会让你先选' },
+        file: { type: 'string', description: '日志文件，相对项目根（如「.workbuddy/memory/2026-11-13.md」）。不填 = 用档案里登记的日志位置' },
+        lines: { type: 'number', description: `要最后多少行，默认 ${TAIL_DEFAULT_LINES}，上限 ${TAIL_MAX_LINES}` }
+      }
+    },
+    plan: async (args) => {
+      const projects = deps.projects ?? []
+      if (projects.length === 0) {
+        return {
+          ok: false,
+          reason:
+            '还没有登记任何项目，我不知道该读哪个日志。请让用户去「设置 → 记忆与项目 → 项目档案」填一条（项目名 + 根目录 + 日志位置）'
+        }
+      }
+      const want = String(args?.project ?? '').trim()
+      const picked = want
+        ? (projects.find((p) => p.name.toLowerCase().includes(want.toLowerCase())) ??
+          projects.find((p) => p.root.toLowerCase().includes(want.toLowerCase())))
+        : projects.length === 1
+          ? projects[0]
+          : undefined
+
+      if (!picked) {
+        const names = projects.map((p) => p.name).join('、')
+        return {
+          ok: false,
+          reason: want
+            ? `档案里没有叫「${want}」的项目。登记过的有：${names}`
+            : `档案里有 ${projects.length} 个项目，先用 project 参数指定一个：${names}`
+        }
+      }
+
+      /**
+       * 目标文件的确定顺序：显式 file → 档案里登记的 logPath。
+       *
+       * 两条都要过作用域：file 是相对路径时按项目根解析，绝对路径也必须在根里；
+       * logPath 是用户自己填的，同样不能跳出根——档案是用户填的不假，
+       * 但这个工具的口径是"只看这个项目里面的东西"，跳出去读 C:\Windows 的日志
+       * 显然不是用户填 logPath 时的意思。
+       */
+      let target: string | null
+      if (String(args?.file ?? '').trim()) {
+        target = resolveWithin(picked.root, args?.file)
+        if (!target) {
+          return { ok: false, reason: `「${String(args?.file)}」不在项目「${picked.root}」里面。日志只能从这个项目里读` }
+        }
+      } else if (picked.logPath) {
+        target = resolveWithin(picked.root, picked.logPath)
+        if (!target) {
+          return {
+            ok: false,
+            reason: `项目「${picked.name}」登记的日志位置（${picked.logPath}）不在它的根目录里。请让用户在项目档案里改一下`
+          }
+        }
+      } else {
+        return {
+          ok: false,
+          reason: `项目「${picked.name}」没有登记日志位置。请用户补上，或者告诉我具体是哪个文件（相对项目根）`
+        }
+      }
+
+      const lines = Math.min(Math.max(1, Math.floor(Number(args?.lines ?? TAIL_DEFAULT_LINES)) || TAIL_DEFAULT_LINES), TAIL_MAX_LINES)
+      return {
+        ok: true,
+        target: {
+          title: `读日志末尾 ${lines} 行`,
+          target,
+          impact: '只读，不改动文件'
+        },
+        execute: async () => {
+          const outcome = await readTail(target, { lines })
+          if (!outcome.ok) {
+            return { ok: false, summary: outcome.reason }
+          }
+          const v = outcome.value
+          return {
+            ok: true,
+            // 摘要里就把"这不是全文"说出来，不能只放进 data 等模型自己发现
+            summary:
+              `读了 ${path.basename(v.file)} 最后 ${v.lines} 行（文件共 ${Math.round(v.bytes / 1024)}KB，编码 ${v.encoding}）` +
+              (v.pickedNewest ? `；日志位置是目录，挑的是里面最新的「${v.pickedNewest}」` : '') +
+              (v.truncatedFromStart ? '；**上面还有内容没读到**' : ''),
+            data: {
+              file: v.file,
+              lines: v.lines,
+              bytes: v.bytes,
+              mtime: v.mtime,
+              encoding: v.encoding,
+              truncatedFromStart: v.truncatedFromStart,
+              ...(v.pickedNewest ? { pickedNewest: v.pickedNewest } : {}),
+              content: v.text
+            },
+            evidence: [ev({ type: 'local', title: `日志末尾（${v.lines} 行）`, detail: v.file })]
           }
         }
       }
@@ -2864,6 +2991,7 @@ export function createTools(deps: ToolDeps = {}): ToolDef[] {
     openSettings,
     listSandboxTool,
     listFilesTool,
+    readLogTailTool,
     deleteToRecycleTool,
     readEmailTool,
     launchAppTool,
